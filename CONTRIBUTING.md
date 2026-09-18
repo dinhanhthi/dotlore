@@ -16,7 +16,7 @@ These are not style rules. The engine's correctness rests on them, and each one 
 
 **No shell, ever.** `std::process::Command` with argv arrays. The only external programs this project may run are `git`, `brctl`, `hostname`, and `launchctl`.
 
-**Hermetic git.** Every invocation sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, explicit author/committer, `GIT_EDITOR=true`, `GIT_TERMINAL_PROMPT=0`, and clears `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_COMMON_DIR`. A user's global config — signing, `core.hooksPath`, `autocrlf` — must never reach these calls.
+**Hermetic git.** Every invocation goes through `Git::command`, which clears the child environment and then sets `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, explicit author/committer, `GIT_EDITOR=true`, `GIT_TERMINAL_PROMPT=0`, plus `PATH`. A user's global config — signing, `core.hooksPath`, `autocrlf` — and their `~/.config/git/ignore` and `attributes` must never reach these calls.
 
 **No environment reads.** `config::default_home()` is the only one that affects where state lives, and only binaries call it. Everything else takes `home: &Path` explicitly, which is what lets the test harness run several devices in one process. (`git::Git::command` reads `PATH` to forward it into the child — see below.)
 
