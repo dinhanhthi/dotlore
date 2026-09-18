@@ -1,14 +1,14 @@
-# dotlore
+# Dotlore
 
 Sync your AI stuff and keep it away from your main codebase.
 
-dotlore tracks the AI-agent config your projects git-ignore and syncs it between your own Macs. Point it at any folder or single file you keep out of git — `.claude/`, `CLAUDE.md`, `.agents/`, your project's `docs/`, your global `~/.claude`, or whatever else you work with. Files stay where they are; nothing is moved, symlinked, or added to your project's git history.
+Dotlore tracks the AI-agent config your projects git-ignore and syncs it between your own Macs. Point it at any folder or single file you keep out of git — `.claude/`, `CLAUDE.md`, `.agents/`, your project's `docs/`, your global `~/.claude`, or whatever else you work with. Files stay where they are; nothing is moved, symlinked, or added to your project's git history.
 
 ## How it works
 
 Transport is a cloud folder you already sync (iCloud Drive or Google Drive desktop) — a folder path, never a cloud API.
 
-Each tracked root gets a private staging git repo under `~/Library/Application Support/dotlore/`. dotlore mirrors the root into staging, commits, and publishes an **immutable** git bundle to its own device directory in the cloud:
+Each tracked root gets a private staging git repo under `~/Library/Application Support/dotlore/`. Dotlore mirrors the root into staging, commits, and publishes an **immutable** git bundle to its own device directory in the cloud:
 
 ```
 <cloud>/dotlore/<slug>/devices/<device-id>/000001.bundle
@@ -30,7 +30,7 @@ MVP, in progress. `dotlore-core` is the only crate that exists today.
 
 ## Requirements
 
-macOS, Rust 1.89+ (uses `std::fs::File::lock`), and the system `git`. If `git` is missing, dotlore refuses to sync and points you at `xcode-select --install`.
+macOS, Rust 1.89+ (uses `std::fs::File::lock`), and the system `git`. If `git` is missing, Dotlore refuses to sync and points you at `xcode-select --install`.
 
 ```sh
 cargo build -p dotlore-core
