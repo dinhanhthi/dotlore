@@ -1,0 +1,13 @@
+
+
+# >>> coding-friend managed
+docs/plans/
+docs/memory/
+docs/research/
+docs/sessions/
+docs/reviews/
+docs/context/
+docs/warm/
+.coding-friend/
+# <<< coding-friend managed
+/target
