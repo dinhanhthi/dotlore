@@ -2,7 +2,7 @@
 
 Sync your AI stuff and keep it away from your main codebase.
 
-dotlore tracks the AI-agent config your projects git-ignore — `.claude/`, `CLAUDE.md`, `.agents/`, `docs/`, and your global `~/.claude` — and syncs it between your own Macs. Files stay where they are; nothing is moved, symlinked, or added to your project's git history.
+dotlore tracks the AI-agent config your projects git-ignore and syncs it between your own Macs. Point it at any folder or single file you keep out of git — `.claude/`, `CLAUDE.md`, `.agents/`, your project's `docs/`, your global `~/.claude`, or whatever else you work with. Files stay where they are; nothing is moved, symlinked, or added to your project's git history.
 
 ## How it works
 
