@@ -10,6 +10,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,6 +44,7 @@ impl Config {
     /// Read `<home>/config.json`, creating `home`, `home/tmp` and — when the
     /// file is missing — a fresh device identity that is saved before return.
     pub fn load(home: &Path) -> Result<Config> {
+        secure_home(home)?;
         fs::create_dir_all(home.join("tmp"))?;
         let path = home.join("config.json");
         match fs::read(&path) {
@@ -63,7 +65,7 @@ impl Config {
 
     /// Write `<home>/config.json` atomically (temp file + rename).
     pub fn save(&self, home: &Path) -> Result<()> {
-        fs::create_dir_all(home)?;
+        secure_home(home)?;
         // Pid alone collides between two threads sharing one home.
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -149,7 +151,7 @@ impl Drop for HomeLock {
 
 /// Take the `<home>/lock` file lock, blocking until it is free.
 pub fn lock(home: &Path) -> Result<HomeLock> {
-    fs::create_dir_all(home)?;
+    secure_home(home)?;
     let f = fs::OpenOptions::new()
         .create(true)
         .read(true)
@@ -158,6 +160,21 @@ pub fn lock(home: &Path) -> Result<HomeLock> {
         .open(home.join("lock"))?;
     f.lock()?;
     Ok(HomeLock(f))
+}
+
+/// Create `home` if missing and keep it 0700 on every use.
+///
+/// Everything at rest lives under it: `repos/<slug>` holds a full copy of every
+/// tracked byte — `settings.json` and friends, API keys included — and `tmp/`
+/// the outgoing bundle. 0700 here denies traversal to every other local
+/// account, so no descendant is reachable whatever its own mode is. Repaired,
+/// not merely set at creation: a `home` left umask-derived by an older build is
+/// tightened by the next operation, which is the first thing every entry point
+/// does.
+fn secure_home(home: &Path) -> Result<()> {
+    fs::create_dir_all(home)?;
+    fs::set_permissions(home, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("securing {}", home.display()))
 }
 
 /// 16 bytes of `/dev/urandom` as 32 lowercase hex chars.
@@ -257,6 +274,37 @@ mod tests {
         let cfg = Config::load(home).unwrap();
         assert_eq!(cfg.roots.len(), 1);
         assert!(!cfg.roots[0].initializing);
+    }
+
+    /// `<home>` is the whole perimeter: `repos/<slug>` under it is a full copy
+    /// of every tracked byte. 0700 must hold after any entry point, and be
+    /// repaired — not merely set at creation — when an older build or a stray
+    /// chmod left it loose. `home` is a path that does not exist yet, so
+    /// `create_dir_all` really creates it (a `TempDir` is already 0700).
+    #[test]
+    fn the_home_directory_is_kept_private() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("state");
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        let cfg = Config::load(&home).unwrap();
+        assert_eq!(mode(&home), 0o700, "load left {:o}", mode(&home));
+
+        let loosen = || fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
+
+        loosen();
+        drop(lock(&home).unwrap());
+        assert_eq!(mode(&home), 0o700, "lock left {:o}", mode(&home));
+
+        loosen();
+        cfg.save(&home).unwrap();
+        assert_eq!(mode(&home), 0o700, "save left {:o}", mode(&home));
+
+        // config.json exists by now, so this exercises `load`'s own call
+        // rather than the `save` it makes for a fresh identity.
+        loosen();
+        Config::load(&home).unwrap();
+        assert_eq!(mode(&home), 0o700, "reload left {:o}", mode(&home));
     }
 
     #[test]
