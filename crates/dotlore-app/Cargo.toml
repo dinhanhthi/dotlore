@@ -1,0 +1,15 @@
+[package]
+name = "dotlore-app"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "dotlore-app"
+path = "src/main.rs"
+
+[dependencies]
+dotlore-core = { path = "../dotlore-core" }
+anyhow = "1"
+gpui = "=0.2.2"
+gpui-component = "=0.5.1"
+gpui-tray = "=0.1.3"

@@ -287,7 +287,25 @@ impl Cloud {
 /// field of one line. Filtering here rather than in each renderer is why a
 /// control character cannot forge or hide a `conflicts` row.
 fn clean_name(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).take(64).collect()
+    s.chars()
+        .filter(|c| !c.is_control() && !is_bidi_control(*c))
+        .take(64)
+        .collect()
+}
+
+/// The bidi controls, which `char::is_control` misses: that one is category
+/// Cc, and these are Cf. A U+202E anywhere in a name or a path reverses the
+/// rendered remainder of the line it is printed on, which is enough to make
+/// one row read as another — the same forgery the Cc filter exists to stop.
+///
+/// Deliberately only the bidi ones. U+200C/U+200D (ZWNJ, ZWJ) are Cf too and
+/// are left alone: they are ordinary text in Persian and the glue inside an
+/// emoji sequence, and dropping them would mangle a legitimate device name.
+pub fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Ask iCloud to materialise a dataless file. Best effort, errors ignored.
@@ -579,13 +597,17 @@ mod tests {
         let td = TempDir::new().unwrap();
         let c = cloud(&td);
         let id = "0123456789abcdef0123456789abcdef";
-        let evil = format!("\u{1b}[31mEvil\r\n{}", "x".repeat(100));
+        let evil = format!("\u{1b}[31mEvil\u{202e}\r\n{}", "x".repeat(100));
         c.write_device_name_once("s", id, &evil).unwrap();
 
         let got = c.device_name("s", id).unwrap();
         assert!(
             !got.chars().any(char::is_control),
             "control character survived: {got:?}"
+        );
+        assert!(
+            !got.chars().any(is_bidi_control),
+            "bidi override survived: {got:?}"
         );
         assert_eq!(got.chars().count(), 64, "name was not capped: {got:?}");
         assert!(got.starts_with("[31mEvil"), "{got:?}");

@@ -20,13 +20,13 @@ Overlapping edits resolve deterministically: the newer commit wins on **every** 
 
 ## Status
 
-MVP, in progress. `dotlore-core` is the only crate that exists today.
+MVP, in progress. All three crates exist; the inline conflict resolver is the last piece.
 
 | Crate | State |
 |---|---|
 | `crates/dotlore-core` | sync engine — git runner, mirroring, cloud bundles, conflict resolution |
-| `crates/dotlore-cli` | planned — command-line front end |
-| `crates/dotlore-app` | planned — GPUI menu-bar app with an inline conflict resolver |
+| `crates/dotlore-cli` | the `dotlore` binary — subcommands plus `dotlore daemon` |
+| `crates/dotlore-app` | GPUI menu-bar app — tray, window, login item (inline conflict resolver in progress) |
 
 ## Requirements
 
