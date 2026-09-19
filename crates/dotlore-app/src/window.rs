@@ -45,6 +45,7 @@ use dotlore_core::daemon::Cmd;
 use dotlore_core::engine::{self, ConflictView, Engine, RootStatus};
 
 use crate::login_item;
+use crate::resolver;
 use crate::state::{AppState, Next, Transition};
 use crate::theme::{self, tone, Tone};
 use crate::tray;
@@ -787,18 +788,76 @@ impl MainWindow {
     }
 
     fn conflicts_section(&self, cx: &Context<Self>) -> impl IntoElement {
-        let s = self.state.read(cx);
-        let lines: Vec<String> = s
-            .conflicts
-            .iter()
-            .map(|(slug, c)| conflict_line(slug, c))
-            .collect();
+        let busy = self.busy(cx);
+        let rows: Vec<(String, ConflictView)> = self.state.read(cx).conflicts.clone();
         v_flex()
             .gap_2()
             .child(Self::header("Conflicts", div(), cx))
-            .child(lines.into_iter().fold(v_flex().gap_1(), |col, l| {
-                col.child(theme::mono_line(l, theme::dim(), cx))
-            }))
+            .child(
+                rows.into_iter()
+                    .enumerate()
+                    .fold(v_flex().gap_1(), |col, (i, (slug, c))| {
+                        let line = conflict_line(&slug, &c);
+                        col.child(
+                            h_flex()
+                                .w_full()
+                                .gap_2()
+                                .items_center()
+                                .justify_between()
+                                .child(div().flex_1().overflow_hidden().child(theme::mono_line(
+                                    line,
+                                    theme::dim(),
+                                    cx,
+                                )))
+                                .child(
+                                    Button::new(SharedString::from(format!("resolve-{i}")))
+                                        .ghost()
+                                        .small()
+                                        .compact()
+                                        .label("Resolve")
+                                        .disabled(busy)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.resolve(slug.clone(), c.clone(), window, cx)
+                                        })),
+                                ),
+                        )
+                    }),
+            )
+    }
+
+    /// Open the resolver on one conflict.
+    ///
+    /// `Engine::open_resolution` takes the home lock, so it goes through
+    /// [`Self::engine_op`] like everything else; the window is opened from
+    /// the callback, once the snapshot is in hand. Only one resolver exists
+    /// at a time — a second `Resolve` brings the open one forward, and says
+    /// so when it is showing a different file, because closing it would throw
+    /// away a draft the user has not saved.
+    fn resolve(
+        &mut self,
+        slug: String,
+        view: ConflictView,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(open) = resolver::focus_existing(cx) {
+            if let Some(message) = blocked_by(&open, &slug, &view.live) {
+                self.error = Some(message);
+                cx.notify();
+            }
+            return;
+        }
+        let state = self.state.clone();
+        let (op_slug, live) = (slug.clone(), view.live.clone());
+        self.engine_op(
+            window,
+            cx,
+            move |e| e.open_resolution(&op_slug, &live),
+            move |this, out, _window, cx| match out {
+                Ok(snapshot) => resolver::open(cx, state, slug, view, snapshot),
+                Err(e) => this.error = Some(e),
+            },
+        );
     }
 
     /// The status bar: one line that says where the whole app stands, and the
@@ -952,6 +1011,25 @@ pub fn conflict_line(slug: &str, c: &ConflictView) -> String {
     format!("{slug} · {live} · from {}{me}", c.loser_name)
 }
 
+/// What a `Resolve` click deserves when a resolver is already open.
+///
+/// `None` when the open window *is* this conflict — bringing it forward is
+/// the whole answer. The key is `(slug, live path)`, both halves: `live` is
+/// root-relative, so two roots that each track a `CLAUDE.md` differ only in
+/// the slug, and comparing paths alone would silently hand the user the wrong
+/// root's window. For the same reason the message names the slug — the bare
+/// path does not say which root is holding the draft.
+fn blocked_by(open: &(String, PathBuf), slug: &str, live: &Path) -> Option<String> {
+    if open.0 == slug && open.1 == live {
+        return None;
+    }
+    Some(format!(
+        "finish the resolution for {} · {} first",
+        tray::one_line(&open.0),
+        tray::one_line(&open.1.display().to_string())
+    ))
+}
+
 fn name_of(p: &Path) -> String {
     p.file_name()
         .and_then(|n| n.to_str())
@@ -1060,6 +1138,43 @@ mod tests {
             conflict_line("proj-claude", &long).ends_with(" · from Air"),
             "the device name survives a path that overruns the bound"
         );
+    }
+
+    #[test]
+    fn two_roots_that_both_track_claude_md_are_told_apart() {
+        let open = ("proj-a".to_string(), PathBuf::from("CLAUDE.md"));
+        assert_eq!(
+            blocked_by(&open, "proj-a", Path::new("CLAUDE.md")),
+            None,
+            "the same conflict: the focused window is the answer"
+        );
+        // The headline case: same root-relative path, different root. The
+        // path alone is the same key, so only the slug distinguishes them.
+        let message = blocked_by(&open, "proj-b", Path::new("CLAUDE.md"))
+            .expect("a different root's CLAUDE.md must not pass for this one");
+        assert_eq!(
+            message,
+            "finish the resolution for proj-a · CLAUDE.md first"
+        );
+        assert!(
+            blocked_by(&open, "proj-a", Path::new("notes/todo.md")).is_some(),
+            "and a different file in the same root still blocks"
+        );
+    }
+
+    #[test]
+    fn the_open_resolvers_key_is_bounded_before_it_is_a_banner() {
+        // `live` came off another device's bundle; a filename may hold a
+        // newline, and the slug reaches here from the same config the
+        // conflict rows do.
+        let open = (
+            format!("s\nlug{}", "x".repeat(200)),
+            PathBuf::from(format!("a\u{1b}]0;pwn\u{7}\n{}", "b".repeat(200))),
+        );
+        let message = blocked_by(&open, "other", Path::new("CLAUDE.md")).expect("must block");
+        assert!(!message.contains('\n'), "{message}");
+        assert!(!message.contains('\u{1b}'), "{message}");
+        assert!(!message.contains('\u{7}'), "{message}");
     }
 
     /// A state whose config names `slugs` and whose last cycle reported

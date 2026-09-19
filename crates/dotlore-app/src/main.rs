@@ -101,8 +101,64 @@
 //! - `Button::compact()` is a public builder that swaps `Small`'s `px_3` for
 //!   `px_1p5`.
 //! - gpui's own `rems`-based `text_*`, `text_right()`, and no letter-spacing.
+//!
+//! Probed for Phase 6 against the same sources — task 2 rendered everything
+//! inline and never went near these, so none of it was confirmed before:
+//!
+//! - Multi-line entry: `InputState::multi_line(bool)`, `code_editor(impl
+//!   Into<SharedString>)`, `rows(usize)`, `soft_wrap(bool)` (**default on**),
+//!   `set_value(impl Into<SharedString>, &mut Window, &mut Context<_>)`.
+//!   There is **no read-only flag** anywhere in `src/input/`:
+//!   `Input::disabled(true)` is the whole of it, and it is enough — the
+//!   element skips binding every editing action, and both writers,
+//!   `replace_text_in_range` and the IME's `replace_and_mark_text_in_range`,
+//!   return early on `state.disabled`, while selection, `copy`, the scroll
+//!   wheel and the `Scrollbar` stay bound. `set_value` clears the flag around
+//!   its own write, so a disabled side can still be refreshed. A disabled
+//!   input draws on `theme().muted`.
+//! - `InputState::value()` is `SharedString::new(self.text.to_string())` off
+//!   the `Rope`, and the rope keeps `\r` (see `rope_ext`'s own doctests), so
+//!   a draft round-trips byte for byte — only a line the user adds gets a
+//!   bare `\n`, as in any editor.
+//! - `code_editor(lang)` sets `searchable = true`, and the search panel draws
+//!   `IconName` SVGs this app has no asset source for, so the resolver turns
+//!   it back off with `searchable(false)`.
+//! - `Sizable for Input`: `xsmall()` is the only step whose `input_text_size`
+//!   is 12 px, which is what the resolver's column arithmetic assumes.
+//!   `Input::h_full()` / `h(DefiniteLength)` size a multi-line editor; the
+//!   font family is inherited from the parent, not set by the component.
+//! - `code_editor` is **json-only at these pins**: `highlighter/languages.rs`
+//!   defines `enum Language { Json }` under `#[cfg(not(feature =
+//!   "tree-sitter-languages"))]`, `Language::from_str` is a bare `return
+//!   Self::Json`, and `registry.language(name)` falls back through it — so
+//!   `code_editor("markdown")` would draw a `CLAUDE.md` through a JSON
+//!   parser. `tree-sitter-languages` is not a default feature and pulls in
+//!   ~30 crates. No `Cargo.toml` change was in scope, so the resolver asks
+//!   for a code editor only for `.json`/`.jsonc`.
+//! - **No modal API is used.** `sheet.rs` / `dialog.rs` were still not
+//!   probed: the amendment of 2026-09-19 made the resolver its own window
+//!   instead, so nothing depends on them.
+//! - Second window: `App::open_window` again, `Window::remove_window()`
+//!   (gpui `window.rs:1375` — it only sets `removed`; the teardown happens
+//!   when the enclosing `update_window` returns) to close it from inside its
+//!   own view, and `WindowHandle::update(cx, …)` — `Err` when the window is
+//!   gone — as the liveness check, since 0.2.2 has no *per-window* close
+//!   notification: `App::on_window_closed` (`app.rs:1806`, driven from
+//!   `app.rs:1378`) is global and carries no `WindowId`, and
+//!   `Window::on_window_should_close` (`window.rs:4329`) is a pre-close veto,
+//!   not a notification.
+//! - Async contexts are **not** interchangeable: `AsyncWindowContext::
+//!   update_entity` routes through its window handle (`async_context.rs:384`)
+//!   and fails once that window is gone, while `AsyncApp`'s goes straight to
+//!   the app (`async_context.rs:23`). `AsyncWindowContext` derefs to
+//!   `AsyncApp`, which is how the resolver's save lands its state change even
+//!   if the user closed the window mid-flight.
+//! - Cross-window state: `gpui::Global` plus `App::default_global::<G>() ->
+//!   &mut G` / `try_global` / `set_global`, which is where the "only one
+//!   resolver, focus the open one" rule lives.
 
 mod login_item;
+mod resolver;
 mod state;
 mod theme;
 mod tray;
