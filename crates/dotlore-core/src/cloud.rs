@@ -73,12 +73,23 @@ impl Cloud {
     }
 
     /// Subdirectories of `base` that hold a `manifest.json`, sorted.
+    ///
+    /// A directory name was written by another device, and every caller
+    /// prints it: `dotlore slugs` today, the Phase 5 list next. A name with a
+    /// control character is dropped rather than stripped — stripping would
+    /// print a slug that exists nowhere, and such a slug can never be linked
+    /// anyway (`Repo::open` accepts `[a-z0-9-]` only). This sits with the other
+    /// things `list_slugs` already skips silently: no manifest, non-UTF-8.
     pub fn list_slugs(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.base) {
             for e in entries.flatten() {
                 if e.path().join("manifest.json").is_file() {
-                    if let Some(name) = e.file_name().to_str() {
+                    if let Some(name) = e
+                        .file_name()
+                        .to_str()
+                        .filter(|n| !n.chars().any(char::is_control))
+                    {
                         out.push(name.to_string());
                     }
                 }
@@ -241,7 +252,7 @@ impl Cloud {
         let path = checked(&self.slug_dir(slug).ok()?.join("devices"), device_id)
             .ok()?
             .join("device.json");
-        read_json_retry::<DeviceFile>(&path).map(|d| d.name)
+        read_json_retry::<DeviceFile>(&path).map(|d| clean_name(&d.name))
     }
 
     /// Device id → human name, for every device dir with a readable
@@ -263,12 +274,20 @@ impl Cloud {
                     Err(_) => continue,
                 };
                 if let Ok(d) = serde_json::from_slice::<DeviceFile>(&bytes) {
-                    out.insert(id, d.name);
+                    out.insert(id, clean_name(&d.name));
                 }
             }
         }
         out
     }
+}
+
+/// A device name comes from another device's `device.json`, so it is as
+/// untrusted as any other cloud byte, and every renderer prints it as one
+/// field of one line. Filtering here rather than in each renderer is why a
+/// control character cannot forge or hide a `conflicts` row.
+fn clean_name(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(64).collect()
 }
 
 /// Ask iCloud to materialise a dataless file. Best effort, errors ignored.
@@ -516,6 +535,26 @@ mod tests {
         assert_eq!(c.list_slugs(), vec!["beta".to_string()]);
     }
 
+    /// A slug directory name is another device's bytes, and `dotlore slugs`
+    /// prints the list straight to the terminal.
+    #[test]
+    fn a_slug_name_with_control_characters_is_not_listed() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        for slug in ["good", "\u{1b}]0;evil\u{7}", "two\rlines"] {
+            c.write_manifest_once(&Manifest {
+                slug: slug.into(),
+                kind: Kind::Dir,
+            })
+            .unwrap();
+        }
+
+        // The directories exist — `plain_name` allows an ESC — so this is the
+        // listing dropping them, not the write failing.
+        assert_eq!(dir_names(&c.base).len(), 3);
+        assert_eq!(c.list_slugs(), vec!["good".to_string()]);
+    }
+
     #[test]
     fn device_names_maps_id_to_name_and_is_not_a_bundle() {
         let td = TempDir::new().unwrap();
@@ -530,5 +569,26 @@ mod tests {
             Some("Thi's MacBook Pro")
         );
         assert!(c.list_bundles("s").is_empty());
+    }
+
+    /// The name is printed by `conflicts`, by `show` and (Phase 5) by the UI.
+    /// An escape sequence there could repaint or hide a row, and an unbounded
+    /// one could push the real rows off screen.
+    #[test]
+    fn a_device_name_is_stripped_of_control_characters_and_capped() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "0123456789abcdef0123456789abcdef";
+        let evil = format!("\u{1b}[31mEvil\r\n{}", "x".repeat(100));
+        c.write_device_name_once("s", id, &evil).unwrap();
+
+        let got = c.device_name("s", id).unwrap();
+        assert!(
+            !got.chars().any(char::is_control),
+            "control character survived: {got:?}"
+        );
+        assert_eq!(got.chars().count(), 64, "name was not capped: {got:?}");
+        assert!(got.starts_with("[31mEvil"), "{got:?}");
+        assert_eq!(c.device_names("s").get(id), Some(&got));
     }
 }

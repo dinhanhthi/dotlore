@@ -90,8 +90,11 @@ pub enum ResolveOutcome {
     /// Something moved between Open and Save; nothing was deleted or written.
     /// Carries the refreshed snapshot so the UI can redisplay.
     Stale(Box<ResolutionSnapshot>),
-    /// The resolution is recorded but not yet applied to the live root; the
-    /// next cycle finishes it. Never a completed save.
+    /// Nothing finished: either an earlier apply this root still owes, or
+    /// this one could not write every path. The next cycle finishes it only
+    /// when nothing is blocked — a blocked path comes back as
+    /// `RootStatus::Error` on the root, and that message names the remedy.
+    /// Never a completed save.
     Pending,
 }
 
@@ -550,7 +553,7 @@ impl Engine {
                     repo.publish(cloud)?;
                     None
                 }
-                ResumeOutcome::Pending(_) => return Ok(stalled(&tx)),
+                ResumeOutcome::Pending(_) => return Ok(stalled(&root.slug, root.kind, &tx)),
             },
             None => None,
         };
@@ -595,7 +598,7 @@ impl Engine {
         tx.set_target(&repo)?;
         if !tx.apply(&repo, &self.home_dir)?.is_empty() {
             // Journal intact; nothing is published until the root agrees.
-            return Ok(stalled(&tx));
+            return Ok(stalled(&root.slug, root.kind, &tx));
         }
         tx.finalize(&repo)?;
         repo.publish(cloud)?;
@@ -883,27 +886,81 @@ fn cloud_at(provider_dir: &Path) -> Cloud {
 /// Why an apply did not finish, as a status a user can act on.
 ///
 /// A path that raced a live edit is genuinely `Pending` — the next cycle picks
-/// it up. A path blocked by a symlink in the live root, or by a target entry
-/// that is not a regular file, is re-skipped on every attempt forever: the
-/// whole root then stops committing and publishing behind the same `Pending`
-/// the UI shows for "no bundles yet", with nothing to act on. That one is
-/// `Error` naming the paths. It is still fail-closed and still retried, so
-/// clearing the path lets the very next cycle finish.
+/// it up. A path blocked by a symlink in the live root, by a target entry that
+/// is not a regular file, or by an entry that maps to no live path at all is
+/// re-skipped on every attempt forever: the whole root then stops committing
+/// and publishing behind the same `Pending` the UI shows for "no bundles yet",
+/// with nothing to act on. That one is `Error` naming the paths.
 ///
 /// The root stays frozen as a whole while any path is blocked: finalizing the
 /// unblocked paths would advance `main` past a root that does not match it,
 /// which is the invariant the transaction exists to hold.
-fn stalled(tx: &Transaction) -> RootStatus {
-    let blocked = tx.blocked();
-    if blocked.is_empty() {
-        return RootStatus::Pending;
+fn stalled(slug: &str, kind: Kind, tx: &Transaction) -> RootStatus {
+    match stall_message(slug, kind, tx.blocked()) {
+        Some(m) => RootStatus::Error(m),
+        None => RootStatus::Pending,
     }
-    let names: Vec<String> = blocked.iter().map(|p| p.display().to_string()).collect();
-    RootStatus::Error(format!(
-        "cannot write {} in the live root: the path is a symlink, or is not a regular file \
-         on one side. Nothing was overwritten; move it aside and the next sync continues.",
-        names.join(", ")
-    ))
+}
+
+/// The blocked-path message, split by what the user can actually do.
+///
+/// Only one of the three causes clears from this Mac: moving aside a symlink
+/// or directory the user owns lets the very next cycle finish. The other two
+/// live in the pinned target, and `cycle` returns `stalled` *before*
+/// `fetch_bundles`, so while the journal stands this device never fetches and
+/// a peer's corrective commit cannot arrive. Rebuilding the staging repo is
+/// then the only exit, so the message names it rather than promising a next
+/// sync that cannot happen.
+///
+/// Separate from [`stalled`] because a `Transaction`'s blocked list can only
+/// be produced by a real apply, and this text is the part worth asserting on.
+fn stall_message(slug: &str, kind: Kind, blocked: &[PathBuf]) -> Option<String> {
+    if blocked.is_empty() {
+        return None;
+    }
+    // A `Kind::File` root has exactly one logical entry, `content`; anything
+    // else in the target tree came from a peer and maps nowhere, whatever the
+    // live file looks like.
+    let (unmappable, unwritable): (Vec<&PathBuf>, Vec<&PathBuf>) = blocked
+        .iter()
+        .partition(|p| kind == Kind::File && p.as_path() != Path::new("content"));
+    let names = |v: &[&PathBuf]| {
+        v.iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut out = Vec::new();
+    if !unmappable.is_empty() {
+        out.push(format!(
+            "cannot map {} into the single-file root {slug}: a peer published an entry beside \
+             `content`, and nothing done to the live file changes that. Nothing was overwritten.",
+            names(&unmappable)
+        ));
+    }
+    if !unwritable.is_empty() {
+        out.push(format!(
+            "cannot write {} in the live root of {slug}: the live path is a symlink or a \
+             directory, or the peer's version of it is not a regular file. Nothing was \
+             overwritten; if it is a path you put there, move it aside and the next sync \
+             continues.",
+            names(&unwritable)
+        ));
+    }
+    // Only the unwritable branch offers a local remedy, so only it gets the
+    // "if that did not work" hinge.
+    let hinge = if unwritable.is_empty() {
+        "Sync"
+    } else {
+        "If that does not apply or does not help, sync"
+    };
+    out.push(format!(
+        "{hinge} for {slug} stays stopped: while this \
+         apply stands the device never fetches, so a peer's correction cannot even arrive. \
+         Once one is published, move repos/{slug} aside under the dotlore home and run \
+         `dotlore recover {slug}`; recover on its own only re-reads the same stopped apply."
+    ));
+    Some(out.join(" "))
 }
 
 fn root_status(repo: &Repo) -> Result<RootStatus> {
@@ -1778,5 +1835,36 @@ mod tests {
         configure_provider(a.home.path(), a.home.path(), first.path()).unwrap();
         assert_eq!(src.list_bundles("proj-claude").len(), 1);
         assert_eq!(head(), before);
+    }
+
+    /// Every blocked path freezes the root, and `cycle` returns before
+    /// `fetch_bundles`, so no peer commit can arrive to unfreeze it. The only
+    /// remedy that always exists is rebuilding the staging repo, so the
+    /// message must name `dotlore recover <slug>` — and it must not tell the
+    /// user to move aside a path no filesystem action can affect.
+    #[test]
+    fn a_blocked_path_is_told_the_remedy_that_exists() {
+        let extra = PathBuf::from("evil.md");
+        let unmappable = stall_message("proj-claude", Kind::File, &[extra]).unwrap();
+        assert!(
+            unmappable.contains("`dotlore recover proj-claude`"),
+            "{unmappable}"
+        );
+        assert!(
+            !unmappable.contains("move it aside"),
+            "a peer's extra entry maps nowhere; moving the live file does nothing: {unmappable}"
+        );
+
+        // A live path the user owns is the one case that does clear locally,
+        // and it still gets the fallback for when the block is the peer's.
+        let live = PathBuf::from("CLAUDE.md");
+        let unwritable = stall_message("proj-claude", Kind::Dir, &[live]).unwrap();
+        assert!(unwritable.contains("move it aside"), "{unwritable}");
+        assert!(
+            unwritable.contains("`dotlore recover proj-claude`"),
+            "{unwritable}"
+        );
+
+        assert_eq!(stall_message("proj-claude", Kind::Dir, &[]), None);
     }
 }

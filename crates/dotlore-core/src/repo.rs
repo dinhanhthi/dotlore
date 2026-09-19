@@ -817,7 +817,8 @@ impl Transaction {
 
     /// Paths the last [`Transaction::apply`] could not write and that no
     /// retry will fix: the live path is (or sits under) a symlink, or holds a
-    /// directory, or the target's entry is not a regular file. A caller that
+    /// directory, or the target's entry is not a regular file, or the entry
+    /// maps to no live path at all ([`Repo::live_path`]). A caller that
     /// reports "skipped" as "pending" would retry these forever and freeze the
     /// root behind a status indistinguishable from "no bundles yet"; these are
     /// the ones a human has to clear.
@@ -896,7 +897,18 @@ impl Transaction {
                     skipped.push(rel);
                     continue;
                 };
-                let live = repo.live_path(&rel)?;
+                let Ok(live) = repo.live_path(&rel) else {
+                    // The entry maps to no live path at all: a `Kind::File`
+                    // root whose target tree carries something besides
+                    // `content`, which only a peer's commit can produce — git
+                    // merges trees, the single-entry rule is ours. Reported
+                    // per path like every other unwritable one; a hard `Err`
+                    // here would abandon the journal mid-`Applying` and take
+                    // the rest of the root down with the one bad entry.
+                    self.blocked.push(rel.clone());
+                    skipped.push(rel);
+                    continue;
+                };
                 let Some(current) = live_state(&repo.root, &live)? else {
                     // The live path is not ours to own — a symlink on it, or a
                     // directory where a file belongs. Fail closed, but say so:
@@ -2284,6 +2296,85 @@ mod tests {
         assert_eq!(
             b.git.rev("refs/heads/main"),
             fx.repo.git.rev("refs/heads/main")
+        );
+    }
+
+    /// A `Kind::File` root has exactly one logical entry, `content`, but the
+    /// tree it merges comes from a peer: git's merge machinery knows nothing
+    /// about that rule, so another device can publish a commit carrying a
+    /// second entry under any name it likes. Mapping it is impossible, so the
+    /// write fails closed — but it is reported as one blocked path, the way an
+    /// unwritable live path is, instead of erroring out of `apply` with the
+    /// name in the message and abandoning the journal in `Applying`.
+    #[test]
+    fn an_unmappable_entry_in_a_file_root_is_blocked_not_an_error() {
+        // The name is what a hostile peer would choose: an OSC 52 clipboard
+        // write, which used to reach the terminal through `apply`'s `Err`.
+        const POISON: &str = "\u{1b}]52;c;ZXZpbA==\u{7}evil.md";
+
+        let fx = fixture();
+        let cloud = fx.cloud();
+        let key = provider_key(&cloud);
+        fx.write("content", b"live one\n");
+        fx.commit();
+        // Committed straight into staging: this entry is exactly the one a
+        // local mirror pass would never produce.
+        fs::write(fx.repo.staging.join(POISON), b"owned\n").unwrap();
+        fx.repo
+            .git
+            .ok(&["add", "-f", "--", &format!(":(literal){POISON}")])
+            .unwrap();
+        fx.repo.git.ok(&["commit", "-m", "poison"]).unwrap();
+        fx.repo.publish(&cloud).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_dir = TempDir::new().unwrap();
+        let b_root = b_dir.path().join("CLAUDE.md");
+        let b = Repo::init(
+            bh.path(),
+            "proj-claude",
+            &b_root,
+            "Mac B Pro",
+            ID_B,
+            Kind::File,
+        )
+        .unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+
+        let mut tx = b
+            .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+            .unwrap();
+        tx.set_target(&b).unwrap();
+        let skipped = tx.apply(&b, bh.path()).unwrap();
+
+        assert_eq!(skipped, vec![PathBuf::from(POISON)]);
+        assert_eq!(
+            tx.blocked(),
+            skipped,
+            "no retry maps it: the target is pinned and the name is in it"
+        );
+        assert_eq!(
+            fs::read(&b_root).unwrap(),
+            b"live one\n",
+            "the one entry that does map is still applied"
+        );
+        // Fail closed: the unmappable entry was not written anywhere.
+        let names: Vec<String> = fs::read_dir(b_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["CLAUDE.md".to_string()]);
+        assert!(!b.has_main(), "nothing finalizes while a path is blocked");
+
+        // The state the exploit needed: a journal left in `Applying` that
+        // `resolve_conflict` resumes before it validates anything. It must
+        // answer with a status, not with an error chain naming POISON.
+        drop(tx);
+        let mut tx = b.pending_tx(no_resolver).unwrap().unwrap();
+        assert_eq!(tx.phase(), Phase::Applying);
+        assert_eq!(
+            tx.resume(&b, bh.path()).unwrap(),
+            ResumeOutcome::Pending(vec![PathBuf::from(POISON)])
         );
     }
 
