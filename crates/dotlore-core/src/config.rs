@@ -31,6 +31,24 @@ pub struct Root {
     pub initializing: bool,
 }
 
+impl Root {
+    /// True when this root lives inside a dotted directory of the user's home
+    /// — an agent's own config (`~/.claude`, `~/.codex`, `~/.config/opencode`)
+    /// rather than a project the user works in.
+    ///
+    /// The rule looks at the first path component under `$HOME`, not the
+    /// immediate parent, so `~/.config/opencode` is still an agent. Names are
+    /// not hard-coded: any new dotted home directory matches without a code change.
+    pub fn is_agent(&self, home_dir: &Path) -> bool {
+        self.path
+            .strip_prefix(home_dir)
+            .ok()
+            .and_then(|rest| rest.components().next())
+            .and_then(|c| c.as_os_str().to_str())
+            .is_some_and(|first| first.starts_with('.'))
+    }
+}
+
 /// Contents of `<home>/config.json`.
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Config {
@@ -310,6 +328,24 @@ mod tests {
     #[test]
     fn sanitize_collapses_and_trims() {
         assert_eq!(sanitize("Thi's MacBook.local"), "thi-s-macbook-local");
+    }
+
+    #[test]
+    fn is_agent_matches_anything_under_a_dotted_home_directory() {
+        let home = Path::new("/Users/x");
+        let root = |path: &str| Root {
+            slug: "t".into(),
+            path: PathBuf::from(path),
+            kind: Kind::Dir,
+            initializing: false,
+        };
+
+        assert!(root("/Users/x/.claude").is_agent(home));
+        assert!(root("/Users/x/.codex").is_agent(home));
+        assert!(root("/Users/x/.config/opencode").is_agent(home));
+        assert!(!root("/Users/x/projects/site").is_agent(home));
+        assert!(!root("/Users/x/Downloads").is_agent(home));
+        assert!(!root("/opt/thing").is_agent(home));
     }
 
     #[test]

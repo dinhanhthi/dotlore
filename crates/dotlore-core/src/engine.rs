@@ -18,6 +18,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::Serialize;
 
 use crate::cloud::{Cloud, Kind, Manifest};
 use crate::config::{self, Config, HomeLock, Root};
@@ -33,7 +34,8 @@ use crate::repo::{
 /// `Pending` is not an error: a linked root whose staging has no `main` yet
 /// because no bundle is readable in the cloud, or an apply that raced a live
 /// edit, is retried on the next cycle with its journal intact.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(tag = "kind", content = "detail")]
 pub enum RootStatus {
     Synced,
     Conflicts(usize),
@@ -44,7 +46,8 @@ pub enum RootStatus {
 }
 
 /// One conflict sibling, ready to display.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ConflictView {
     pub live: PathBuf,
     pub sibling: PathBuf,
@@ -55,7 +58,8 @@ pub struct ConflictView {
 }
 
 /// One side of a resolution, pinned by the blob the UI actually showed.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct SiblingView {
     pub path: PathBuf,
     pub blob: String,
@@ -259,6 +263,34 @@ impl Engine {
         }
         drop(g);
         Ok(out)
+    }
+
+    /// Root-relative paths currently tracked for `slug`, sorted.
+    pub fn tracked_files(&mut self, slug: &str) -> Result<Vec<String>> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let root = self.root_cfg(slug)?;
+        let repo = self.repo_for(&root)?;
+        let out = repo.git.ok(&["ls-files", "-z"])?;
+        drop(g);
+        let mut files: Vec<String> = out
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .filter(|s| !is_internal(s))
+            .filter_map(|s| {
+                if root.kind != Kind::File {
+                    return Some(s.to_string());
+                }
+                if s != "content" {
+                    return None;
+                }
+                root.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .collect();
+        files.sort();
+        Ok(files)
     }
 
     /// The bytes of one exact `(live, sibling)` pair, as committed.
@@ -1088,6 +1120,17 @@ fn resolve_target(path: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Staging-private names: the ignore file, and conflict siblings.
+fn is_internal(path: &str) -> bool {
+    Path::new(path).components().any(|c| match c {
+        Component::Normal(n) => {
+            let n = n.to_string_lossy();
+            n == ".dotloreignore" || n.contains(".conflict-")
+        }
+        _ => true,
+    })
+}
+
 fn kind_of(path: &Path) -> Result<Kind> {
     let md =
         fs::symlink_metadata(path).with_context(|| format!("{} is unreadable", path.display()))?;
@@ -1302,6 +1345,22 @@ mod tests {
     }
 
     #[test]
+    fn root_status_serializes_with_a_uniform_shape() {
+        assert_eq!(
+            serde_json::to_string(&RootStatus::Synced).unwrap(),
+            r#"{"kind":"Synced"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&RootStatus::Conflicts(2)).unwrap(),
+            r#"{"kind":"Conflicts","detail":2}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&RootStatus::Error("boom".into())).unwrap(),
+            r#"{"kind":"Error","detail":"boom"}"#
+        );
+    }
+
+    #[test]
     fn add_root_registers_publishes_and_is_quiescent() {
         let provider = TempDir::new().unwrap();
         let mut a = device(provider.path(), 'a');
@@ -1324,6 +1383,35 @@ mod tests {
             RootStatus::Synced
         );
         assert_eq!(cloud.list_bundles("proj-claude").len(), 1);
+    }
+
+    #[test]
+    fn tracked_files_lists_nested_paths_without_internals() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        write(&a, "docs/nested/b.md", b"b\n");
+        add(&mut a);
+        a.engine.sync_root("proj-claude").unwrap();
+
+        let files = a.engine.tracked_files("proj-claude").unwrap();
+        assert_eq!(files, vec!["CLAUDE.md", "docs/a.md", "docs/nested/b.md"]);
+        assert!(!files.iter().any(|f| f.contains(".dotloreignore")));
+    }
+
+    #[test]
+    fn tracked_files_maps_a_file_root_to_its_basename() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        let path = a.root.path().join("CLAUDE.md");
+        a.engine.add_root(&path, Some("proj-claude")).unwrap();
+        a.engine.sync_root("proj-claude").unwrap();
+
+        let files = a.engine.tracked_files("proj-claude").unwrap();
+        assert_eq!(files, vec!["CLAUDE.md"]);
+        assert_ne!(files, vec!["content".to_string()]);
     }
 
     /// Two devices adding the same slug must not mint unrelated histories:
