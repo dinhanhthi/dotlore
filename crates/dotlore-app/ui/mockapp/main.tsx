@@ -36,11 +36,13 @@ function Root() {
   }
 
   return (
-    <>
-      <App key={remountKey} />
-      <TrafficLights />
+    <div className="flex h-svh w-full overflow-hidden">
+      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+        <App key={remountKey} />
+        <TrafficLights />
+      </div>
       <ScenarioPicker activeId={activeId} onApply={handleApply} />
-    </>
+    </div>
   );
 }
 

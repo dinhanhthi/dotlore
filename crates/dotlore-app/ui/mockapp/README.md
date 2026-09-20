@@ -18,7 +18,7 @@ pnpm mockapp:dev   # http://localhost:38422
 
 ## Scenarios
 
-Pick a scenario from the floating panel (or `?scenario=<id>`).
+Pick a scenario from the right sidebar (or `?scenario=<id>`).
 
 | ID            | Screen                                      |
 | ------------- | ------------------------------------------- |

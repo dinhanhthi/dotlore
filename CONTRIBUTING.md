@@ -22,7 +22,7 @@ The scripts in `package.json` wrap the engine gates. Those gates still apply: `c
 pnpm mockapp:dev   # http://localhost:38422
 ```
 
-Pick a scenario from the floating panel (or `?scenario=<id>`). **Never change `ui/src` components to make the browser happy** — fix `ui/mockapp/mocks/` instead. Details: [`crates/dotlore-app/ui/mockapp/README.md`](crates/dotlore-app/ui/mockapp/README.md).
+Pick a scenario from the right sidebar (or `?scenario=<id>`). **Never change `ui/src` components to make the browser happy** — fix `ui/mockapp/mocks/` instead. Details: [`crates/dotlore-app/ui/mockapp/README.md`](crates/dotlore-app/ui/mockapp/README.md).
 
 ## Invariants
 
