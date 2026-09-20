@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "mockapp:dev": "bash ../../../scripts/mockapp-dev.sh",
+    "mockapp:build": "tsc -p mockapp/tsconfig.json --noEmit && vite build --config mockapp/vite.config.ts",
     "test": "vitest run"
   },
   "dependencies": {

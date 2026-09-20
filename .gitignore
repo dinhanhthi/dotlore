@@ -1,5 +1,3 @@
-
-
 # >>> coding-friend managed
 docs/plans/
 docs/memory/
@@ -13,4 +11,7 @@ docs/later/
 # <<< coding-friend managed
 /target
 /node_modules
+/crates/dotlore-app/ui/mockapp/dist
 CLAUDE.md
+.hallmark/
+design.md

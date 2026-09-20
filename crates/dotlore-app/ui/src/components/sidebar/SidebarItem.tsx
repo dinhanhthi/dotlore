@@ -63,8 +63,10 @@ export function SidebarItem({
     <div
       id={id}
       className={cn(
-        "group relative flex h-row w-full items-center gap-1.5 px-pad-x",
-        selected && "bg-white/[0.06]",
+        "group relative flex h-row w-full items-center gap-2 px-3",
+        "transition-colors duration-[var(--dur-short)] ease-[var(--ease-out)]",
+        "hover:bg-sidebar-accent/80",
+        selected && "bg-sidebar-accent",
       )}
     >
       {selected && (
@@ -79,12 +81,12 @@ export function SidebarItem({
         {statusKind ? (
           <span
             aria-hidden
-            className={cn("size-2 shrink-0 rounded-full", statusDotClass(statusKind))}
+            className={cn("size-2.5 shrink-0 rounded-full", statusDotClass(statusKind))}
           />
         ) : (
           leading
         )}
-        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className="min-w-0 flex-1 truncate text-[13px]">{label}</span>
       </button>
       {conflictCount > 0 && (
         <button
@@ -98,7 +100,7 @@ export function SidebarItem({
         >
           <Badge
             variant="secondary"
-            className="h-4 min-w-4 px-1 text-[10px] tabular-nums"
+            className="h-5 min-w-5 px-1.5 text-xs tabular-nums"
           >
             {conflictCount}
           </Badge>
@@ -122,7 +124,7 @@ export function SidebarItem({
         >
           <Star
             aria-hidden
-            className={cn("size-3", starred && "fill-current text-foreground")}
+            className={cn("size-4", starred && "fill-current text-foreground")}
           />
         </button>
       )}

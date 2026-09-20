@@ -14,6 +14,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { loginItemEnabled, setLoginItem } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
+import { readTheme, writeTheme, type Theme } from "@/lib/theme";
 
 const APP_VERSION = "0.1.0";
 export const GIT_INSTALL_CMD = "xcode-select --install";
@@ -58,6 +59,7 @@ export function SettingsPopover() {
   const [changing, setChanging] = useState(false);
   const [loginOn, setLoginOn] = useState(false);
   const [version, setVersion] = useState(APP_VERSION);
+  const [theme, setTheme] = useState<Theme>(() => readTheme());
 
   useEffect(() => {
     void loginItemEnabled()
@@ -96,7 +98,7 @@ export function SettingsPopover() {
           <Button
             variant="ghost"
             size="icon-xs"
-            className="size-5 text-muted-foreground"
+            className="text-muted-foreground"
             aria-label="Settings"
           />
         }
@@ -125,6 +127,35 @@ export function SettingsPopover() {
         {changing ? (
           <ProviderChooser compact onApplied={() => setChanging(false)} />
         ) : null}
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm">Appearance</span>
+          <div className="flex rounded-lg border border-border p-0.5">
+            <Button
+              type="button"
+              variant={theme === "light" ? "secondary" : "ghost"}
+              size="xs"
+              aria-pressed={theme === "light"}
+              onClick={() => {
+                setTheme("light");
+                writeTheme("light");
+              }}
+            >
+              Light
+            </Button>
+            <Button
+              type="button"
+              variant={theme === "dark" ? "secondary" : "ghost"}
+              size="xs"
+              aria-pressed={theme === "dark"}
+              onClick={() => {
+                setTheme("dark");
+                writeTheme("dark");
+              }}
+            >
+              Dark
+            </Button>
+          </div>
+        </div>
         <div className="flex items-center justify-between gap-3">
           <label htmlFor="start-at-login" className="text-sm">
             Start at login

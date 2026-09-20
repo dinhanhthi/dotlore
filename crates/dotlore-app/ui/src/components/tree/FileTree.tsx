@@ -78,7 +78,7 @@ export function FileTree() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex h-row shrink-0 items-center gap-2 border-b border-border px-pad-x">
+      <header className="flex h-row shrink-0 items-center gap-3 border-b border-border px-3">
         <span className="min-w-0 flex-1 truncate text-foreground">{root.name}</span>
         <span className="shrink-0 tabular-nums text-muted-foreground">
           {paths.length} {paths.length === 1 ? "file" : "files"}
@@ -86,7 +86,7 @@ export function FileTree() {
         <Button
           variant="ghost"
           size="xs"
-          className="h-5 px-1.5 text-[11px] text-muted-foreground"
+          className="text-muted-foreground"
           disabled={busy}
           onClick={() => {
             void syncNow().catch(() => {

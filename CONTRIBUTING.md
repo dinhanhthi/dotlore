@@ -14,6 +14,16 @@ pnpm build
 
 The scripts in `package.json` wrap the engine gates. Those gates still apply: `cargo build -p dotlore-core` and `cargo build -p dotlore-app` must be warning-free. `pnpm tauri dev` and `pnpm build` prepare the CLI sidecar (`crates/dotlore-app/binaries/dotlore-<host-triple>`) and `ui/dist` so you do not have to.
 
+## UI playground (`mockapp/`)
+
+`crates/dotlore-app/ui/mockapp/` is a browser-only preview of the real app UI. It mounts the same `crates/dotlore-app/ui/src/App.tsx` with a mocked Tauri IPC layer and selectable fake-data scenarios — useful for iterating on CSS without compiling Rust.
+
+```sh
+pnpm mockapp:dev   # http://localhost:38422
+```
+
+Pick a scenario from the floating panel (or `?scenario=<id>`). **Never change `ui/src` components to make the browser happy** — fix `ui/mockapp/mocks/` instead. Details: [`crates/dotlore-app/ui/mockapp/README.md`](crates/dotlore-app/ui/mockapp/README.md).
+
 ## Invariants
 
 These are not style rules. The engine's correctness rests on them, and each one exists because breaking it loses or leaks someone's data.

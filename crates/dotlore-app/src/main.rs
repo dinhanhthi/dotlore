@@ -24,25 +24,26 @@ fn main() {
     let home = config::default_home();
     let home_dir = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
 
-    let cfg = match load(&home) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("dotlore: {e:#}");
-            std::process::exit(1);
-        }
-    };
+    if let Err(e) = load(&home) {
+        eprintln!("dotlore: {e:#}");
+        std::process::exit(1);
+    }
     // Held, not dropped: the binding keeps the file — and the lock — alive for
     // as long as the process, and `App::run` never returns.
     let _instance = single_instance(&home);
-    let no_provider = cfg.provider_dir.is_none();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            // Regular (the Tauri default) keeps the Dock icon. Accessory
+            // hid the app from the Dock and left only the menu-bar item.
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             if let Some(window) = app.get_webview_window(WINDOW) {
+                if let Some(icon) = app.default_window_icon() {
+                    let _ = window.set_icon(icon.clone());
+                }
                 let handle = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
@@ -55,12 +56,7 @@ fn main() {
             app.manage(AppState::new(home, home_dir));
             app.state::<AppState>().start_runtime(app.handle());
             tray::build(app)?;
-
-            // Nothing can sync until a provider is picked, and the window is
-            // the only place to pick one.
-            if no_provider {
-                show_window(app.handle());
-            }
+            show_window(app.handle());
 
             Ok(())
         })
@@ -108,7 +104,6 @@ pub(crate) fn hide_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW) {
         let _ = window.hide();
     }
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 }
 
 /// Fresh config under the home lock.

@@ -254,7 +254,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
                 type="button"
                 onClick={() => setSiblingIndex(index)}
                 className={cn(
-                  "h-5 shrink-0 rounded-sm px-1.5 text-[11px]",
+                  "h-6 shrink-0 rounded-sm px-2 text-xs",
                   index === siblingIndex
                     ? "bg-white/[0.06] text-foreground"
                     : "text-muted-foreground hover:text-foreground",
@@ -356,12 +356,12 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
                 Discard this sibling file
               </label>
             ) : null}
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               Unchecked siblings stay as files next to {liveName(rel)}.
             </p>
           </>
         ) : (
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             Keeping one side discards every sibling of {liveName(rel)}.
           </p>
         )}

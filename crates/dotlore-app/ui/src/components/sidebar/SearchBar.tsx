@@ -9,11 +9,11 @@ type SearchBarProps = {
 
 export function SearchBar({ value, onChange }: SearchBarProps) {
   return (
-    <div className="px-pad-x py-1.5">
+    <div className="min-w-0 flex-1">
       <div className="relative">
         <Search
           aria-hidden
-          className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
+          className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
           type="search"
@@ -23,7 +23,7 @@ export function SearchBar({ value, onChange }: SearchBarProps) {
           autoComplete="off"
           spellCheck={false}
           aria-label="Search agents or projects"
-          className="h-row pl-7"
+          className="h-8 pl-8"
         />
       </div>
     </div>

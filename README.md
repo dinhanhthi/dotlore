@@ -66,6 +66,7 @@ export DOTLORE_HOME="$HOME/Downloads/dotlore"
 P=$(mktemp -d)
 
 pnpm tauri dev                    # desktop app (opens the window if provider is unset)
+pnpm mockapp:dev                  # browser UI preview (mocked backend) — http://localhost:38422
 
 pnpm cli -- provider "$P"
 pnpm cli -- add /path/to/folder --slug demo

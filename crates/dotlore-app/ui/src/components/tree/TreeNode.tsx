@@ -42,10 +42,12 @@ export function TreeNode({
     <>
       <div
         className={cn(
-          "group relative flex h-row w-full items-center gap-1",
-          selected && "bg-white/[0.06]",
+          "group relative flex h-row w-full items-center gap-2 pr-3",
+          "transition-colors duration-[var(--dur-short)] ease-[var(--ease-out)]",
+          "hover:bg-muted/70",
+          selected && "bg-muted",
         )}
-        style={{ paddingLeft: 8 + depth * 12, paddingRight: 8 }}
+        style={{ paddingLeft: 12 + depth * 14 }}
       >
         {selected && (
           <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-primary" />
@@ -56,27 +58,26 @@ export function TreeNode({
             aria-expanded={open}
             aria-label={open ? `Collapse ${node.name}` : `Expand ${node.name}`}
             onClick={() => onToggle(node.path, depth)}
-            className="flex min-w-0 flex-1 items-center gap-1 text-left text-foreground"
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground"
           >
             {open ? (
-              <ChevronDown aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+              <ChevronDown aria-hidden className="size-4 shrink-0 text-muted-foreground" />
             ) : (
-              <ChevronRight aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+              <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
             )}
-            <StatusMark status={status} />
             <span className="min-w-0 truncate">{node.name}</span>
           </button>
         ) : (
           <button
             type="button"
             onClick={() => onSelect(node.path)}
-            className="flex min-w-0 flex-1 items-center gap-1 text-left text-foreground"
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground"
           >
-            <span className="size-3 shrink-0" aria-hidden />
-            <StatusMark status={status} />
+            <span className="size-4 shrink-0" aria-hidden />
             <span className="min-w-0 truncate">{node.name}</span>
           </button>
         )}
+        <StatusMark status={status} />
       </div>
       {open &&
         node.children.map((child) => (
@@ -97,16 +98,14 @@ export function TreeNode({
 
 function StatusMark({ status }: { status: FileStatus }) {
   return (
-    <span className="flex shrink-0 items-center gap-0.5">
+    <span
+      className="ml-auto flex w-4 shrink-0 items-center justify-center"
+      aria-label={status}
+    >
       <span
         aria-hidden
-        className={cn("h-[6px] w-[6px] rounded-full", statusDotClass(status))}
+        className={cn("size-2 rounded-full", statusDotClass(status))}
       />
-      {status === "conflict" && (
-        <span aria-hidden className="text-[9px] leading-none text-status-conflict">
-          ▲
-        </span>
-      )}
     </span>
   );
 }

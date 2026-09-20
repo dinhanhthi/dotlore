@@ -123,11 +123,11 @@ export function Footer() {
   }
 
   return (
-    <footer className="flex h-6 items-center gap-3 border-t border-border px-2 text-[11px] text-muted-foreground">
-      <div className="flex min-w-0 flex-1 items-center gap-1.5" aria-busy={busy}>
+    <footer className="flex h-11 items-center gap-4 border-t border-border px-3 text-[13px] text-muted-foreground">
+      <div className="flex min-w-0 flex-1 items-center gap-2.5" aria-busy={busy}>
         {busy ? (
           <>
-            <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />
+            <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
             <span className="truncate">Working…</span>
           </>
         ) : status.glyph === "warn" ? (
@@ -136,7 +136,7 @@ export function Footer() {
           </span>
         ) : (
           <span
-            className={cn("size-2 shrink-0 rounded-full", status.color)}
+            className={cn("size-2.5 shrink-0 rounded-full", status.color)}
             aria-hidden
           />
         )}
@@ -146,11 +146,11 @@ export function Footer() {
         )}
       </div>
       {resolvingRel && selectedSlug ? (
-        <div className="flex shrink-0 items-center gap-1 tabular-nums">
+        <div className="flex shrink-0 items-center gap-2 tabular-nums">
           <Button
             variant="ghost"
             size="xs"
-            className="h-5 px-1.5 text-[11px] text-muted-foreground"
+            className="text-muted-foreground"
             disabled={!canStep}
             aria-label="Previous conflict"
             onClick={() => stepConflict(-1)}
@@ -163,7 +163,7 @@ export function Footer() {
           <Button
             variant="ghost"
             size="xs"
-            className="h-5 px-1.5 text-[11px] text-muted-foreground"
+            className="text-muted-foreground"
             disabled={!canStep}
             aria-label="Next conflict"
             onClick={() => stepConflict(1)}
@@ -177,9 +177,9 @@ export function Footer() {
           conflicts
         </div>
       )}
-      <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+      <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
         <span
-          className="min-w-0 truncate font-path text-[11px]"
+          className="min-w-0 truncate font-path"
           title={providerDir ?? "No cloud folder set"}
         >
           {shortProvider}
@@ -187,7 +187,7 @@ export function Footer() {
         <Button
           variant="ghost"
           size="xs"
-          className="h-5 px-1.5 text-[11px] text-muted-foreground"
+          className="text-muted-foreground"
           disabled={busy || providerDir === null}
           onClick={() => {
             void syncNow().catch(() => {

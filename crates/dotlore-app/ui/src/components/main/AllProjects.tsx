@@ -5,7 +5,7 @@ import type { RootRow } from "@/lib/types";
 
 function CardGrid({ rows }: { rows: RootRow[] }) {
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
       {rows.map((row) => (
         <RootCard key={row.slug} row={row} />
       ))}
@@ -28,7 +28,7 @@ export function AllProjects() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-6 p-4">
+      <div className="flex flex-col gap-8 p-6">
         {agents.length > 0 && (
           <section>
             <h2 className="mb-3 text-label text-muted-foreground">Agents</h2>

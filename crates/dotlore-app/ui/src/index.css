@@ -1,3 +1,4 @@
+/* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app */
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -11,11 +12,14 @@
     BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
-  --text-base: 13px;
-  --text-label: 11px;
-  --text-mono: 12px;
-  --spacing-row: 28px;
-  --spacing-pad-x: 8px;
+  --text-base: 15px;
+  --text-label: 13px;
+  --text-mono: 14px;
+  --spacing-row: 36px;
+  --spacing-pad-x: 12px;
+  --spacing-titlebar: 40px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-short: 160ms;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -62,6 +66,47 @@
 }
 
 :root {
+  color-scheme: light;
+  --background: #f6f6f7;
+  --foreground: #1a1b1e;
+  --card: #ffffff;
+  --card-foreground: #1a1b1e;
+  --panel: #ffffff;
+  --popover: #ffffff;
+  --popover-foreground: #1a1b1e;
+  --primary: #5e6ad2;
+  --primary-foreground: #f7f8f8;
+  --secondary: #ececee;
+  --secondary-foreground: #1a1b1e;
+  --muted: #ececee;
+  --muted-foreground: #6b6f76;
+  --accent: #ececee;
+  --accent-foreground: #1a1b1e;
+  --destructive: #d94841;
+  --border: #e2e3e6;
+  --input: #e2e3e6;
+  --ring: #5e6ad2;
+  --chart-1: #5e6ad2;
+  --chart-2: #3d9a6a;
+  --chart-3: #d4892a;
+  --chart-4: #d94841;
+  --chart-5: #6b6f76;
+  --radius: 8px;
+  --sidebar: #f0f1f3;
+  --sidebar-foreground: #1a1b1e;
+  --sidebar-primary: #5e6ad2;
+  --sidebar-primary-foreground: #f7f8f8;
+  --sidebar-accent: #e4e5e8;
+  --sidebar-accent-foreground: #1a1b1e;
+  --sidebar-border: #e2e3e6;
+  --sidebar-ring: #5e6ad2;
+  --status-synced: #3d9a6a;
+  --status-conflict: #d4892a;
+  --status-error: #d94841;
+  --status-pending: #6b6f76;
+}
+
+.dark {
   color-scheme: dark;
   --background: #08090a;
   --foreground: #f7f8f8;
@@ -72,7 +117,7 @@
   --popover-foreground: #f7f8f8;
   --primary: #5e6ad2;
   --primary-foreground: #f7f8f8;
-  --secondary: #0f1011;
+  --secondary: #151617;
   --secondary-foreground: #f7f8f8;
   --muted: #151617;
   --muted-foreground: #8a8f98;
@@ -87,47 +132,7 @@
   --chart-3: #f2994a;
   --chart-4: #eb5757;
   --chart-5: #8a8f98;
-  --radius: 6px;
-  --sidebar: #0b0c0d;
-  --sidebar-foreground: #f7f8f8;
-  --sidebar-primary: #5e6ad2;
-  --sidebar-primary-foreground: #f7f8f8;
-  --sidebar-accent: #151617;
-  --sidebar-accent-foreground: #f7f8f8;
-  --sidebar-border: #1f2023;
-  --sidebar-ring: #5e6ad2;
-  --status-synced: #4cb782;
-  --status-conflict: #f2994a;
-  --status-error: #eb5757;
-  --status-pending: #8a8f98;
-}
-
-.dark {
-  --background: #08090a;
-  --foreground: #f7f8f8;
-  --card: #0f1011;
-  --card-foreground: #f7f8f8;
-  --panel: #0f1011;
-  --popover: #0f1011;
-  --popover-foreground: #f7f8f8;
-  --primary: #5e6ad2;
-  --primary-foreground: #f7f8f8;
-  --secondary: #0f1011;
-  --secondary-foreground: #f7f8f8;
-  --muted: #151617;
-  --muted-foreground: #8a8f98;
-  --accent: #151617;
-  --accent-foreground: #f7f8f8;
-  --destructive: #eb5757;
-  --border: #1f2023;
-  --input: #1f2023;
-  --ring: #5e6ad2;
-  --chart-1: #5e6ad2;
-  --chart-2: #4cb782;
-  --chart-3: #f2994a;
-  --chart-4: #eb5757;
-  --chart-5: #8a8f98;
-  --radius: 6px;
+  --radius: 8px;
   --sidebar: #0b0c0d;
   --sidebar-foreground: #f7f8f8;
   --sidebar-primary: #5e6ad2;
@@ -149,24 +154,37 @@
 
   html {
     @apply bg-background font-sans text-foreground;
-    font-size: 13px;
+    font-size: 15px;
   }
 
   body {
     @apply bg-background text-foreground;
-    font-size: 13px;
+    font-size: 15px;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html,
+    body {
+      transition:
+        background-color var(--dur-short) var(--ease-out),
+        color var(--dur-short) var(--ease-out);
+    }
   }
 }
 
 @utility text-label {
-  font-size: 11px;
-  letter-spacing: 0.05em;
+  font-size: var(--text-label);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 @utility font-path {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-mono);
+}
+
+@utility ease-out-soft {
+  transition-timing-function: var(--ease-out);
 }
 
 .cm-merge-host .cm-mergeView {

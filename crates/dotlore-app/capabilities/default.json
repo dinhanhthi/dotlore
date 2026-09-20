@@ -1,5 +1,10 @@
 {
   "identifier": "default",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "opener:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "dialog:default",
+    "opener:default"
+  ]
 }

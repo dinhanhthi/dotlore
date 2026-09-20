@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { viewerExtensions } from "@/lib/cm";
 import { readFile } from "@/lib/ipc";
+import { composeLivePath } from "@/lib/path";
 import { useRoots } from "@/lib/roots";
 import type { FileContent } from "@/lib/types";
 
@@ -24,15 +25,6 @@ function errorMessage(error: unknown): string {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   return "Could not read file";
-}
-
-/** Kind::File root is the file itself; Dir roots join `path` + `rel`. */
-function composeLivePath(rootPath: string, rel: string): string {
-  const base = rootPath.replace(/[/\\]+$/, "");
-  const norm = rel.replace(/\\/g, "/");
-  const last = base.split("/").pop() ?? "";
-  if (norm === last) return base;
-  return `${base}/${norm}`;
 }
 
 function ReadOnlyEditor({ rel, text }: { rel: string; text: string }) {
@@ -105,7 +97,7 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex h-row shrink-0 items-center gap-2 border-b border-border px-pad-x">
+      <header className="flex h-row shrink-0 items-center gap-3 border-b border-border px-4">
         <span className="min-w-0 flex-1 truncate font-path" title={rel}>
           {rel}
         </span>
@@ -115,7 +107,7 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
         <Button
           variant="ghost"
           size="xs"
-          className="h-5 px-1.5 text-[11px] text-muted-foreground"
+          className="text-muted-foreground"
           disabled={!livePath}
           onClick={reveal}
         >

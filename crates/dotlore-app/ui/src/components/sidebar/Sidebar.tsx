@@ -196,16 +196,16 @@ export function Sidebar() {
 
   return (
     <nav aria-label="Roots" className="flex h-full min-h-0 flex-col">
-      <SearchBar value={query} onChange={setQuery} />
-      <div className="flex justify-end px-pad-x pb-1">
+      <div className="flex items-center gap-2 px-3 pt-3 pb-2">
+        <SearchBar value={query} onChange={setQuery} />
         <Button
           type="button"
-          variant="ghost"
-          size="xs"
+          variant="outline"
+          size="sm"
           disabled={busy}
           onClick={() => setLinkOpen(true)}
         >
-          Link…
+          Link
         </Button>
       </div>
       <ScrollArea className="min-h-0 flex-1">
@@ -223,7 +223,7 @@ export function Sidebar() {
           label="All projects"
           selected={view === "all"}
           leading={
-            <LayoutGrid aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+            <LayoutGrid aria-hidden className="size-4 shrink-0 text-muted-foreground" />
           }
           onClick={showAllProjects}
         />
