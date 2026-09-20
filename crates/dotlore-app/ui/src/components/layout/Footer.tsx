@@ -1,3 +1,6 @@
+import { Loader2 } from "lucide-react";
+
+import { SettingsPopover } from "@/components/settings/SettingsPopover";
 import { Button } from "@/components/ui/button";
 import { syncNow } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
@@ -57,7 +60,7 @@ export function shortenProvider(path: string): string {
 }
 
 export function Footer() {
-  const { roots, providerDir, trackedBySlug } = useRoots();
+  const { roots, providerDir, trackedBySlug, error, busy } = useRoots();
   const status = aggregateStatus(providerDir, roots);
   const filesTracked = Object.values(trackedBySlug).reduce((n, c) => n + c, 0);
   const conflicts = roots.reduce((n, r) => n + conflictCount(r.status), 0);
@@ -66,8 +69,13 @@ export function Footer() {
 
   return (
     <footer className="flex h-6 items-center gap-3 border-t border-border px-2 text-[11px] text-muted-foreground">
-      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-        {status.glyph === "warn" ? (
+      <div className="flex min-w-0 flex-1 items-center gap-1.5" aria-busy={busy}>
+        {busy ? (
+          <>
+            <Loader2 className="size-3 shrink-0 animate-spin" aria-hidden />
+            <span className="truncate">Working…</span>
+          </>
+        ) : status.glyph === "warn" ? (
           <span className={cn("shrink-0 leading-none", status.color)} aria-hidden>
             ▲
           </span>
@@ -77,7 +85,10 @@ export function Footer() {
             aria-hidden
           />
         )}
-        <span className="truncate">{status.text}</span>
+        {!busy && <span className="truncate">{status.text}</span>}
+        {error !== null && (
+          <span className="min-w-0 truncate text-[#eb5757]">{error}</span>
+        )}
       </div>
       <div className="shrink-0 tabular-nums">
         {roots.length} roots · {filesTracked} files tracked · {conflicts}{" "}
@@ -94,13 +105,16 @@ export function Footer() {
           variant="ghost"
           size="xs"
           className="h-5 px-1.5 text-[11px] text-muted-foreground"
-          disabled={providerDir === null}
+          disabled={busy || providerDir === null}
           onClick={() => {
-            void syncNow();
+            void syncNow().catch(() => {
+              // Banner is set by `run()`.
+            });
           }}
         >
           Sync now
         </Button>
+        <SettingsPopover />
       </div>
     </footer>
   );

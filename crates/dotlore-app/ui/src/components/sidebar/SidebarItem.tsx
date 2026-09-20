@@ -1,7 +1,13 @@
 import { Star } from "lucide-react";
-import type { MouseEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import type { RootStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -31,6 +37,9 @@ type SidebarItemProps = {
   starred?: boolean;
   onClick: () => void;
   onToggleStar?: () => void;
+  onRemove?: () => void;
+  onRecover?: () => void;
+  writeDisabled?: boolean;
 };
 
 export function SidebarItem({
@@ -44,21 +53,17 @@ export function SidebarItem({
   starred = false,
   onClick,
   onToggleStar,
+  onRemove,
+  onRecover,
+  writeDisabled = false,
 }: SidebarItemProps) {
-  function handleContextMenu(event: MouseEvent) {
-    if (!onToggleStar) return;
-    event.preventDefault();
-    onToggleStar();
-  }
-
-  return (
+  const row = (
     <div
       id={id}
       className={cn(
         "group relative flex h-row w-full items-center gap-1.5 px-pad-x",
         selected && "bg-white/[0.06]",
       )}
-      onContextMenu={handleContextMenu}
     >
       {selected && (
         <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-primary" />
@@ -110,5 +115,27 @@ export function SidebarItem({
         </button>
       )}
     </div>
+  );
+
+  if (!onRemove) return row;
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={<div className="w-full" />}>{row}</ContextMenuTrigger>
+      <ContextMenuContent className="min-w-40">
+        {onRecover && (
+          <ContextMenuItem disabled={writeDisabled} onClick={onRecover}>
+            Recover
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem
+          variant="destructive"
+          disabled={writeDisabled}
+          onClick={onRemove}
+        >
+          Remove from Dotlore
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }

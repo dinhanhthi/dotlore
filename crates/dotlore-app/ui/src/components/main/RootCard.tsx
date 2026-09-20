@@ -1,5 +1,15 @@
-import { Star } from "lucide-react";
+import { useState } from "react";
+import { MoreHorizontal, Star } from "lucide-react";
 
+import { RemoveRootAlert } from "@/components/sidebar/RemoveRootAlert";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { recoverRoot } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
 import type { RootRow, RootStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -49,9 +59,27 @@ type RootCardProps = {
 };
 
 export function RootCard({ row }: RootCardProps) {
-  const { trackedBySlug, starredSlugs, selectRoot, toggleStar } = useRoots();
+  const {
+    trackedBySlug,
+    starredSlugs,
+    selectRoot,
+    toggleStar,
+    refreshRoots,
+    busy,
+  } = useRoots();
   const starred = starredSlugs.includes(row.slug);
   const fileCount = trackedBySlug[row.slug] ?? 0;
+  const [removeOpen, setRemoveOpen] = useState(false);
+
+  async function handleRecover() {
+    if (busy) return;
+    try {
+      await recoverRoot(row.slug);
+      await refreshRoots();
+    } catch {
+      // Banner is set by `run()`.
+    }
+  }
 
   return (
     <div
@@ -63,7 +91,7 @@ export function RootCard({ row }: RootCardProps) {
       <button
         type="button"
         onClick={() => selectRoot(row.slug, { focusSidebar: true })}
-        className="flex flex-col gap-2 pr-6 text-left"
+        className="flex flex-col gap-2 pr-14 text-left"
       >
         <span className="truncate text-foreground">{row.name}</span>
         <span
@@ -83,21 +111,62 @@ export function RootCard({ row }: RootCardProps) {
           {fileCount} {fileCount === 1 ? "file" : "files"}
         </span>
       </button>
-      <button
-        type="button"
-        aria-label={starred ? "Unstar" : "Star"}
-        aria-pressed={starred}
-        onClick={() => toggleStar(row.slug)}
-        className={cn(
-          "absolute top-2.5 right-2.5 rounded-sm p-0.5 text-muted-foreground hover:text-foreground",
-          starred && "text-foreground",
-        )}
-      >
-        <Star
-          aria-hidden
-          className={cn("size-3.5", starred && "fill-current")}
-        />
-      </button>
+      <div className="absolute top-2.5 right-2.5 flex items-center">
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Root actions"
+                className="text-muted-foreground hover:text-foreground"
+              />
+            }
+          >
+            <MoreHorizontal aria-hidden />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-40">
+            {row.status.kind === "Error" && (
+              <DropdownMenuItem
+                disabled={busy}
+                onClick={() => {
+                  void handleRecover();
+                }}
+              >
+                Recover
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem
+              variant="destructive"
+              disabled={busy}
+              onClick={() => setRemoveOpen(true)}
+            >
+              Remove from Dotlore
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <button
+          type="button"
+          aria-label={starred ? "Unstar" : "Star"}
+          aria-pressed={starred}
+          onClick={() => toggleStar(row.slug)}
+          className={cn(
+            "rounded-sm p-0.5 text-muted-foreground hover:text-foreground",
+            starred && "text-foreground",
+          )}
+        >
+          <Star
+            aria-hidden
+            className={cn("size-3.5", starred && "fill-current")}
+          />
+        </button>
+      </div>
+      <RemoveRootAlert
+        slug={row.slug}
+        name={row.name}
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+      />
     </div>
   );
 }

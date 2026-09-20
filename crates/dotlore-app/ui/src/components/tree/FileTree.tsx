@@ -13,7 +13,7 @@ function conflictPathSet(views: ConflictView[]): Set<string> {
 }
 
 export function FileTree() {
-  const { roots, selectedSlug, selectedRel, selectFile } = useRoots();
+  const { roots, selectedSlug, selectedRel, selectFile, busy } = useRoots();
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
 
   const [paths, setPaths] = useState<string[]>([]);
@@ -86,8 +86,11 @@ export function FileTree() {
           variant="ghost"
           size="xs"
           className="h-5 px-1.5 text-[11px] text-muted-foreground"
+          disabled={busy}
           onClick={() => {
-            void syncNow();
+            void syncNow().catch(() => {
+              // Banner is set by `run()`.
+            });
           }}
         >
           Sync

@@ -32,6 +32,14 @@ export type RootsContextValue = RootsState & {
   selectFile: (rel: string) => void;
   showAllProjects: () => void;
   toggleStar: (slug: string) => void;
+  /** Set `providerDir` immediately so onboarding unmounts, then refresh roots. */
+  applyProvider: (dir: string) => void;
+  /** Re-fetch `list_roots` and file counts after add / link / remove / recover. */
+  refreshRoots: () => Promise<void>;
+  inflight: number;
+  busy: boolean;
+  banner: string | null;
+  setBanner: (message: string | null) => void;
 };
 
 export const emptyRootsState: RootsState = {

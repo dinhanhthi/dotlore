@@ -6,6 +6,7 @@ type SidebarSectionProps = {
   title: string;
   collapsed: boolean;
   onToggle: () => void;
+  action?: ReactNode;
   children: ReactNode;
 };
 
@@ -14,24 +15,28 @@ export function SidebarSection({
   title,
   collapsed,
   onToggle,
+  action,
   children,
 }: SidebarSectionProps) {
   return (
     <section aria-labelledby={`sidebar-section-${id}`}>
-      <button
-        type="button"
-        id={`sidebar-section-${id}`}
-        aria-expanded={!collapsed}
-        onClick={onToggle}
-        className="flex h-row w-full items-center gap-1 px-pad-x text-label text-muted-foreground hover:text-foreground"
-      >
-        {collapsed ? (
-          <ChevronRight aria-hidden className="size-3 shrink-0" />
-        ) : (
-          <ChevronDown aria-hidden className="size-3 shrink-0" />
-        )}
-        {title}
-      </button>
+      <div className="flex h-row items-center pr-1">
+        <button
+          type="button"
+          id={`sidebar-section-${id}`}
+          aria-expanded={!collapsed}
+          onClick={onToggle}
+          className="flex h-full min-w-0 flex-1 items-center gap-1 px-pad-x text-label text-muted-foreground hover:text-foreground"
+        >
+          {collapsed ? (
+            <ChevronRight aria-hidden className="size-3 shrink-0" />
+          ) : (
+            <ChevronDown aria-hidden className="size-3 shrink-0" />
+          )}
+          {title}
+        </button>
+        {action}
+      </div>
       {!collapsed && <div>{children}</div>}
     </section>
   );

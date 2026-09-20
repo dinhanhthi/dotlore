@@ -1,18 +1,31 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { Footer } from "@/components/layout/Footer";
 import { Shell } from "@/components/layout/Shell";
 import { AllProjects } from "@/components/main/AllProjects";
 import { EmptyState } from "@/components/main/EmptyState";
 import { FileViewer } from "@/components/main/FileViewer";
+import { GitMissingBanner } from "@/components/settings/SettingsPopover";
 import { Sidebar } from "@/components/sidebar/Sidebar";
+import { ProviderSetup } from "@/components/setup/ProviderSetup";
 import { FileTree } from "@/components/tree/FileTree";
+import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   gitMissing as fetchGitMissing,
+  getWorkSnapshot,
   listRoots,
   listenStatus,
   providerDir as fetchProviderDir,
+  setBanner,
+  subscribeWork,
   trackedFiles,
 } from "@/lib/ipc";
 import {
@@ -58,12 +71,33 @@ function MainPanel() {
   return <FileViewer slug={selectedSlug} rel={selectedRel} />;
 }
 
+function MainColumn() {
+  const { gitMissing, providerDir, banner, setBanner } = useRoots();
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {banner !== null ? (
+        <ErrorBanner message={banner} onDismiss={() => setBanner(null)} />
+      ) : null}
+      {gitMissing ? <GitMissingBanner /> : null}
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {providerDir === null ? <ProviderSetup /> : <MainPanel />}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const [state, setState] = useState<RootsState>(() => ({
     ...emptyRootsState,
     starredSlugs: readStarred(),
   }));
+  const [ready, setReady] = useState(false);
   const liveRef = useRef<RootRow[]>([]);
+  const work = useSyncExternalStore(
+    subscribeWork,
+    getWorkSnapshot,
+    getWorkSnapshot,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -81,6 +115,7 @@ export function App() {
         providerDir,
         gitMissing,
       }));
+      setReady(true);
       const trackedBySlug = await loadTrackedCounts(roots);
       if (!cancelled) {
         setState((current) => ({ ...current, trackedBySlug }));
@@ -133,19 +168,76 @@ export function App() {
     setState((current) => ({ ...current, starredSlugs }));
   }, []);
 
+  const applyProvider = useCallback((dir: string) => {
+    setState((current) => ({ ...current, providerDir: dir, error: null }));
+    void (async () => {
+      const [roots, providerDir] = await Promise.all([
+        listRoots().catch((): RootRow[] => []),
+        fetchProviderDir().catch((): string | null => dir),
+      ]);
+      setState((current) => ({
+        ...current,
+        roots: overlayStatuses(roots, liveRef.current),
+        providerDir: providerDir ?? dir,
+      }));
+      const trackedBySlug = await loadTrackedCounts(roots);
+      setState((current) => ({ ...current, trackedBySlug }));
+    })();
+  }, []);
+
+  const refreshRoots = useCallback(async () => {
+    const roots = await listRoots().catch((): RootRow[] => []);
+    setState((current) => {
+      const stillSelected =
+        current.selectedSlug !== null &&
+        roots.some((row) => row.slug === current.selectedSlug);
+      return {
+        ...current,
+        roots: overlayStatuses(roots, liveRef.current),
+        selectedSlug: stillSelected ? current.selectedSlug : null,
+        selectedRel: stillSelected ? current.selectedRel : null,
+      };
+    });
+    const trackedBySlug = await loadTrackedCounts(roots);
+    setState((current) => ({ ...current, trackedBySlug }));
+  }, []);
+
   const value = useMemo(
-    () => ({ ...state, selectRoot, selectFile, showAllProjects, toggleStar }),
-    [state, selectRoot, selectFile, showAllProjects, toggleStar],
+    () => ({
+      ...state,
+      selectRoot,
+      selectFile,
+      showAllProjects,
+      toggleStar,
+      applyProvider,
+      refreshRoots,
+      inflight: work.inflight,
+      busy: work.inflight > 0,
+      banner: work.banner,
+      setBanner,
+    }),
+    [
+      state,
+      selectRoot,
+      selectFile,
+      showAllProjects,
+      toggleStar,
+      applyProvider,
+      refreshRoots,
+      work,
+    ],
   );
+
+  const onboarding = ready && state.providerDir === null;
 
   return (
     <TooltipProvider delay={400}>
       <RootsContext.Provider value={value}>
         <Shell
-          hideTree={state.view === "all"}
-          sidebar={<Sidebar />}
-          tree={<FileTree />}
-          main={<MainPanel />}
+          hideTree={onboarding || !ready || state.view === "all"}
+          sidebar={onboarding || !ready ? null : <Sidebar />}
+          tree={onboarding || !ready ? undefined : <FileTree />}
+          main={!ready ? null : <MainColumn />}
           footer={<Footer />}
         />
       </RootsContext.Provider>

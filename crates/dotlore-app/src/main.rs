@@ -1,6 +1,7 @@
 //! Dotlore's macOS menu-bar app.
 
 mod commands;
+mod login_item;
 mod state;
 mod tray;
 
@@ -71,6 +72,16 @@ fn main() {
             commands::provider_dir,
             commands::git_missing,
             commands::sync_now,
+            commands::set_provider,
+            commands::add_root,
+            commands::link_root,
+            commands::remove_root,
+            commands::recover_root,
+            commands::list_linkable,
+            commands::list_gdrive_mounts,
+            commands::icloud_dir,
+            commands::login_item_enabled,
+            commands::set_login_item,
         ])
         .build(tauri::generate_context!())
         .expect("error while running Dotlore")

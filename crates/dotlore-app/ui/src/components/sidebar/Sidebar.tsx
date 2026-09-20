@@ -1,10 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
-import { LayoutGrid } from "lucide-react";
+import { LayoutGrid, Plus } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { recoverRoot } from "@/lib/ipc";
+import { pickLocalPath } from "@/lib/pick";
 import { useRoots } from "@/lib/roots";
+import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
 
+import { AddRootDialog } from "./AddRootDialog";
+import { LinkRootDialog } from "./LinkRootDialog";
+import { RemoveRootAlert } from "./RemoveRootAlert";
 import { SearchBar } from "./SearchBar";
 import { SidebarItem } from "./SidebarItem";
 import { SidebarSection } from "./SidebarSection";
@@ -44,6 +57,41 @@ function conflictCount(row: RootRow): number {
   return row.status.kind === "Conflicts" ? row.status.detail : 0;
 }
 
+function AddSectionButton({
+  label,
+  onPick,
+  disabled,
+}: {
+  label: string;
+  onPick: (directory: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={label}
+            disabled={disabled}
+          />
+        }
+      >
+        <Plus aria-hidden />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-28">
+        <DropdownMenuItem disabled={disabled} onClick={() => onPick(true)}>
+          Folder…
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={disabled} onClick={() => onPick(false)}>
+          File…
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export function Sidebar() {
   const {
     roots,
@@ -54,9 +102,17 @@ export function Sidebar() {
     selectRoot,
     showAllProjects,
     toggleStar,
+    refreshRoots,
+    busy,
   } = useRoots();
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<string[]>(() => readCollapsed());
+  const [pendingAdd, setPendingAdd] = useState<{
+    path: string;
+    slug: string;
+  } | null>(null);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<RootRow | null>(null);
 
   const toggleCollapsed = useCallback((id: string) => {
     setCollapsed((current) => {
@@ -95,6 +151,23 @@ export function Sidebar() {
   const agents = visible.filter((row) => row.is_agent);
   const projects = visible.filter((row) => !row.is_agent);
 
+  async function startAdd(directory: boolean) {
+    if (busy) return;
+    const path = await pickLocalPath(directory);
+    if (path === null) return;
+    setPendingAdd({ path, slug: defaultSlug(path) });
+  }
+
+  async function handleRecover(slug: string) {
+    if (busy) return;
+    try {
+      await recoverRoot(slug);
+      await refreshRoots();
+    } catch {
+      // Banner is set by `run()`.
+    }
+  }
+
   function renderRoot(row: RootRow, id?: string) {
     return (
       <SidebarItem
@@ -108,6 +181,11 @@ export function Sidebar() {
         starred={starred.has(row.slug)}
         onClick={() => selectRoot(row.slug)}
         onToggleStar={() => toggleStar(row.slug)}
+        onRemove={() => setRemoveTarget(row)}
+        writeDisabled={busy}
+        onRecover={
+          row.status.kind === "Error" ? () => void handleRecover(row.slug) : undefined
+        }
       />
     );
   }
@@ -115,6 +193,17 @@ export function Sidebar() {
   return (
     <nav aria-label="Roots" className="flex h-full min-h-0 flex-col">
       <SearchBar value={query} onChange={setQuery} />
+      <div className="flex justify-end px-pad-x pb-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="xs"
+          disabled={busy}
+          onClick={() => setLinkOpen(true)}
+        >
+          Link…
+        </Button>
+      </div>
       <ScrollArea className="min-h-0 flex-1">
         {starredRows.length > 0 && (
           <SidebarSection
@@ -134,27 +223,54 @@ export function Sidebar() {
           }
           onClick={showAllProjects}
         />
-        {agents.length > 0 && (
-          <SidebarSection
-            id="agents"
-            title="Agents"
-            collapsed={collapsed.includes("agents")}
-            onToggle={() => toggleCollapsed("agents")}
-          >
-            {agents.map((row) => renderRoot(row, `sidebar-root-${row.slug}`))}
-          </SidebarSection>
-        )}
-        {projects.length > 0 && (
-          <SidebarSection
-            id="projects"
-            title="Projects"
-            collapsed={collapsed.includes("projects")}
-            onToggle={() => toggleCollapsed("projects")}
-          >
-            {projects.map((row) => renderRoot(row, `sidebar-root-${row.slug}`))}
-          </SidebarSection>
-        )}
+        <SidebarSection
+          id="agents"
+          title="Agents"
+          collapsed={collapsed.includes("agents")}
+          onToggle={() => toggleCollapsed("agents")}
+          action={
+            <AddSectionButton
+              label="Add agent"
+              disabled={busy}
+              onPick={(directory) => void startAdd(directory)}
+            />
+          }
+        >
+          {agents.map((row) => renderRoot(row, `sidebar-root-${row.slug}`))}
+        </SidebarSection>
+        <SidebarSection
+          id="projects"
+          title="Projects"
+          collapsed={collapsed.includes("projects")}
+          onToggle={() => toggleCollapsed("projects")}
+          action={
+            <AddSectionButton
+              label="Add project"
+              disabled={busy}
+              onPick={(directory) => void startAdd(directory)}
+            />
+          }
+        >
+          {projects.map((row) => renderRoot(row, `sidebar-root-${row.slug}`))}
+        </SidebarSection>
       </ScrollArea>
+      <AddRootDialog
+        path={pendingAdd?.path ?? ""}
+        defaultSlug={pendingAdd?.slug ?? ""}
+        open={pendingAdd !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingAdd(null);
+        }}
+      />
+      <LinkRootDialog open={linkOpen} onOpenChange={setLinkOpen} />
+      <RemoveRootAlert
+        slug={removeTarget?.slug ?? null}
+        name={removeTarget?.name ?? "this root"}
+        open={removeTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemoveTarget(null);
+        }}
+      />
     </nav>
   );
 }
