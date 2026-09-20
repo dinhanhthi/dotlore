@@ -8,7 +8,11 @@
     "jsx": "react-jsx",
     "noEmit": true,
     "strict": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src"]
 }
