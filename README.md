@@ -18,19 +18,17 @@ Two devices never write the same cloud file, and nothing there is ever rewritten
 
 Overlapping edits resolve deterministically: the newer commit wins on **every** device, and the loser's bytes are kept beside it as `<stem>.conflict-<device>-<blob>.<ext>`. No version is ever lost, no conflict markers are written into a live file, and all devices converge on the same tree.
 
-## Status
+## Tech stack
 
-MVP, in progress. All three crates exist; the inline conflict resolver is the last piece.
-
-| Crate | State |
-|---|---|
-| `crates/dotlore-core` | sync engine — git runner, mirroring, cloud bundles, conflict resolution |
-| `crates/dotlore-cli` | the `dotlore` binary — subcommands plus `dotlore daemon` |
-| `crates/dotlore-app` | GPUI menu-bar app — tray, window, login item (inline conflict resolver in progress) |
+- Rust workspace: `dotlore-core` (engine), `dotlore-cli` (the `dotlore` binary), `dotlore-app` (desktop)
+- System `git` binary — no git library
+- Tauri v2 + React + TypeScript + Tailwind + shadcn/ui
+- CodeMirror 6 (`@codemirror/merge`) for view and resolve
+- macOS `launchctl` for the login item
 
 ## Requirements
 
-macOS, Rust 1.89+ (uses `std::fs::File::lock`), and the system `git`. If `git` is missing, Dotlore refuses to sync and points you at `xcode-select --install`.
+macOS, Rust 1.89+ (uses `std::fs::File::lock`), and the system `git`. If `git` is missing, Dotlore refuses to sync and points you at `xcode-select --install`. The desktop UI also needs Node 20+ and pnpm.
 
 ## Development
 
@@ -52,24 +50,25 @@ cargo run -q -p dotlore-cli -- daemon          # watch + poll until killed
 cargo run -q -p dotlore-cli -- help
 
 # menu-bar app (same DOTLORE_HOME; first launch opens the window if provider is unset)
-cargo run -p dotlore-app
+pnpm --dir crates/dotlore-app/ui install
+DOTLORE_HOME="$DOTLORE_HOME" cargo tauri dev
 ```
 
 `cargo build -p dotlore-core` must be warning-free.
 
-## Production
+`cargo build -p dotlore-app` needs `ui/dist` first (`pnpm --dir crates/dotlore-app/ui build`) and a sidecar at `crates/dotlore-app/binaries/dotlore-<host-triple>` — `externalBin` is copied at cargo-build time.
+
+## Build
 
 ```sh
-scripts/build-app.sh                           # → target/Dotlore.app
-open target/Dotlore.app
+bash scripts/build.sh                          # → target/release/bundle/macos/Dotlore.app
+open target/release/bundle/macos/Dotlore.app
 ```
-
-The script release-builds `dotlore-app` and `dotlore`, lipos a universal binary when both targets are installed, writes `Info.plist`, ad-hoc codesigns, and ships the CLI beside the app in the bundle. A missing `x86_64`/`aarch64` target degrades to this Mac's arch instead of failing.
 
 To pass a sandbox home into the bundled binary (Finder's `open` does not forward env):
 
 ```sh
-DOTLORE_HOME="$HOME/Downloads/dotlore" target/Dotlore.app/Contents/MacOS/dotlore-app
+DOTLORE_HOME="$HOME/Downloads/dotlore" target/release/bundle/macos/Dotlore.app/Contents/MacOS/dotlore-app
 ```
 
 ## Not in scope

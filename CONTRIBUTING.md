@@ -6,9 +6,15 @@
 cargo build -p dotlore-core          # must be warning-free
 cargo test  -p dotlore-core
 cargo fmt   -p dotlore-core --check
+
+cargo tauri dev
+pnpm --dir crates/dotlore-app/ui build
+cargo build -p dotlore-app           # must be warning-free
 ```
 
-Zero warnings is a gate, not a preference.
+Zero warnings is a gate, not a preference. The gate applies to `dotlore-app` too.
+
+`cargo build -p dotlore-app` needs `ui/dist` already (`tauri_build::build()` reads `frontendDist`), so a fresh clone must run `pnpm --dir crates/dotlore-app/ui install && pnpm --dir crates/dotlore-app/ui build` first. It also needs the sidecar at `crates/dotlore-app/binaries/dotlore-<host-triple>` because `externalBin` is copied at cargo-build time.
 
 ## Invariants
 
