@@ -1,0 +1,18 @@
+{
+  "name": "dotlore",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "pnpm --dir crates/dotlore-app/ui install",
+    "dev": "pnpm tauri dev",
+    "tauri": "bash scripts/tauri.sh",
+    "build": "bash scripts/build.sh",
+    "test": "bash scripts/test.sh",
+    "format": "cargo fmt",
+    "format:check": "cargo fmt --check && pnpm --dir crates/dotlore-app/ui exec tsc --noEmit",
+    "cli": "cargo run -q -p dotlore-cli"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

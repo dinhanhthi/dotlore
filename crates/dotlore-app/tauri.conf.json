@@ -3,7 +3,7 @@
   "identifier": "dev.dinhanhthi.dotlore",
   "build": {
     "frontendDist": "ui/dist",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:38421",
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build"
   },

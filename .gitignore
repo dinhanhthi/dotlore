@@ -12,4 +12,5 @@ docs/later/
 .coding-friend/
 # <<< coding-friend managed
 /target
+/node_modules
 CLAUDE.md

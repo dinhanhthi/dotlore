@@ -1,4 +1,4 @@
-//! The macOS status item: its title, its menu, and the actions the menu
+//! The macOS status item: logo only, its menu, and the actions the menu
 //! dispatches.
 
 use tauri::image::Image;
@@ -30,7 +30,6 @@ pub struct TrayView {
     pub git_missing: bool,
     pub no_provider: bool,
     pub error: Option<String>,
-    pub conflicts_total: usize,
 }
 
 impl TrayView {
@@ -44,35 +43,16 @@ impl TrayView {
             git_missing,
             no_provider,
             error: None,
-            conflicts_total: 0,
         }
     }
 
     fn from_status_json(payload: &str, git_missing: bool, no_provider: bool) -> Self {
         let v: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
         let error = v.get("error").and_then(|e| e.as_str()).map(str::to_string);
-        let conflicts_total = v
-            .get("roots")
-            .and_then(|r| r.as_array())
-            .map(|roots| {
-                roots
-                    .iter()
-                    .filter_map(|row| {
-                        let st = row.get("status")?;
-                        if st.get("kind")?.as_str()? == "Conflicts" {
-                            st.get("detail")?.as_u64().map(|n| n as usize)
-                        } else {
-                            None
-                        }
-                    })
-                    .sum()
-            })
-            .unwrap_or(0);
         Self {
             git_missing,
             no_provider,
             error,
-            conflicts_total,
         }
     }
 }
@@ -80,7 +60,7 @@ impl TrayView {
 /// Create the status item. The icon stays registered on the app handle.
 pub fn build(app: &App) -> tauri::Result<TrayIcon> {
     // `app.trayIcon` already spawned one so the PNG is embedded; drop it so
-    // this builder owns the single icon, the menu, and the title.
+    // this builder owns the single icon and the menu. No title — logo only.
     let _ = app.remove_tray_by_id("main");
 
     let view = TrayView::from_app(app.handle());
@@ -89,7 +69,6 @@ pub fn build(app: &App) -> tauri::Result<TrayIcon> {
         .icon(ICON)
         .icon_as_template(false)
         .tooltip("Dotlore")
-        .title(title(&view))
         .menu(&menu)
         .on_menu_event(on_menu)
         .build(app)?;
@@ -103,9 +82,6 @@ pub fn build(app: &App) -> tauri::Result<TrayIcon> {
             Err(_) => false,
         };
         let view = TrayView::from_status_json(event.payload(), git_missing, no_provider);
-        if let Err(e) = tray_handle.set_title(Some(title(&view))) {
-            eprintln!("dotlore: tray title: {e}");
-        }
         match build_menu(&app_handle, &view) {
             Ok(menu) => {
                 if let Err(e) = tray_handle.set_menu(Some(menu)) {
@@ -157,18 +133,6 @@ fn disabled(
     text: impl AsRef<str>,
 ) -> tauri::Result<MenuItem<tauri::Wry>> {
     MenuItem::with_id(app, id, text, false, None::<&str>)
-}
-
-/// The text beside the menu-bar icon.
-///
-/// `▲`, not `●`: the window's legend is `●` synced / `▲` conflicts, and a
-/// conflict count badged with the synced glyph contradicts it.
-pub fn title(view: &TrayView) -> String {
-    if view.conflicts_total > 0 {
-        format!("Dotlore ▲{}", view.conflicts_total)
-    } else {
-        "Dotlore".to_string()
-    }
 }
 
 /// Menu rows: `Some(label)` or `None` for a separator. Warnings first, then
@@ -229,21 +193,6 @@ mod tests {
     }
 
     #[test]
-    fn title_is_bare_until_a_root_reports_conflicts() {
-        assert_eq!(title(&view()), "Dotlore");
-    }
-
-    #[test]
-    fn title_badges_the_total_across_roots() {
-        let s = TrayView {
-            conflicts_total: 5,
-            ..view()
-        };
-        assert_eq!(s.conflicts_total, 5);
-        assert_eq!(title(&s), "Dotlore ▲5");
-    }
-
-    #[test]
     fn a_peer_controlled_error_becomes_one_bounded_line() {
         let hostile = format!(
             "merge failed\n\r\x1b]0;pwn\x07\u{202e}{}",
@@ -272,7 +221,6 @@ mod tests {
             git_missing: true,
             no_provider: true,
             error: Some("cycle failed".into()),
-            conflicts_total: 0,
         };
         assert_eq!(
             menu_labels(&s),
@@ -319,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn a_status_event_badges_conflict_totals_and_never_copies_slugs() {
+    fn a_status_event_never_copies_slugs() {
         let json = r#"{
             "roots": [
                 {"slug":"alpha","path":"/a","name":"a","is_agent":false,"status":{"kind":"Conflicts","detail":2}},
@@ -328,8 +276,6 @@ mod tests {
             "error": null
         }"#;
         let view = TrayView::from_status_json(json, false, false);
-        assert_eq!(view.conflicts_total, 2);
-        assert_eq!(title(&view), "Dotlore ▲2");
         let labels = menu_labels(&view);
         for label in labels.into_iter().flatten() {
             assert!(
