@@ -1,0 +1,41 @@
+{
+  "productName": "Dotlore",
+  "identifier": "dev.dinhanhthi.dotlore",
+  "build": {
+    "frontendDist": "ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm --dir ui dev",
+    "beforeBuildCommand": "pnpm --dir ui build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Dotlore",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 880,
+        "minHeight": 520,
+        "visible": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "trayIcon": {
+      "iconPath": "../../assets/logo_256.png",
+      "iconAsTemplate": false
+    }
+  },
+  "bundle": {
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
