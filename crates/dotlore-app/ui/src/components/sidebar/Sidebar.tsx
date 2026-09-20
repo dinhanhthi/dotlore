@@ -209,6 +209,7 @@ export function Sidebar() {
         </Button>
       </div>
       <ScrollArea className="min-h-0 flex-1">
+        <div className="flex flex-col gap-0.5 px-1.5 pb-2">
         {starredRows.length > 0 && (
           <SidebarSection
             id="starred"
@@ -257,6 +258,7 @@ export function Sidebar() {
         >
           {projects.map((row) => renderRoot(row, `sidebar-root-${row.slug}`))}
         </SidebarSection>
+        </div>
       </ScrollArea>
       <AddRootDialog
         path={pendingAdd?.path ?? ""}

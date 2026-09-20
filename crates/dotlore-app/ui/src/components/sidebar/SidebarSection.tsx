@@ -26,7 +26,7 @@ export function SidebarSection({
           id={`sidebar-section-${id}`}
           aria-expanded={!collapsed}
           onClick={onToggle}
-          className="flex h-full min-w-0 flex-1 items-center gap-1 px-pad-x text-[11px] font-medium tracking-[0.04em] text-muted-foreground uppercase hover:text-foreground"
+          className="flex h-full min-w-0 flex-1 items-center gap-1 px-2 text-label text-muted-foreground hover:text-foreground"
         >
           {collapsed ? (
             <ChevronRight aria-hidden className="size-4 shrink-0" />

@@ -87,9 +87,9 @@ export function RootCard({ row }: RootCardProps) {
   return (
     <div
       className={cn(
-        "flex flex-col overflow-hidden rounded-xl border border-border bg-card",
-        "transition-[border-color,box-shadow] duration-[var(--dur-short)] ease-[var(--ease-out)]",
-        "hover:border-foreground/20 hover:shadow-sm",
+        "flex flex-col overflow-hidden rounded-2xl bg-card ring-1 ring-foreground/5",
+        "transition-[box-shadow] duration-[var(--dur-short)] ease-[var(--ease-out)]",
+        "hover:ring-foreground/10",
       )}
     >
       <button

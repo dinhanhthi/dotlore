@@ -142,7 +142,7 @@ export function Footer() {
         )}
         {!busy && <span className="truncate">{status.text}</span>}
         {error !== null && (
-          <span className="min-w-0 truncate text-[#eb5757]">{error}</span>
+          <span className="min-w-0 truncate text-destructive">{error}</span>
         )}
       </div>
       {resolvingRel && selectedSlug ? (

@@ -7,11 +7,9 @@ type ScenarioPickerProps = {
 
 export function ScenarioPicker({ activeId, onApply }: ScenarioPickerProps) {
   return (
-    <aside className="flex h-full w-60 shrink-0 flex-col border-l border-neutral-200 bg-neutral-50 text-neutral-800 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100">
+    <aside className="flex h-full w-60 shrink-0 flex-col border-l border-sidebar-border bg-sidebar text-sidebar-foreground">
       <header className="shrink-0 px-3 pt-3 pb-2">
-        <p className="text-[11px] font-medium tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
-          Scenarios
-        </p>
+        <p className="text-label text-muted-foreground">Scenarios</p>
       </header>
       <nav
         aria-label="Scenarios"
@@ -26,13 +24,13 @@ export function ScenarioPicker({ activeId, onApply }: ScenarioPickerProps) {
               onClick={() => onApply(scenario.id)}
               className={
                 active
-                  ? "rounded-md bg-neutral-200 px-2 py-1.5 text-left text-[13px] dark:bg-neutral-800"
-                  : "rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-neutral-200/70 dark:hover:bg-neutral-800/80"
+                  ? "rounded-2xl bg-sidebar-accent px-2.5 py-1.5 text-left text-sm"
+                  : "rounded-2xl px-2.5 py-1.5 text-left text-sm hover:bg-sidebar-accent/80"
               }
             >
               <span className="block font-medium">{scenario.label}</span>
               {scenario.detail ? (
-                <span className="mt-0.5 block text-[11px] text-neutral-500 dark:text-neutral-400">
+                <span className="mt-0.5 block text-xs text-muted-foreground">
                   {scenario.detail}
                 </span>
               ) : null}

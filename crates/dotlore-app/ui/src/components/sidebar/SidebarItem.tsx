@@ -63,15 +63,12 @@ export function SidebarItem({
     <div
       id={id}
       className={cn(
-        "group relative flex h-row w-full items-center gap-2 px-3",
+        "group relative flex h-8 w-full items-center gap-2 rounded-2xl px-2",
         "transition-colors duration-[var(--dur-short)] ease-[var(--ease-out)]",
         "hover:bg-sidebar-accent/80",
         selected && "bg-sidebar-accent",
       )}
     >
-      {selected && (
-        <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-primary" />
-      )}
       <button
         type="button"
         title={title}
@@ -86,7 +83,7 @@ export function SidebarItem({
         ) : (
           leading
         )}
-        <span className="min-w-0 flex-1 truncate text-[13px]">{label}</span>
+        <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
       </button>
       {conflictCount > 0 && (
         <button
@@ -116,7 +113,7 @@ export function SidebarItem({
             onToggleStar();
           }}
           className={cn(
-            "shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground",
+            "shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground",
             starred
               ? "opacity-100"
               : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",

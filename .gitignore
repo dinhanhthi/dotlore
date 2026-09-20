@@ -1,14 +1,4 @@
-# >>> coding-friend managed
-docs/plans/
-docs/memory/
-docs/research/
-docs/sessions/
-docs/reviews/
-docs/context/
-docs/warm/
-docs/later/
-.coding-friend/
-# <<< coding-friend managed
+/docs/*
 /target
 /node_modules
 /crates/dotlore-app/ui/mockapp/dist
@@ -16,3 +6,4 @@ CLAUDE.md
 .hallmark/
 design.md
 pnpm-workspace.yaml
+.coding-friend/

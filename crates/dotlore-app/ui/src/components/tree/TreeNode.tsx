@@ -42,16 +42,13 @@ export function TreeNode({
     <>
       <div
         className={cn(
-          "group relative flex h-row w-full items-center gap-2 pr-3",
+          "group relative flex h-8 w-full items-center gap-2 rounded-2xl pr-2",
           "transition-colors duration-[var(--dur-short)] ease-[var(--ease-out)]",
           "hover:bg-muted/70",
           selected && "bg-muted",
         )}
-        style={{ paddingLeft: 12 + depth * 14 }}
+        style={{ paddingLeft: 10 + depth * 14 }}
       >
-        {selected && (
-          <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-primary" />
-        )}
         {node.kind === "folder" ? (
           <button
             type="button"

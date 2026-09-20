@@ -50,7 +50,7 @@ function BinaryCard({
   onKeep: () => void;
 }) {
   return (
-    <div className="flex min-h-[160px] flex-1 flex-col justify-between rounded-lg border border-border bg-card p-4">
+    <div className="flex min-h-[160px] flex-1 flex-col justify-between rounded-2xl bg-card p-4 ring-1 ring-foreground/5">
       <div className="flex flex-col gap-1">
         <span className="text-label text-muted-foreground">{label}</span>
         <span className="text-foreground">{device}</span>
@@ -254,9 +254,9 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
                 type="button"
                 onClick={() => setSiblingIndex(index)}
                 className={cn(
-                  "h-6 shrink-0 rounded-sm px-2 text-xs",
+                  "h-6 shrink-0 rounded-4xl px-2.5 text-xs",
                   index === siblingIndex
-                    ? "bg-white/[0.06] text-foreground"
+                    ? "bg-muted text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >

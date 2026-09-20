@@ -52,9 +52,12 @@ export function Shell({
     writeTreeWidth(next);
   }, []);
 
-  const columns = hideTree
-    ? `${SIDEBAR_W}px 1fr`
-    : `${SIDEBAR_W}px ${treeWidth}px 1fr`;
+  const showSidebar = sidebar != null;
+  const columns = !showSidebar
+    ? "1fr"
+    : hideTree
+      ? `${SIDEBAR_W}px 1fr`
+      : `${SIDEBAR_W}px ${treeWidth}px 1fr`;
 
   return (
     <div
@@ -62,9 +65,11 @@ export function Shell({
       style={{ gridTemplateColumns: columns }}
     >
       <TitleBar className="col-span-full" />
-      <aside className="flex min-h-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar">
-        {sidebar}
-      </aside>
+      {showSidebar ? (
+        <aside className="flex min-h-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar">
+          {sidebar}
+        </aside>
+      ) : null}
       {!hideTree && (
         <section className="relative flex min-h-0 flex-col overflow-hidden bg-background">
           {tree}
@@ -74,7 +79,12 @@ export function Shell({
           />
         </section>
       )}
-      <main className="flex min-h-0 flex-col overflow-hidden border-l border-border bg-background">
+      <main
+        className={cn(
+          "flex min-h-0 flex-col overflow-hidden bg-background",
+          showSidebar && "border-l border-border",
+        )}
+      >
         {main}
       </main>
       <div className="col-span-full">{footer}</div>

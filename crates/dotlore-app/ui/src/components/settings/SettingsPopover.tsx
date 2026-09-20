@@ -129,7 +129,7 @@ export function SettingsPopover() {
         ) : null}
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm">Appearance</span>
-          <div className="flex rounded-lg border border-border p-0.5">
+          <div className="flex rounded-4xl border border-border p-0.5">
             <Button
               type="button"
               variant={theme === "light" ? "secondary" : "ghost"}

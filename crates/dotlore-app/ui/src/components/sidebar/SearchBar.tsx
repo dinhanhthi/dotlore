@@ -19,7 +19,7 @@ export function SearchBar({ value, onChange }: SearchBarProps) {
           type="search"
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="Search agents or projects"
+          placeholder="Search"
           autoComplete="off"
           spellCheck={false}
           aria-label="Search agents or projects"

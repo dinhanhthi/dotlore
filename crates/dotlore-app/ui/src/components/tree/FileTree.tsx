@@ -98,6 +98,7 @@ export function FileTree() {
         </Button>
       </header>
       <ScrollArea className="min-h-0 flex-1">
+        <div className="flex flex-col gap-0.5 px-1.5 py-1">
         {tree.map((node) => (
           <TreeNode
             key={node.path}
@@ -116,6 +117,7 @@ export function FileTree() {
             }}
           />
         ))}
+        </div>
       </ScrollArea>
     </div>
   );
