@@ -115,3 +115,14 @@ export function viewerExtensions(rel: string): Extension[] {
     ...languageFor(rel),
   ];
 }
+
+/** Editable result pane — same chrome as the viewer, without read-only. */
+export function editorExtensions(rel: string): Extension[] {
+  return [
+    lineNumbers(),
+    drawSelection(),
+    linearTheme,
+    syntaxHighlighting(linearHighlight),
+    ...languageFor(rel),
+  ];
+}

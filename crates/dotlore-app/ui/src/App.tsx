@@ -10,6 +10,7 @@ import {
 import { Footer } from "@/components/layout/Footer";
 import { Shell } from "@/components/layout/Shell";
 import { AllProjects } from "@/components/main/AllProjects";
+import { ConflictResolver } from "@/components/main/ConflictResolver";
 import { EmptyState } from "@/components/main/EmptyState";
 import { FileViewer } from "@/components/main/FileViewer";
 import { GitMissingBanner } from "@/components/settings/SettingsPopover";
@@ -18,7 +19,9 @@ import { ProviderSetup } from "@/components/setup/ProviderSetup";
 import { FileTree } from "@/components/tree/FileTree";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { uniqueConflictRels } from "@/lib/conflicts";
 import {
+  conflicts as fetchConflicts,
   gitMissing as fetchGitMissing,
   getWorkSnapshot,
   listRoots,
@@ -36,7 +39,7 @@ import {
   type SelectRootOptions,
 } from "@/lib/roots";
 import { readStarred, toggleStarred } from "@/lib/starred";
-import type { RootRow } from "@/lib/types";
+import type { ConflictView, RootRow } from "@/lib/types";
 
 function overlayStatuses(rows: RootRow[], live: RootRow[]): RootRow[] {
   if (live.length === 0) return rows;
@@ -65,9 +68,19 @@ async function loadTrackedCounts(
 }
 
 function MainPanel() {
-  const { view, selectedSlug, selectedRel } = useRoots();
+  const { view, selectedSlug, selectedRel, resolvingRel, closeResolver } =
+    useRoots();
   if (view === "all") return <AllProjects />;
   if (!selectedSlug || !selectedRel) return <EmptyState />;
+  if (resolvingRel === selectedRel) {
+    return (
+      <ConflictResolver
+        slug={selectedSlug}
+        rel={selectedRel}
+        onClose={closeResolver}
+      />
+    );
+  }
   return <FileViewer slug={selectedSlug} rel={selectedRel} />;
 }
 
@@ -143,6 +156,7 @@ export function App() {
       view: "root",
       selectedSlug: slug,
       selectedRel: current.selectedSlug === slug ? current.selectedRel : null,
+      resolvingRel: current.selectedSlug === slug ? current.resolvingRel : null,
       focusRequest: options?.focusSidebar
         ? { slug, seq: (current.focusRequest?.seq ?? 0) + 1 }
         : current.focusRequest,
@@ -153,6 +167,40 @@ export function App() {
     setState((current) => ({
       ...current,
       selectedRel: rel,
+      resolvingRel: null,
+    }));
+  }, []);
+
+  const openResolver = useCallback((slug: string, rel: string) => {
+    setState((current) => ({
+      ...current,
+      view: "root",
+      selectedSlug: slug,
+      selectedRel: rel,
+      resolvingRel: rel,
+    }));
+  }, []);
+
+  const openFirstConflict = useCallback((slug: string) => {
+    void (async () => {
+      try {
+        const views = await fetchConflicts(slug).catch((): ConflictView[] => []);
+        const first = uniqueConflictRels(views)[0];
+        if (!first) {
+          selectRoot(slug);
+          return;
+        }
+        openResolver(slug, first);
+      } catch {
+        selectRoot(slug);
+      }
+    })();
+  }, [openResolver, selectRoot]);
+
+  const closeResolver = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      resolvingRel: null,
     }));
   }, []);
 
@@ -160,6 +208,7 @@ export function App() {
     setState((current) => ({
       ...current,
       view: "all",
+      resolvingRel: null,
     }));
   }, []);
 
@@ -196,6 +245,7 @@ export function App() {
         roots: overlayStatuses(roots, liveRef.current),
         selectedSlug: stillSelected ? current.selectedSlug : null,
         selectedRel: stillSelected ? current.selectedRel : null,
+        resolvingRel: stillSelected ? current.resolvingRel : null,
       };
     });
     const trackedBySlug = await loadTrackedCounts(roots);
@@ -207,6 +257,9 @@ export function App() {
       ...state,
       selectRoot,
       selectFile,
+      openResolver,
+      openFirstConflict,
+      closeResolver,
       showAllProjects,
       toggleStar,
       applyProvider,
@@ -220,6 +273,9 @@ export function App() {
       state,
       selectRoot,
       selectFile,
+      openResolver,
+      openFirstConflict,
+      closeResolver,
       showAllProjects,
       toggleStar,
       applyProvider,

@@ -15,7 +15,9 @@ use tauri::{AppHandle, Emitter, State};
 use dotlore_core::cloud;
 use dotlore_core::config;
 use dotlore_core::daemon::Cmd;
-use dotlore_core::engine::{self, ConflictView, RootStatus};
+use dotlore_core::engine::{
+    self, ConflictView, ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView,
+};
 use dotlore_core::git;
 
 use crate::login_item;
@@ -37,6 +39,38 @@ pub struct FileContent {
     pub binary: bool,
     pub too_large: bool,
     pub bytes_len: usize,
+}
+
+/// One side of an open conflict, with no blob ids or raw bytes.
+#[derive(Serialize, Clone, Debug)]
+pub struct SiblingDto {
+    pub path: String,
+    pub device_name: String,
+    pub is_me: bool,
+    pub text: Option<String>,
+    pub bytes_len: usize,
+}
+
+/// What the webview needs to draw a resolver. The matching
+/// [`ResolutionSnapshot`] stays in [`AppState::snapshots`].
+#[derive(Serialize, Clone, Debug)]
+pub struct ResolutionDto {
+    pub slug: String,
+    pub live: String,
+    pub live_text: Option<String>,
+    pub binary: bool,
+    pub live_bytes_len: usize,
+    pub siblings: Vec<SiblingDto>,
+}
+
+/// Outcome of a save. The snapshot never rides along — Stale carries a
+/// refreshed [`ResolutionDto`] built from the new snapshot in the registry.
+#[derive(Serialize, Clone, Debug)]
+#[serde(tag = "outcome", rename_all = "lowercase")]
+pub enum ResolveResultDto {
+    Applied,
+    Stale { refreshed: ResolutionDto },
+    Pending,
 }
 
 /// Resolve `rel` against a tracked root. Rejects paths (and symlinks) that
@@ -113,6 +147,85 @@ pub async fn conflicts(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn open_resolution(
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+) -> Result<ResolutionDto, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    let slug_key = slug.clone();
+    let rel_key = rel.clone();
+    let (snap, me) = tauri::async_runtime::spawn_blocking(move || {
+        let mut e = engine.lock().unwrap_or_else(PoisonError::into_inner);
+        let snap = e
+            .open_resolution(&slug, Path::new(&rel))
+            .map_err(front_err)?;
+        let me = e.cfg.id8().to_string();
+        Ok::<_, String>((snap, me))
+    })
+    .await
+    .map_err(front_msg)??;
+    let dto = resolution_dto(&snap, &me);
+    state.open_snapshot(&slug_key, &rel_key, snap);
+    Ok(dto)
+}
+
+#[tauri::command]
+pub fn close_resolution(state: State<'_, AppState>, slug: String, rel: String) {
+    state.close_snapshot(&slug, &rel);
+}
+
+/// `discard_siblings` is the list of sibling paths that are **deleted**,
+/// not kept. Same polarity as `conflict::resolve` / `Engine::resolve_conflict`.
+/// Inverting this deletes the user's file.
+#[tauri::command]
+pub async fn resolve_conflict(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+    discard_siblings: Vec<String>,
+    content: String,
+) -> Result<ResolveResultDto, String> {
+    let snap = state
+        .get_snapshot(&slug, &rel)
+        .ok_or_else(|| "open the conflict first".to_string())?;
+    let discarded: Vec<PathBuf> = discard_siblings.into_iter().map(PathBuf::from).collect();
+    apply_resolution(
+        &app,
+        &state,
+        slug,
+        rel,
+        snap,
+        discarded,
+        content.into_bytes(),
+    )
+    .await
+}
+
+/// Keep one side of a binary conflict from the held snapshot — never from
+/// the webview. Every sibling of that live path is discarded, same as
+/// `dotlore resolve`.
+#[tauri::command]
+pub async fn resolve_binary(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+    keep: String,
+    sibling: Option<String>,
+) -> Result<ResolveResultDto, String> {
+    let snap = state
+        .get_snapshot(&slug, &rel)
+        .ok_or_else(|| "open the conflict first".to_string())?;
+    let content = binary_content(&snap, &keep, sibling.as_deref())?;
+    // Resolving a live path clears every sibling of that path; the chosen
+    // content is the one survivor.
+    let discarded: Vec<PathBuf> = snap.siblings.iter().map(|s| s.path.clone()).collect();
+    apply_resolution(&app, &state, slug, rel, snap, discarded, content).await
 }
 
 #[tauri::command]
@@ -279,6 +392,88 @@ pub fn set_login_item(state: State<'_, AppState>, on: bool) -> Result<(), String
     login_item::set(&state.home_dir, on).map_err(front_err)
 }
 
+/// Run `Engine::resolve_conflict` on a blocking thread, then map
+/// [`ResolveOutcome`]. Errors leave the snapshot (and the draft) in place.
+async fn apply_resolution(
+    app: &AppHandle,
+    state: &AppState,
+    slug: String,
+    rel: String,
+    snap: ResolutionSnapshot,
+    discard_siblings: Vec<PathBuf>,
+    content: Vec<u8>,
+) -> Result<ResolveResultDto, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    let slug_key = slug.clone();
+    let rel_key = rel.clone();
+    let (outcome, me) = tauri::async_runtime::spawn_blocking(move || {
+        let mut e = engine.lock().unwrap_or_else(PoisonError::into_inner);
+        let me = e.cfg.id8().to_string();
+        let outcome = e
+            .resolve_conflict(&slug, &snap, &discard_siblings, &content)
+            .map_err(front_err)?;
+        Ok::<_, String>((outcome, me))
+    })
+    .await
+    .map_err(front_msg)??;
+
+    match outcome {
+        ResolveOutcome::Applied(_) => {
+            state.close_snapshot(&slug_key, &rel_key);
+            notify(app, state)?;
+            Ok(ResolveResultDto::Applied)
+        }
+        ResolveOutcome::Stale(fresh) => {
+            let refreshed = resolution_dto(&fresh, &me);
+            state.replace_snapshot(&slug_key, &rel_key, *fresh);
+            Ok(ResolveResultDto::Stale { refreshed })
+        }
+        ResolveOutcome::Pending => Ok(ResolveResultDto::Pending),
+    }
+}
+
+/// Bytes of the chosen side, taken from the held snapshot.
+fn binary_content(
+    snap: &ResolutionSnapshot,
+    keep: &str,
+    sibling: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    match (keep, sibling) {
+        ("live", None) => Ok(snap.live_bytes.clone()),
+        ("live", Some(_)) => Err(front_msg("sibling only applies with keep other")),
+        ("other", s) => Ok(pick_other(snap, s)?.bytes.clone()),
+        (other, _) => Err(front_msg(format!(
+            "keep must be live or other, not {other}"
+        ))),
+    }
+}
+
+fn pick_other<'a>(
+    snap: &'a ResolutionSnapshot,
+    sibling: Option<&str>,
+) -> Result<&'a SiblingView, String> {
+    match (sibling, snap.siblings.as_slice()) {
+        (None, []) => Err(front_msg(format!(
+            "{} has no conflicting sibling",
+            snap.live.display()
+        ))),
+        (None, [one]) => Ok(one),
+        (None, several) => Err(front_msg(format!(
+            "keep other is ambiguous, pass sibling: {}",
+            several
+                .iter()
+                .map(|s| s.path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+        (Some(p), _) => snap
+            .siblings
+            .iter()
+            .find(|s| s.path == Path::new(p))
+            .ok_or_else(|| front_msg(format!("{p} is not a sibling of {}", snap.live.display()))),
+    }
+}
+
 /// Emit the current config as status and ask the daemon to reload.
 fn notify(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let _ = app.emit("dotlore://status", status_payload(state));
@@ -328,6 +523,48 @@ fn front_err(e: anyhow::Error) -> String {
 
 fn front_msg(e: impl std::fmt::Display) -> String {
     one_line(&e.to_string())
+}
+
+/// Valid UTF-8 on every side, or the whole resolution is binary.
+fn binary_mode(snap: &ResolutionSnapshot) -> bool {
+    std::str::from_utf8(&snap.live_bytes).is_err()
+        || snap
+            .siblings
+            .iter()
+            .any(|s| std::str::from_utf8(&s.bytes).is_err())
+}
+
+fn utf8_text(bytes: &[u8], binary: bool) -> Option<String> {
+    if binary {
+        return None;
+    }
+    String::from_utf8(bytes.to_vec()).ok()
+}
+
+fn sibling_dto(view: &SiblingView, me: &str, binary: bool) -> SiblingDto {
+    SiblingDto {
+        path: view.path.to_string_lossy().into_owned(),
+        device_name: view.loser_name.clone(),
+        is_me: view.loser_id8 == me,
+        text: utf8_text(&view.bytes, binary),
+        bytes_len: view.bytes.len(),
+    }
+}
+
+pub(crate) fn resolution_dto(snap: &ResolutionSnapshot, me: &str) -> ResolutionDto {
+    let binary = binary_mode(snap);
+    ResolutionDto {
+        slug: snap.slug.clone(),
+        live: snap.live.to_string_lossy().into_owned(),
+        live_text: utf8_text(&snap.live_bytes, binary),
+        binary,
+        live_bytes_len: snap.live_bytes.len(),
+        siblings: snap
+            .siblings
+            .iter()
+            .map(|s| sibling_dto(s, me, binary))
+            .collect(),
+    }
 }
 
 fn read_tracked_file(home: &Path, slug: &str, rel: &str) -> Result<FileContent, String> {

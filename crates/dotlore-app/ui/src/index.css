@@ -168,3 +168,12 @@
   font-family: var(--font-mono);
   font-size: 12px;
 }
+
+.cm-merge-host .cm-mergeView {
+  height: 100%;
+  overflow: auto;
+}
+
+.cm-merge-host .cm-mergeViewEditors {
+  height: 100%;
+}

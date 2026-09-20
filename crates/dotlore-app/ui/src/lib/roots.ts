@@ -23,6 +23,8 @@ export type RootsState = {
   starredSlugs: string[];
   selectedSlug: string | null;
   selectedRel: string | null;
+  /** When set, the main panel shows the conflict resolver for this path. */
+  resolvingRel: string | null;
   view: AppView;
   focusRequest: FocusRequest | null;
 };
@@ -30,6 +32,12 @@ export type RootsState = {
 export type RootsContextValue = RootsState & {
   selectRoot: (slug: string, options?: SelectRootOptions) => void;
   selectFile: (rel: string) => void;
+  /** Select a conflicted file and open the inline resolver. */
+  openResolver: (slug: string, rel: string) => void;
+  /** Open the first conflict of a root, or select the root if it has none. */
+  openFirstConflict: (slug: string) => void;
+  /** Leave the resolver; `close_resolution` runs on unmount. */
+  closeResolver: () => void;
   showAllProjects: () => void;
   toggleStar: (slug: string) => void;
   /** Set `providerDir` immediately so onboarding unmounts, then refresh roots. */
@@ -51,6 +59,7 @@ export const emptyRootsState: RootsState = {
   starredSlugs: [],
   selectedSlug: null,
   selectedRel: null,
+  resolvingRel: null,
   view: "root",
   focusRequest: null,
 };

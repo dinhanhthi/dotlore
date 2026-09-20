@@ -100,6 +100,7 @@ export function Sidebar() {
     starredSlugs,
     focusRequest,
     selectRoot,
+    openFirstConflict,
     showAllProjects,
     toggleStar,
     refreshRoots,
@@ -180,6 +181,9 @@ export function Sidebar() {
         conflictCount={conflictCount(row)}
         starred={starred.has(row.slug)}
         onClick={() => selectRoot(row.slug)}
+        onConflictClick={() => {
+          openFirstConflict(row.slug);
+        }}
         onToggleStar={() => toggleStar(row.slug)}
         onRemove={() => setRemoveTarget(row)}
         writeDisabled={busy}

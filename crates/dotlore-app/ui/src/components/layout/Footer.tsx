@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { SettingsPopover } from "@/components/settings/SettingsPopover";
 import { Button } from "@/components/ui/button";
-import { syncNow } from "@/lib/ipc";
+import { uniqueConflictRels } from "@/lib/conflicts";
+import { conflicts as fetchConflicts, syncNow } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
 import type { RootRow, RootStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -60,12 +62,65 @@ export function shortenProvider(path: string): string {
 }
 
 export function Footer() {
-  const { roots, providerDir, trackedBySlug, error, busy } = useRoots();
+  const {
+    roots,
+    providerDir,
+    trackedBySlug,
+    error,
+    busy,
+    selectedSlug,
+    resolvingRel,
+    openResolver,
+  } = useRoots();
   const status = aggregateStatus(providerDir, roots);
   const filesTracked = Object.values(trackedBySlug).reduce((n, c) => n + c, 0);
   const conflicts = roots.reduce((n, r) => n + conflictCount(r.status), 0);
   const shortProvider =
     providerDir === null ? "No folder" : shortenProvider(providerDir);
+  const selected = roots.find((row) => row.slug === selectedSlug) ?? null;
+  const statusKey = selected ? JSON.stringify(selected.status) : "";
+
+  const inResolver = Boolean(resolvingRel && selectedSlug);
+  const [resolverRels, setResolverRels] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!inResolver || !selectedSlug) {
+      setResolverRels([]);
+      return;
+    }
+    let cancelled = false;
+    void fetchConflicts(selectedSlug)
+      .then((views) => {
+        if (!cancelled) setResolverRels(uniqueConflictRels(views));
+      })
+      .catch(() => {
+        if (!cancelled) setResolverRels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [inResolver, selectedSlug, statusKey]);
+
+  const navRels =
+    !resolvingRel
+      ? []
+      : resolverRels.length === 0
+        ? [resolvingRel]
+        : resolverRels.includes(resolvingRel)
+          ? resolverRels
+          : [resolvingRel, ...resolverRels];
+  const resolverIndex = resolvingRel ? navRels.indexOf(resolvingRel) : -1;
+  const resolverN = navRels.length;
+  const resolverI = resolverIndex >= 0 ? resolverIndex + 1 : 0;
+  const canStep = Boolean(selectedSlug && resolvingRel && resolverN > 1);
+
+  function stepConflict(delta: number) {
+    if (!selectedSlug || resolverN === 0) return;
+    const from = resolverIndex >= 0 ? resolverIndex : 0;
+    const next = (from + delta + resolverN) % resolverN;
+    const rel = navRels[next];
+    if (rel) openResolver(selectedSlug, rel);
+  }
 
   return (
     <footer className="flex h-6 items-center gap-3 border-t border-border px-2 text-[11px] text-muted-foreground">
@@ -90,10 +145,38 @@ export function Footer() {
           <span className="min-w-0 truncate text-[#eb5757]">{error}</span>
         )}
       </div>
-      <div className="shrink-0 tabular-nums">
-        {roots.length} roots · {filesTracked} files tracked · {conflicts}{" "}
-        conflicts
-      </div>
+      {resolvingRel && selectedSlug ? (
+        <div className="flex shrink-0 items-center gap-1 tabular-nums">
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-5 px-1.5 text-[11px] text-muted-foreground"
+            disabled={!canStep}
+            aria-label="Previous conflict"
+            onClick={() => stepConflict(-1)}
+          >
+            ←
+          </Button>
+          <span>
+            {resolverI} of {resolverN} conflicts
+          </span>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="h-5 px-1.5 text-[11px] text-muted-foreground"
+            disabled={!canStep}
+            aria-label="Next conflict"
+            onClick={() => stepConflict(1)}
+          >
+            →
+          </Button>
+        </div>
+      ) : (
+        <div className="shrink-0 tabular-nums">
+          {roots.length} roots · {filesTracked} files tracked · {conflicts}{" "}
+          conflicts
+        </div>
+      )}
       <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
         <span
           className="min-w-0 truncate font-path text-[11px]"

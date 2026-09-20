@@ -38,3 +38,28 @@ export type StatusPayload = {
   roots: RootRow[];
   error: string | null;
 };
+
+/** Mirrors `commands::SiblingDto` (snake_case fields). */
+export type SiblingDto = {
+  path: string;
+  device_name: string;
+  is_me: boolean;
+  text: string | null;
+  bytes_len: number;
+};
+
+/** Mirrors `commands::ResolutionDto` (snake_case fields). */
+export type ResolutionDto = {
+  slug: string;
+  live: string;
+  live_text: string | null;
+  binary: boolean;
+  live_bytes_len: number;
+  siblings: SiblingDto[];
+};
+
+/** Mirrors `commands::ResolveResultDto` (`tag = "outcome"`, lowercase). */
+export type ResolveResultDto =
+  | { outcome: "applied" }
+  | { outcome: "stale"; refreshed: ResolutionDto }
+  | { outcome: "pending" };

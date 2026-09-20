@@ -36,6 +36,7 @@ type SidebarItemProps = {
   conflictCount?: number;
   starred?: boolean;
   onClick: () => void;
+  onConflictClick?: () => void;
   onToggleStar?: () => void;
   onRemove?: () => void;
   onRecover?: () => void;
@@ -52,6 +53,7 @@ export function SidebarItem({
   conflictCount = 0,
   starred = false,
   onClick,
+  onConflictClick,
   onToggleStar,
   onRemove,
   onRecover,
@@ -83,15 +85,25 @@ export function SidebarItem({
           leading
         )}
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {conflictCount > 0 && (
+      </button>
+      {conflictCount > 0 && (
+        <button
+          type="button"
+          aria-label={`${conflictCount} ${conflictCount === 1 ? "conflict" : "conflicts"}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            (onConflictClick ?? onClick)();
+          }}
+          className="shrink-0"
+        >
           <Badge
             variant="secondary"
             className="h-4 min-w-4 px-1 text-[10px] tabular-nums"
           >
             {conflictCount}
           </Badge>
-        )}
-      </button>
+        </button>
+      )}
       {onToggleStar && (
         <button
           type="button"

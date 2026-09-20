@@ -13,7 +13,8 @@ function conflictPathSet(views: ConflictView[]): Set<string> {
 }
 
 export function FileTree() {
-  const { roots, selectedSlug, selectedRel, selectFile, busy } = useRoots();
+  const { roots, selectedSlug, selectedRel, selectFile, openResolver, busy } =
+    useRoots();
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
 
   const [paths, setPaths] = useState<string[]>([]);
@@ -106,7 +107,13 @@ export function FileTree() {
             conflictSet={conflictSet}
             isOpen={isOpen}
             onToggle={onToggle}
-            onSelect={selectFile}
+            onSelect={(path) => {
+              if (conflictSet.has(path) && selectedSlug) {
+                openResolver(selectedSlug, path);
+              } else {
+                selectFile(path);
+              }
+            }}
           />
         ))}
       </ScrollArea>

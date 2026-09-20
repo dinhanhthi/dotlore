@@ -2,6 +2,7 @@ import { useState } from "react";
 import { MoreHorizontal, Star } from "lucide-react";
 
 import { RemoveRootAlert } from "@/components/sidebar/RemoveRootAlert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -63,6 +64,7 @@ export function RootCard({ row }: RootCardProps) {
     trackedBySlug,
     starredSlugs,
     selectRoot,
+    openFirstConflict,
     toggleStar,
     refreshRoots,
     busy,
@@ -100,17 +102,46 @@ export function RootCard({ row }: RootCardProps) {
         >
           {shortenPath(row.path)}
         </span>
-        <span className="flex items-center gap-1.5 text-muted-foreground">
-          <span
-            aria-hidden
-            className={cn("size-2 shrink-0 rounded-full", statusDotClass(row.status.kind))}
-          />
-          <span>{statusLabel(row.status)}</span>
-        </span>
+      </button>
+      <div className="flex flex-col gap-2 pr-14">
+        {row.status.kind === "Conflicts" ? (
+          <button
+            type="button"
+            aria-label={`${row.status.detail} ${row.status.detail === 1 ? "conflict" : "conflicts"}`}
+            onClick={() => openFirstConflict(row.slug)}
+            className="flex items-center gap-1.5 text-left text-muted-foreground hover:text-foreground"
+          >
+            <span
+              aria-hidden
+              className={cn(
+                "size-2 shrink-0 rounded-full",
+                statusDotClass(row.status.kind),
+              )}
+            />
+            <Badge
+              variant="secondary"
+              className="h-4 min-w-4 px-1 text-[10px] tabular-nums"
+            >
+              {row.status.detail}
+            </Badge>
+            <span>{statusLabel(row.status)}</span>
+          </button>
+        ) : (
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            <span
+              aria-hidden
+              className={cn(
+                "size-2 shrink-0 rounded-full",
+                statusDotClass(row.status.kind),
+              )}
+            />
+            <span>{statusLabel(row.status)}</span>
+          </span>
+        )}
         <span className="tabular-nums text-muted-foreground">
           {fileCount} {fileCount === 1 ? "file" : "files"}
         </span>
-      </button>
+      </div>
       <div className="absolute top-2.5 right-2.5 flex items-center">
         <DropdownMenu>
           <DropdownMenuTrigger

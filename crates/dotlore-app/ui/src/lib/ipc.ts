@@ -5,6 +5,8 @@ import { errorMessage } from "./errors";
 import type {
   ConflictView,
   FileContent,
+  ResolutionDto,
+  ResolveResultDto,
   RootRow,
   StatusPayload,
 } from "./types";
@@ -72,6 +74,40 @@ export function readFile(slug: string, rel: string): Promise<FileContent> {
 
 export function conflicts(slug: string): Promise<ConflictView[]> {
   return invoke("conflicts", { slug });
+}
+
+export function openResolution(
+  slug: string,
+  rel: string,
+): Promise<ResolutionDto> {
+  return invoke("open_resolution", { slug, rel });
+}
+
+export function closeResolution(slug: string, rel: string): Promise<void> {
+  return invoke("close_resolution", { slug, rel });
+}
+
+export function resolveConflict(
+  slug: string,
+  rel: string,
+  discardSiblings: string[],
+  content: string,
+): Promise<ResolveResultDto> {
+  return run(() =>
+    invoke("resolve_conflict", { slug, rel, discardSiblings, content }),
+  );
+}
+
+/** Keep one side of a binary conflict. Backend discards every sibling. */
+export function resolveBinary(
+  slug: string,
+  rel: string,
+  keep: "live" | "other",
+  sibling?: string | null,
+): Promise<ResolveResultDto> {
+  return run(() =>
+    invoke("resolve_binary", { slug, rel, keep, sibling: sibling ?? null }),
+  );
 }
 
 export function providerDir(): Promise<string | null> {
