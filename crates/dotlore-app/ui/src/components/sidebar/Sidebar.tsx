@@ -139,8 +139,19 @@ export function Sidebar() {
     if (!focusRequest) return;
     const node = document.getElementById(`sidebar-root-${focusRequest.slug}`);
     if (!node) return;
-    node.scrollIntoView({ block: "nearest" });
-    node.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+    const reveal = () => {
+      node.scrollIntoView({ block: "nearest" });
+      node.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+    };
+    reveal();
+    const panel = node.closest("[data-collapsed]");
+    if (!(panel instanceof HTMLElement)) return;
+    const onEnd = (event: TransitionEvent) => {
+      if (event.target !== panel || event.propertyName !== "grid-template-rows") return;
+      reveal();
+    };
+    panel.addEventListener("transitionend", onEnd);
+    return () => panel.removeEventListener("transitionend", onEnd);
   }, [focusRequest, collapsed]);
 
   const starred = new Set(starredSlugs);
