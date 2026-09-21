@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from "react";
 import { Search } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
@@ -5,9 +6,18 @@ import { Input } from "@/components/ui/input";
 type SearchBarProps = {
   value: string;
   onChange: (value: string) => void;
+  placeholder?: string;
+  label?: string;
+  onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
 };
 
-export function SearchBar({ value, onChange }: SearchBarProps) {
+export function SearchBar({
+  value,
+  onChange,
+  placeholder = "Search",
+  label = "Search agents or projects",
+  onKeyDown,
+}: SearchBarProps) {
   return (
     <div className="min-w-0 flex-1">
       <div className="relative">
@@ -19,10 +29,11 @@ export function SearchBar({ value, onChange }: SearchBarProps) {
           type="search"
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="Search"
+          onKeyDown={onKeyDown}
+          placeholder={placeholder}
           autoComplete="off"
           spellCheck={false}
-          aria-label="Search agents or projects"
+          aria-label={label}
           className="h-8 pl-8"
         />
       </div>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Plus, RefreshCw } from "lucide-react";
 
+import { SearchBar } from "@/components/sidebar/SearchBar";
 import {
   EntryPickerDialog,
   UntrackEntryDialog,
@@ -22,7 +23,7 @@ import {
   trackedFiles,
 } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
-import { buildTree } from "@/lib/tree";
+import { buildTree, filterTree } from "@/lib/tree";
 import type { ConflictView, EntryView, TrackedFile } from "@/lib/types";
 
 const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -62,6 +63,7 @@ export function FileTree() {
   );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [untrackTarget, setUntrackTarget] = useState<EntryView | null>(null);
+  const [query, setQuery] = useState("");
   const loadId = useRef({ slug: selectedSlug, linked: !!root?.linked });
 
   const statusKey = root ? JSON.stringify(root.status) : "";
@@ -129,30 +131,34 @@ export function FileTree() {
     setFiles(next.files);
     setEntries(next.listed);
     setConflictSet(new Set());
+    setQuery("");
   }, [selectedSlug, root?.linked]);
 
   const tree = useMemo(() => buildTree(files), [files]);
+  const filtering = query.trim().length > 0;
+  const visibleTree = useMemo(() => filterTree(tree, query), [tree, query]);
 
   const isOpen = useCallback(
     (path: string, depth: number): boolean => {
+      if (filtering) return true;
       if (!selectedSlug) return false;
       const explicit = openBySlug[selectedSlug]?.[path];
       if (explicit !== undefined) return explicit;
       return depth === 0;
     },
-    [openBySlug, selectedSlug],
+    [filtering, openBySlug, selectedSlug],
   );
 
   const onToggle = useCallback(
     (path: string, depth: number) => {
-      if (!selectedSlug) return;
+      if (!selectedSlug || filtering) return;
       const next = !isOpen(path, depth);
       setOpenBySlug((current) => ({
         ...current,
         [selectedSlug]: { ...current[selectedSlug], [path]: next },
       }));
     },
-    [isOpen, selectedSlug],
+    [filtering, isOpen, selectedSlug],
   );
 
   if (!root) {
@@ -205,9 +211,26 @@ export function FileTree() {
           <TooltipContent>Sync now</TooltipContent>
         </Tooltip>
       </header>
+      <div className="flex shrink-0 border-b border-border px-3 py-2">
+        <SearchBar
+          value={query}
+          onChange={setQuery}
+          placeholder="Search files"
+          label="Search files and folders"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && query) {
+              event.preventDefault();
+              setQuery("");
+            }
+          }}
+        />
+      </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 px-1.5 py-1">
-        {tree.map((node) => (
+        {filtering && visibleTree.length === 0 ? (
+          <p className="px-2 py-1.5 text-sm text-muted-foreground">No matches</p>
+        ) : null}
+        {visibleTree.map((node) => (
           <TreeNode
             key={node.path}
             node={node}
