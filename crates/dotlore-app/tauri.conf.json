@@ -4,8 +4,8 @@
   "build": {
     "frontendDist": "ui/dist",
     "devUrl": "http://localhost:38421",
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build"
+    "beforeDevCommand": "pnpm ui:dev",
+    "beforeBuildCommand": "pnpm ui:build"
   },
   "app": {
     "windows": [

@@ -5,6 +5,8 @@
   "scripts": {
     "postinstall": "pnpm --dir crates/dotlore-app/ui install",
     "dev": "pnpm tauri dev",
+    "ui:dev": "pnpm --dir crates/dotlore-app/ui dev",
+    "ui:build": "pnpm --dir crates/dotlore-app/ui build",
     "mockapp:dev": "bash scripts/mockapp-dev.sh",
     "mockapp:build": "pnpm --dir crates/dotlore-app/ui exec tsc -p mockapp/tsconfig.json --noEmit && pnpm --dir crates/dotlore-app/ui exec vite build --config mockapp/vite.config.ts",
     "tauri": "bash scripts/tauri.sh",
