@@ -2,7 +2,7 @@ import { createContext, useContext } from "react";
 
 import type { RootRow } from "./types";
 
-export type AppView = "root" | "all";
+export type AppView = "root" | "all" | "starred";
 
 export type FocusRequest = {
   slug: string;
@@ -39,6 +39,7 @@ export type RootsContextValue = RootsState & {
   /** Leave the resolver; `close_resolution` runs on unmount. */
   closeResolver: () => void;
   showAllProjects: () => void;
+  showStarred: () => void;
   toggleStar: (slug: string) => void;
   /** Set `providerDir` immediately so onboarding unmounts, then refresh roots. */
   applyProvider: (dir: string) => void;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { LayoutGrid, Plus } from "lucide-react";
+import { LayoutGrid, Plus, Star } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -102,6 +102,7 @@ export function Sidebar() {
     selectRoot,
     openFirstConflict,
     showAllProjects,
+    showStarred,
     toggleStar,
     refreshRoots,
     busy,
@@ -148,7 +149,6 @@ export function Sidebar() {
 
   const starred = new Set(starredSlugs);
   const visible = roots.filter((row) => matchesQuery(row, query));
-  const starredRows = visible.filter((row) => starred.has(row.slug));
   const agents = visible.filter((row) => row.is_agent);
   const projects = visible.filter((row) => !row.is_agent);
 
@@ -210,16 +210,6 @@ export function Sidebar() {
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 px-1.5 pb-2">
-        {starredRows.length > 0 && (
-          <SidebarSection
-            id="starred"
-            title="Starred"
-            collapsed={collapsed.includes("starred")}
-            onToggle={() => toggleCollapsed("starred")}
-          >
-            {starredRows.map((row) => renderRoot(row))}
-          </SidebarSection>
-        )}
         <SidebarItem
           label="All projects"
           selected={view === "all"}
@@ -227,6 +217,14 @@ export function Sidebar() {
             <LayoutGrid aria-hidden className="size-4 shrink-0 text-muted-foreground" />
           }
           onClick={showAllProjects}
+        />
+        <SidebarItem
+          label="Starred"
+          selected={view === "starred"}
+          leading={
+            <Star aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+          }
+          onClick={showStarred}
         />
         <SidebarSection
           id="agents"

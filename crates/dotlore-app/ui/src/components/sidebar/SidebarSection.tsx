@@ -37,7 +37,7 @@ export function SidebarSection({
         </button>
         {action}
       </div>
-      {!collapsed && <div>{children}</div>}
+      {!collapsed && <div className="pl-4">{children}</div>}
     </section>
   );
 }

@@ -47,7 +47,7 @@ export function TitleBarActions() {
           render={
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="icon-sm"
               disabled={!active}
               aria-label={starred ? "Unstar" : "Star"}
               aria-pressed={starred}
@@ -71,7 +71,7 @@ export function TitleBarActions() {
           render={
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="icon-sm"
               disabled={!active || busy}
               aria-label="Remove from Dotlore"
               onClick={() => setRemoveOpen(true)}
@@ -89,7 +89,7 @@ export function TitleBarActions() {
           render={
             <Button
               variant="ghost"
-              size="icon-xs"
+              size="icon-sm"
               disabled={!active}
               aria-label="More actions"
               className="text-muted-foreground"

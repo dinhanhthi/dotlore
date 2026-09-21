@@ -13,15 +13,21 @@ function CardGrid({ rows }: { rows: RootRow[] }) {
   );
 }
 
-export function AllProjects() {
-  const { roots } = useRoots();
-  const agents = roots.filter((row) => row.is_agent);
-  const projects = roots.filter((row) => !row.is_agent);
+export function AllProjects({ starredOnly = false }: { starredOnly?: boolean }) {
+  const { roots, starredSlugs } = useRoots();
+  const starred = new Set(starredSlugs);
+  const source = starredOnly
+    ? roots.filter((row) => starred.has(row.slug))
+    : roots;
+  const agents = source.filter((row) => row.is_agent);
+  const projects = source.filter((row) => !row.is_agent);
 
-  if (roots.length === 0) {
+  if (source.length === 0) {
     return (
       <div className="flex h-full items-center justify-center px-6">
-        <p className="text-center text-muted-foreground">Nothing tracked yet.</p>
+        <p className="text-center text-muted-foreground">
+          {starredOnly ? "Nothing starred yet." : "Nothing tracked yet."}
+        </p>
       </div>
     );
   }

@@ -1,4 +1,3 @@
-import { getVersion } from "@tauri-apps/api/app";
 import { Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -12,11 +11,15 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { loginItemEnabled, setLoginItem } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
 import { readTheme, writeTheme, type Theme } from "@/lib/theme";
 
-const APP_VERSION = "0.1.0";
 export const GIT_INSTALL_CMD = "xcode-select --install";
 export const GIT_MISSING_BANNER = "git not found — run: xcode-select --install";
 
@@ -58,7 +61,6 @@ export function SettingsPopover() {
   const { providerDir, busy } = useRoots();
   const [changing, setChanging] = useState(false);
   const [loginOn, setLoginOn] = useState(false);
-  const [version, setVersion] = useState(APP_VERSION);
   const [theme, setTheme] = useState<Theme>(() => readTheme());
 
   useEffect(() => {
@@ -66,11 +68,6 @@ export function SettingsPopover() {
       .then(setLoginOn)
       .catch(() => {
         setLoginOn(false);
-      });
-    void getVersion()
-      .then(setVersion)
-      .catch(() => {
-        setVersion(APP_VERSION);
       });
   }, []);
 
@@ -107,22 +104,34 @@ export function SettingsPopover() {
       </PopoverTrigger>
       <PopoverContent side="top" align="end" className="w-80">
         <PopoverHeader>
-          <PopoverTitle>Cloud folder</PopoverTitle>
+          <PopoverTitle>Settings</PopoverTitle>
         </PopoverHeader>
-        <div className="flex items-center gap-2">
-          <span
-            className="min-w-0 flex-1 truncate font-path text-muted-foreground"
-            title={providerDir ?? "No cloud folder set"}
-          >
-            {folder}
-          </span>
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => setChanging((open) => !open)}
-          >
-            Change…
-          </Button>
+        <div className="flex flex-col gap-2">
+          <span className="text-sm">Cloud folder</span>
+          <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 truncate text-left font-mono text-xs text-muted-foreground"
+                  />
+                }
+              >
+                {folder}
+              </TooltipTrigger>
+              <TooltipContent>
+                {providerDir ?? "No cloud folder set"}
+              </TooltipContent>
+            </Tooltip>
+            <Button
+              variant="secondary"
+              size="xs"
+              onClick={() => setChanging((open) => !open)}
+            >
+              Change…
+            </Button>
+          </div>
         </div>
         {changing ? (
           <ProviderChooser compact onApplied={() => setChanging(false)} />
@@ -169,7 +178,6 @@ export function SettingsPopover() {
             }}
           />
         </div>
-        <p className="text-xs text-muted-foreground">Dotlore {version}</p>
       </PopoverContent>
     </Popover>
   );

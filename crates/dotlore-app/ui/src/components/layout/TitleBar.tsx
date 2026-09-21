@@ -1,9 +1,12 @@
-import type { MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { cn } from "@/lib/utils";
 
 import { TitleBarActions } from "./TitleBarActions";
+
+const APP_VERSION = "0.1.0";
 
 /**
  * Overlay titlebar: drag strip on the left (traffic lights sit here),
@@ -25,6 +28,16 @@ function handleMouseDown(e: MouseEvent) {
 }
 
 export function TitleBar({ className }: { className?: string }) {
+  const [version, setVersion] = useState(APP_VERSION);
+
+  useEffect(() => {
+    void getVersion()
+      .then(setVersion)
+      .catch(() => {
+        setVersion(APP_VERSION);
+      });
+  }, []);
+
   return (
     <div
       className={cn(
@@ -35,8 +48,20 @@ export function TitleBar({ className }: { className?: string }) {
       <div
         data-tauri-drag-region
         onMouseDown={handleMouseDown}
-        className="h-full min-w-0 flex-1"
-      />
+        className="flex h-full min-w-0 flex-1 items-center gap-2 pl-28"
+      >
+        <img
+          src="/logo_256.png"
+          alt=""
+          className="pointer-events-none size-6"
+        />
+        <span className="pointer-events-none text-sm font-medium text-foreground">
+          Dotlore
+        </span>
+        <span className="pointer-events-none text-xs text-muted-foreground">
+          {version}
+        </span>
+      </div>
       <TitleBarActions />
     </div>
   );

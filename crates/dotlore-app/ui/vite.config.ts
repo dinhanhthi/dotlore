@@ -5,8 +5,10 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+const repo = path.resolve(root, "../../..");
 
 export default defineConfig({
+  publicDir: path.join(repo, "assets"),
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

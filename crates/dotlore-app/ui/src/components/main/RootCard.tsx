@@ -87,9 +87,9 @@ export function RootCard({ row }: RootCardProps) {
   return (
     <div
       className={cn(
-        "flex flex-col overflow-hidden rounded-2xl bg-card ring-1 ring-foreground/5",
+        "flex flex-col overflow-hidden rounded-2xl bg-card ring-1 ring-foreground/20 dark:ring-foreground/10",
         "transition-[box-shadow] duration-[var(--dur-short)] ease-[var(--ease-out)]",
-        "hover:ring-foreground/10",
+        "hover:ring-foreground/30 dark:hover:ring-foreground/15",
       )}
     >
       <button
@@ -105,7 +105,7 @@ export function RootCard({ row }: RootCardProps) {
           {shortenPath(row.path)}
         </span>
       </button>
-      <footer className="flex items-center gap-3 border-t border-border px-4 py-2.5">
+      <footer className="flex items-center gap-3 border-t border-border px-4 py-2.5 text-xs">
         <span
           aria-label={statusAria(row.status)}
           className="flex min-w-0 flex-1 items-center gap-2.5 text-muted-foreground"
@@ -160,7 +160,7 @@ export function RootCard({ row }: RootCardProps) {
           >
             <Star
               aria-hidden
-              className={cn("size-4", starred && "fill-current")}
+              className={cn("size-3", starred && "fill-current")}
             />
           </button>
           <DropdownMenu>

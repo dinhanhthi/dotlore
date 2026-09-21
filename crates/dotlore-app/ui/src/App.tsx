@@ -71,6 +71,7 @@ function MainPanel() {
   const { view, selectedSlug, selectedRel, resolvingRel, closeResolver } =
     useRoots();
   if (view === "all") return <AllProjects />;
+  if (view === "starred") return <AllProjects starredOnly />;
   if (!selectedSlug || !selectedRel) return <EmptyState />;
   if (resolvingRel === selectedRel) {
     return (
@@ -212,6 +213,14 @@ export function App() {
     }));
   }, []);
 
+  const showStarred = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      view: "starred",
+      resolvingRel: null,
+    }));
+  }, []);
+
   const toggleStar = useCallback((slug: string) => {
     const starredSlugs = toggleStarred(slug);
     setState((current) => ({ ...current, starredSlugs }));
@@ -261,6 +270,7 @@ export function App() {
       openFirstConflict,
       closeResolver,
       showAllProjects,
+      showStarred,
       toggleStar,
       applyProvider,
       refreshRoots,
@@ -277,6 +287,7 @@ export function App() {
       openFirstConflict,
       closeResolver,
       showAllProjects,
+      showStarred,
       toggleStar,
       applyProvider,
       refreshRoots,
@@ -290,7 +301,7 @@ export function App() {
     <TooltipProvider delay={400}>
       <RootsContext.Provider value={value}>
         <Shell
-          hideTree={onboarding || !ready || state.view === "all"}
+          hideTree={onboarding || !ready || state.view !== "root"}
           sidebar={onboarding || !ready ? null : <Sidebar />}
           tree={onboarding || !ready ? undefined : <FileTree />}
           main={!ready ? null : <MainColumn />}

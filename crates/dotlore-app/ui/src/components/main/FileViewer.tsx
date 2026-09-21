@@ -101,7 +101,7 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
         <span className="min-w-0 flex-1 truncate font-path" title={rel}>
           {rel}
         </span>
-        <span className="shrink-0 tabular-nums text-muted-foreground">
+        <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
           {content ? formatBytes(content.bytes_len) : ""}
         </span>
         <Button

@@ -62,7 +62,7 @@ export function TreeNode({
             ) : (
               <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
             )}
-            <span className="min-w-0 truncate">{node.name}</span>
+            <span className="min-w-0 truncate text-sm">{node.name}</span>
           </button>
         ) : (
           <button
@@ -71,7 +71,7 @@ export function TreeNode({
             className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground"
           >
             <span className="size-4 shrink-0" aria-hidden />
-            <span className="min-w-0 truncate">{node.name}</span>
+            <span className="min-w-0 truncate text-sm">{node.name}</span>
           </button>
         )}
         <StatusMark status={status} />

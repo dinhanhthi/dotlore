@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 
 import { SettingsPopover } from "@/components/settings/SettingsPopover";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { uniqueConflictRels } from "@/lib/conflicts";
 import { conflicts as fetchConflicts, syncNow } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
@@ -141,6 +146,27 @@ export function Footer() {
           />
         )}
         {!busy && <span className="truncate">{status.text}</span>}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="text-muted-foreground"
+                disabled={busy || providerDir === null}
+                aria-label="Sync now"
+                onClick={() => {
+                  void syncNow().catch(() => {
+                    // Banner is set by `run()`.
+                  });
+                }}
+              />
+            }
+          >
+            <RefreshCw aria-hidden />
+          </TooltipTrigger>
+          <TooltipContent>Sync now</TooltipContent>
+        </Tooltip>
         {error !== null && (
           <span className="min-w-0 truncate text-destructive">{error}</span>
         )}
@@ -179,24 +205,11 @@ export function Footer() {
       )}
       <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
         <span
-          className="min-w-0 truncate font-path"
+          className="min-w-0 truncate font-mono text-xs"
           title={providerDir ?? "No cloud folder set"}
         >
           {shortProvider}
         </span>
-        <Button
-          variant="ghost"
-          size="xs"
-          className="text-muted-foreground"
-          disabled={busy || providerDir === null}
-          onClick={() => {
-            void syncNow().catch(() => {
-              // Banner is set by `run()`.
-            });
-          }}
-        >
-          Sync now
-        </Button>
         <SettingsPopover />
       </div>
     </footer>

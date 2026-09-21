@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { RefreshCw } from "lucide-react";
+
 import { TreeNode } from "@/components/tree/TreeNode";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { conflicts as fetchConflicts, syncNow, trackedFiles } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
 import { buildTree } from "@/lib/tree";
@@ -80,22 +87,30 @@ export function FileTree() {
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex h-row shrink-0 items-center gap-3 border-b border-border px-3">
         <span className="min-w-0 flex-1 truncate text-foreground">{root.name}</span>
-        <span className="shrink-0 tabular-nums text-muted-foreground">
+        <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
           {paths.length} {paths.length === 1 ? "file" : "files"}
         </span>
-        <Button
-          variant="ghost"
-          size="xs"
-          className="text-muted-foreground"
-          disabled={busy}
-          onClick={() => {
-            void syncNow().catch(() => {
-              // Banner is set by `run()`.
-            });
-          }}
-        >
-          Sync
-        </Button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="text-muted-foreground"
+                disabled={busy}
+                aria-label="Sync now"
+                onClick={() => {
+                  void syncNow().catch(() => {
+                    // Banner is set by `run()`.
+                  });
+                }}
+              />
+            }
+          >
+            <RefreshCw aria-hidden />
+          </TooltipTrigger>
+          <TooltipContent>Sync now</TooltipContent>
+        </Tooltip>
       </header>
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 px-1.5 py-1">
