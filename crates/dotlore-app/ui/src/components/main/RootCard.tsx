@@ -1,16 +1,14 @@
 import { useState } from "react";
-import { MoreHorizontal, Star } from "lucide-react";
+import { Star, Trash2 } from "lucide-react";
 
 import { RemoveRootAlert } from "@/components/sidebar/RemoveRootAlert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { recoverRoot } from "@/lib/ipc";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useRoots } from "@/lib/roots";
 import type { RootRow, RootStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -66,23 +64,12 @@ export function RootCard({ row }: RootCardProps) {
     selectRoot,
     openFirstConflict,
     toggleStar,
-    refreshRoots,
     busy,
   } = useRoots();
   const starred = starredSlugs.includes(row.slug);
   const fileCount = trackedBySlug[row.slug] ?? 0;
   const [removeOpen, setRemoveOpen] = useState(false);
   const conflicts = row.status.kind === "Conflicts" ? row.status.detail : 0;
-
-  async function handleRecover() {
-    if (busy) return;
-    try {
-      await recoverRoot(row.slug);
-      await refreshRoots();
-    } catch {
-      // Banner is set by `run()`.
-    }
-  }
 
   return (
     <div
@@ -163,39 +150,24 @@ export function RootCard({ row }: RootCardProps) {
               className={cn("size-3", starred && "fill-current")}
             />
           </button>
-          <DropdownMenu>
-            <DropdownMenuTrigger
+          <Tooltip>
+            <TooltipTrigger
               render={
                 <Button
+                  type="button"
                   variant="ghost"
                   size="icon-xs"
-                  aria-label="Root actions"
-                  className="text-muted-foreground hover:text-foreground"
+                  disabled={busy}
+                  aria-label="Remove from Dotlore"
+                  onClick={() => setRemoveOpen(true)}
+                  className="text-muted-foreground hover:text-destructive"
                 />
               }
             >
-              <MoreHorizontal aria-hidden />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-40">
-              {row.status.kind === "Error" && (
-                <DropdownMenuItem
-                  disabled={busy}
-                  onClick={() => {
-                    void handleRecover();
-                  }}
-                >
-                  Recover
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem
-                variant="destructive"
-                disabled={busy}
-                onClick={() => setRemoveOpen(true)}
-              >
-                Remove from Dotlore
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              <Trash2 aria-hidden />
+            </TooltipTrigger>
+            <TooltipContent>Remove from Dotlore</TooltipContent>
+          </Tooltip>
         </div>
       </footer>
       <RemoveRootAlert
