@@ -1,7 +1,11 @@
 //! IPC commands. Path input from the webview is untrusted.
 //!
-//! Engine-touching commands run in `tauri::async_runtime::spawn_blocking` and
-//! never hold `config::lock` across an `.await`. Write commands emit a fresh
+//! A command that takes the home lock or the engine mutex runs in
+//! `tauri::async_runtime::spawn_blocking` and never holds `config::lock`
+//! across an `.await`. The home lock is the easy one to miss: `load_cfg`
+//! alone touches no engine, but a daemon cycle holds that lock for the whole
+//! of `Engine::sync_all`, and a blocking command waits for it on the main
+//! thread, which freezes the window. Write commands emit a fresh
 //! `dotlore://status` payload and send [`Cmd::Reload`]; they do not return
 //! state alongside the result.
 
@@ -163,14 +167,24 @@ fn resolve_in_root(root: &config::Root, rel: &str) -> Result<PathBuf> {
     Ok(real)
 }
 
+/// Off the main thread, like every command that takes the home lock or the
+/// engine mutex: `load_cfg` blocks on the home lock, a daemon cycle holds that
+/// lock for the whole of [`Engine::sync_all`], and a `flock` on the main
+/// thread freezes the window.
 #[tauri::command]
-pub fn list_roots(state: State<'_, AppState>) -> Result<Vec<RootRow>, String> {
-    let cfg = load_cfg(&state.home)?;
-    Ok(cfg
-        .roots
-        .iter()
-        .map(|root| RootRow::from_root(root, &state.home_dir, RootStatus::Pending))
-        .collect())
+pub async fn list_roots(state: State<'_, AppState>) -> Result<Vec<RootRow>, String> {
+    let home = state.home.clone();
+    let home_dir = state.home_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = load_cfg(&home)?;
+        Ok(cfg
+            .roots
+            .iter()
+            .map(|root| RootRow::from_root(root, &home_dir, RootStatus::Pending))
+            .collect())
+    })
+    .await
+    .map_err(front_msg)?
 }
 
 #[tauri::command]
@@ -298,10 +312,16 @@ pub async fn resolve_binary(
     apply_resolution(&app, &state, slug, rel, snap, discarded, content).await
 }
 
+/// Off the main thread for the same reason as [`list_roots`].
 #[tauri::command]
-pub fn provider_dir(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let cfg = load_cfg(&state.home)?;
-    Ok(cfg.provider_dir.map(|p| p.to_string_lossy().into_owned()))
+pub async fn provider_dir(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let home = state.home.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = load_cfg(&home)?;
+        Ok(cfg.provider_dir.map(|p| p.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(front_msg)?
 }
 
 #[tauri::command]
