@@ -174,6 +174,43 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
     ("windsurf", &["memories/global_rules.md"]),
 ];
 
+/// Config homes under `$HOME`, in import order. `.config/opencode` is the
+/// opencode home; the key in [`AGENT_PATTERNS`] is still `opencode`.
+const AGENT_HOME_RELS: &[&str] = &[
+    ".claude",
+    ".codex",
+    ".cursor",
+    ".gemini",
+    ".config/opencode",
+    ".continue",
+    ".junie",
+    ".kiro",
+    ".roo",
+    ".cline",
+    ".windsurf",
+];
+
+/// Every catalog location, including ones that are missing or not directories.
+pub(crate) fn agent_catalog(home_dir: &Path) -> Vec<PathBuf> {
+    AGENT_HOME_RELS
+        .iter()
+        .map(|rel| home_dir.join(rel))
+        .collect()
+}
+
+/// Catalog homes that are real directories. Missing paths, symlinks, and
+/// regular files are omitted. Order matches [`agent_catalog`].
+pub fn installed_agent_dirs(home_dir: &Path) -> Vec<PathBuf> {
+    agent_catalog(home_dir)
+        .into_iter()
+        .filter(|path| {
+            fs::symlink_metadata(path)
+                .ok()
+                .is_some_and(|md| md.is_dir() && !md.file_type().is_symlink())
+        })
+        .collect()
+}
+
 /// Fallback for an agent folder with no `AGENT_PATTERNS` row.
 pub const GENERIC_AGENT_PATTERNS: &[&str] = &[
     "AGENTS.md",
@@ -1210,5 +1247,18 @@ mod tests {
             skipped.is_empty(),
             "ignored bytes must not count toward the folder limit: {skipped:?}"
         );
+    }
+
+    #[test]
+    fn installed_agent_dirs_skips_missing_paths_and_symlinks() {
+        let home = tempfile::TempDir::new().unwrap();
+        let claude = home.path().join(".claude");
+        fs::create_dir(&claude).unwrap();
+        let real = home.path().join("codex-real");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, home.path().join(".codex")).unwrap();
+        fs::write(home.path().join(".gemini"), b"not-a-directory").unwrap();
+
+        assert_eq!(installed_agent_dirs(home.path()), vec![claude]);
     }
 }

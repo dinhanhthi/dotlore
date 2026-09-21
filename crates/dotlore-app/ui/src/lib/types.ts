@@ -66,6 +66,18 @@ export type InspectedEntryDto = {
   skipped_too_large: SkippedFileDto[];
 };
 
+/** Mirrors `commands::ImportAgentFailureDto` (snake_case fields). */
+export type ImportAgentFailureDto = {
+  path: string;
+  message: string;
+};
+
+/** Mirrors `commands::ImportAgentsDto`. */
+export type ImportAgentsDto = {
+  added: string[];
+  failed: ImportAgentFailureDto[];
+};
+
 /** Mirrors `commands::TrackResultDto` (`tag = "outcome"`, snake_case). */
 export type TrackResultDto =
   | { outcome: "done" }

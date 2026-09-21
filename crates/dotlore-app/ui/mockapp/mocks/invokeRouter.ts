@@ -328,6 +328,7 @@ const handlers: Record<
     emitStatus();
     return slug;
   },
+  import_installed_agents: () => ({ added: [], failed: [] }),
   link_root: (args) => {
     const slug = argString(args, "slug");
     const path = argString(args, "path");

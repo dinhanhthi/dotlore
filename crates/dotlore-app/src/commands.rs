@@ -22,8 +22,8 @@ use tauri::{AppHandle, Emitter, State};
 use dotlore_core::config;
 use dotlore_core::daemon::Cmd;
 use dotlore_core::engine::{
-    self, ConflictView, Engine, EntryKind, EntryView, InspectedEntry, ResolutionSnapshot,
-    ResolveOutcome, RootStatus, SiblingView, TrackOutcome, TrackedFile,
+    self, ConflictView, Engine, EntryKind, EntryView, ImportAgentsReport, InspectedEntry,
+    ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView, TrackOutcome, TrackedFile,
 };
 use dotlore_core::git;
 use dotlore_core::project;
@@ -113,6 +113,20 @@ pub struct InspectedEntryDto {
 pub struct SkippedFileDto {
     pub rel: String,
     pub bytes: u64,
+}
+
+/// What [`import_installed_agents`] added, and the homes it could not.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ImportAgentsDto {
+    pub added: Vec<String>,
+    pub failed: Vec<ImportAgentFailureDto>,
+}
+
+/// One catalog home [`import_installed_agents`] could not add.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ImportAgentFailureDto {
+    pub path: String,
+    pub message: String,
 }
 
 /// Result of [`track_entry`]. Confirmation does not mutate.
@@ -340,6 +354,25 @@ pub async fn add_root(
     .map_err(front_msg)??;
     notify(&app, &state)?;
     Ok(slug)
+}
+
+#[tauri::command]
+pub async fn import_installed_agents(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ImportAgentsDto, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .import_installed_agents()
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)?;
+    Ok(import_agents_dto(report))
 }
 
 #[tauri::command]
@@ -775,6 +808,20 @@ fn name_of(p: &Path) -> String {
 
 fn front_err(e: anyhow::Error) -> String {
     one_line(&format!("{e:#}"))
+}
+
+fn import_agents_dto(report: ImportAgentsReport) -> ImportAgentsDto {
+    ImportAgentsDto {
+        added: report.added,
+        failed: report
+            .failed
+            .into_iter()
+            .map(|(path, message)| ImportAgentFailureDto {
+                path: path.to_string_lossy().into_owned(),
+                message,
+            })
+            .collect(),
+    }
 }
 
 fn front_msg(e: impl std::fmt::Display) -> String {

@@ -53,6 +53,10 @@ pub struct Config {
     pub device_name: String,
     pub provider_dir: Option<PathBuf>,
     pub roots: Vec<Root>,
+    /// Catalog agent homes the user removed. Import skips these until that
+    /// path is added again. Empty on configs written before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dismissed_agents: Vec<PathBuf>,
     /// Project seed patterns. `None` means use `project::DEFAULT_PATTERNS`.
     /// Never applied to agent folders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
