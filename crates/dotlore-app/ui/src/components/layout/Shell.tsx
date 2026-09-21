@@ -71,7 +71,7 @@ export function Shell({
         </aside>
       ) : null}
       {!hideTree && (
-        <section className="relative flex min-h-0 flex-col overflow-hidden bg-background">
+        <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-background">
           {tree}
           <ResizeHandle
             width={treeWidth}

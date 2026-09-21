@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Loader2, Plus, RefreshCw } from "lucide-react";
+import { Info, Loader2, Plus, RefreshCw } from "lucide-react";
 
 import { SearchBar } from "@/components/sidebar/SearchBar";
 import {
   EntryPickerDialog,
   UntrackEntryDialog,
 } from "@/components/tree/EntryPickerDialog";
+import { formatBytes } from "@/components/tree/entries";
 import { TreeNode } from "@/components/tree/TreeNode";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -49,11 +55,57 @@ function conflictPathSet(views: ConflictView[]): Set<string> {
   return new Set(views.map((view) => String(view.live).replace(/\\/g, "/")));
 }
 
+function TrackedSummary({ files }: { files: TrackedFile[] }) {
+  const [open, setOpen] = useState(false);
+  const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
+  const fileLabel = `${files.length} ${files.length === 1 ? "file" : "files"}`;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <Tooltip disabled={open}>
+        <TooltipTrigger
+          render={
+            <PopoverTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="text-muted-foreground"
+                  aria-label="Tracked files"
+                />
+              }
+            />
+          }
+        >
+          <Info aria-hidden />
+        </TooltipTrigger>
+        <TooltipContent>Tracked files</TooltipContent>
+      </Tooltip>
+      <PopoverContent align="end" sideOffset={6} className="w-52 gap-2 p-3">
+        <div className="flex items-baseline justify-between gap-4">
+          <span className="text-muted-foreground">Files</span>
+          <span className="tabular-nums">{fileLabel}</span>
+        </div>
+        <div className="flex items-baseline justify-between gap-4">
+          <span className="text-muted-foreground">Size</span>
+          <span className="tabular-nums">{formatBytes(totalBytes)}</span>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function TreeSeeding({ name }: { name: string }) {
   return (
-    <div className="flex h-full min-h-0 flex-col" aria-busy="true" aria-live="polite">
-      <header className="flex h-row shrink-0 items-center gap-3 border-b border-border px-3">
-        <span className="min-w-0 flex-1 truncate text-foreground">{name}</span>
+    <div
+      className="flex h-full min-h-0 min-w-0 flex-col"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <header className="flex h-row min-w-0 shrink-0 items-center border-b border-border px-3">
+        <span className="min-w-0 flex-1 truncate text-foreground" title={name}>
+          {name}
+        </span>
       </header>
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-muted-foreground">
         <Loader2 className="size-5 animate-spin" aria-hidden />
@@ -186,50 +238,54 @@ export function FileTree() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex h-row shrink-0 items-center gap-3 border-b border-border px-3">
-        <span className="min-w-0 flex-1 truncate text-foreground">{root.name}</span>
-        <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
-          {files.length} {files.length === 1 ? "file" : "files"}
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
+      <header className="flex h-row min-w-0 shrink-0 items-center gap-2 border-b border-border px-3">
+        <span className="min-w-0 flex-1 truncate text-foreground" title={root.name}>
+          {root.name}
         </span>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="text-muted-foreground"
-                disabled={busy || !root.linked}
-                aria-label="Add to track"
-                onClick={() => setPickerOpen(true)}
-              />
-            }
-          >
-            <Plus aria-hidden />
-          </TooltipTrigger>
-          <TooltipContent>Add to track</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="text-muted-foreground"
-                disabled={busy || !root.linked}
-                aria-label="Sync now"
-                onClick={() => {
-                  void syncNow().catch(() => {
-                    // Banner is set by `run()`.
-                  });
-                }}
-              />
-            }
-          >
-            <RefreshCw aria-hidden />
-          </TooltipTrigger>
-          <TooltipContent>Sync now</TooltipContent>
-        </Tooltip>
+        <div className="flex shrink-0 items-center gap-1">
+          <TrackedSummary files={files} />
+          <div className="flex items-center gap-0.5">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground"
+                    disabled={busy || !root.linked}
+                    aria-label="Add to track"
+                    onClick={() => setPickerOpen(true)}
+                  />
+                }
+              >
+                <Plus aria-hidden />
+              </TooltipTrigger>
+              <TooltipContent>Add to track</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground"
+                    disabled={busy || !root.linked}
+                    aria-label="Sync now"
+                    onClick={() => {
+                      void syncNow().catch(() => {
+                        // Banner is set by `run()`.
+                      });
+                    }}
+                  />
+                }
+              >
+                <RefreshCw aria-hidden />
+              </TooltipTrigger>
+              <TooltipContent>Sync now</TooltipContent>
+            </Tooltip>
+          </div>
+        </div>
       </header>
       <div className="flex shrink-0 border-b border-border px-3 py-2">
         <SearchBar

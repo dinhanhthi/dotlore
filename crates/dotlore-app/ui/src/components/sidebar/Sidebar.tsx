@@ -4,9 +4,15 @@ import { LayoutGrid, Plus, RefreshCw, Star } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { importInstalledAgents, linkRoot, recoverRoot, setBanner } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { useRoots } from "@/lib/roots";
+import { cn } from "@/lib/utils";
 import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
 
@@ -61,15 +67,22 @@ function AddSectionButton({
   disabled?: boolean;
 }) {
   return (
-    <Button
-      variant="ghost"
-      size="icon-xs"
-      aria-label={label}
-      disabled={disabled}
-      onClick={onPick}
-    >
-      <Plus aria-hidden />
-    </Button>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={label}
+            disabled={disabled}
+            onClick={onPick}
+          />
+        }
+      >
+        <Plus aria-hidden />
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -247,15 +260,22 @@ export function Sidebar() {
                 disabled={busy}
                 onPick={() => void startAdd()}
               />
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                aria-label="Refresh agents"
-                disabled={busy}
-                onClick={() => void refreshAgents()}
-              >
-                <RefreshCw aria-hidden />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Refresh agents"
+                      disabled={busy}
+                      onClick={() => void refreshAgents()}
+                    />
+                  }
+                >
+                  <RefreshCw aria-hidden />
+                </TooltipTrigger>
+                <TooltipContent>Refresh agents</TooltipContent>
+              </Tooltip>
             </div>
           }
         >

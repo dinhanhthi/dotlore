@@ -14,7 +14,9 @@ const { importInstalledAgents, setBanner, refreshClicks } = vi.hoisted(() => ({
     }> => ({ added: [], failed: [] }),
   ),
   setBanner: vi.fn(),
-  refreshClicks: [] as Array<() => void | Promise<void>>,
+  refreshClicks: [] as Array<
+    (event: { nativeEvent: Event }) => void | Promise<void>
+  >,
 }));
 
 vi.mock("@/lib/ipc", () => ({
@@ -34,7 +36,9 @@ vi.mock("@/components/ui/button", async () => {
     ...actual,
     Button: (props: ComponentProps<typeof actual.Button>) => {
       if (props["aria-label"] === "Refresh agents" && props.onClick) {
-        refreshClicks.push(props.onClick as () => void | Promise<void>);
+        refreshClicks.push(
+          props.onClick as (event: { nativeEvent: Event }) => void | Promise<void>,
+        );
       }
       return actual.Button(props);
     },
@@ -70,6 +74,10 @@ function renderSidebar(overrides: Partial<RootsContextValue> = {}) {
   return { html, refreshRoots: value.refreshRoots };
 }
 
+function clickRefresh() {
+  return refreshClicks.at(-1)?.({ nativeEvent: new Event("click") });
+}
+
 describe("Sidebar agents refresh", () => {
   beforeEach(() => {
     importInstalledAgents.mockReset();
@@ -84,9 +92,8 @@ describe("Sidebar agents refresh", () => {
     expect(html).toContain('aria-label="Add agent"');
     expect(html).toContain('aria-label="Add project"');
 
-    const refresh = refreshClicks.at(-1);
-    expect(refresh).toBeTypeOf("function");
-    await refresh?.();
+    expect(refreshClicks.at(-1)).toBeTypeOf("function");
+    await clickRefresh();
 
     expect(importInstalledAgents).toHaveBeenCalledOnce();
     expect(refreshRoots).toHaveBeenCalledOnce();
@@ -99,7 +106,7 @@ describe("Sidebar agents refresh", () => {
     importInstalledAgents.mockRejectedValueOnce(new Error("import failed"));
     const { refreshRoots } = renderSidebar();
 
-    await refreshClicks.at(-1)?.();
+    await clickRefresh();
 
     expect(importInstalledAgents).toHaveBeenCalledOnce();
     expect(refreshRoots).not.toHaveBeenCalled();
@@ -112,7 +119,7 @@ describe("Sidebar agents refresh", () => {
     });
     const { refreshRoots } = renderSidebar();
 
-    await refreshClicks.at(-1)?.();
+    await clickRefresh();
 
     expect(setBanner).toHaveBeenCalledWith("already tracked");
     expect(refreshRoots).toHaveBeenCalledOnce();
