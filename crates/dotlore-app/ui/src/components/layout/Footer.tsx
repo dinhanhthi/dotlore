@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/tooltip";
 import { uniqueConflictRels } from "@/lib/conflicts";
 import { conflicts as fetchConflicts, syncNow } from "@/lib/ipc";
-import { useRoots } from "@/lib/roots";
+import { useRoots, type SeedingRoot } from "@/lib/roots";
 import type { RootRow, RootStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +19,12 @@ type Aggregate = {
   color: string;
   text: string;
 };
+
+function addingLabel(seeding: SeedingRoot[]): string {
+  const first = seeding[0];
+  if (seeding.length === 1 && first) return `Adding files to ${first.name}…`;
+  return `Adding files to ${seeding.length} projects…`;
+}
 
 function conflictCount(status: RootStatus): number {
   return status.kind === "Conflicts" ? status.detail : 0;
@@ -65,6 +71,7 @@ export function Footer() {
     trackedBySlug,
     error,
     busy,
+    seeding,
     selectedSlug,
     resolvingRel,
     openResolver,
@@ -120,7 +127,12 @@ export function Footer() {
   return (
     <footer className="flex h-11 items-center gap-4 border-t border-border px-3 text-[0.8rem] text-muted-foreground">
       <div className="flex min-w-0 flex-1 items-center gap-2.5" aria-busy={busy}>
-        {busy ? (
+        {seeding.length > 0 ? (
+          <>
+            <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+            <span className="truncate">{addingLabel(seeding)}</span>
+          </>
+        ) : busy ? (
           <>
             <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
             <span className="truncate">Working…</span>
@@ -135,7 +147,9 @@ export function Footer() {
             aria-hidden
           />
         )}
-        {!busy && <span className="truncate">{status.text}</span>}
+        {seeding.length === 0 && !busy && (
+          <span className="truncate">{status.text}</span>
+        )}
         <Tooltip>
           <TooltipTrigger
             render={

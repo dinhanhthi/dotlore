@@ -15,8 +15,8 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{self, File, OpenOptions};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -132,6 +132,70 @@ pub struct AddRootReport {
     pub skipped_too_large: Vec<(PathBuf, u64)>,
 }
 
+/// A new root whose staging repo exists, but whose pattern files are not
+/// copied yet. [`AddSeed::materialize`] does that walk without the engine
+/// mutex or the home lock; [`Engine::complete_add_root`] registers it after.
+pub struct AddSeed {
+    pub slug: String,
+    path: PathBuf,
+    patterns: Vec<String>,
+    ignore: String,
+    limits: Limits,
+    display_name: String,
+    is_agent: bool,
+    home: PathBuf,
+    home_dir: PathBuf,
+    device_name: String,
+    device_id: String,
+    cloud_base: PathBuf,
+    /// Exclusive lock held until drop so another process cannot archive this
+    /// staging repo while [`AddSeed::materialize`] copies pattern matches.
+    _reservation: File,
+}
+
+/// First step of [`Engine::add_root`]. `Done` already linked an existing slug.
+pub enum AddRootStart {
+    Done(AddRootReport),
+    Seed(AddSeed),
+}
+
+impl AddSeed {
+    /// Walk include-list patterns, copy matches into staging, and publish.
+    /// Does not register the root and does not take the home lock.
+    pub fn materialize(&self) -> Result<AddRootReport> {
+        let (file, skipped_folders) =
+            project::seed(&self.path, &self.patterns, &self.ignore, self.limits)?;
+        let mut repo = Repo::open(
+            &self.home,
+            &self.slug,
+            &self.path,
+            &self.device_name,
+            &self.device_id,
+        )?;
+        repo.limits = self.limits;
+        project::write(&repo.staging, &file)?;
+        fs::write(repo.staging.join(project::IGNORE_FILE), &self.ignore)?;
+        // `cloud_base` is already `<provider>/dotlore`. `cloud_at` would append
+        // another `dotlore` segment.
+        let cloud = Cloud {
+            base: self.cloud_base.clone(),
+        };
+        cloud.write_manifest_once(&Manifest {
+            slug: self.slug.clone(),
+            display_name: self.display_name.clone(),
+            is_agent: self.is_agent,
+        })?;
+        cloud.write_device_name_once(&self.slug, &self.device_id, &self.device_name)?;
+        let (_, report) = repo.commit_local(true, &self.home_dir)?;
+        repo.publish(&cloud)?;
+        Ok(AddRootReport {
+            slug: self.slug.clone(),
+            skipped_folders,
+            skipped_too_large: report.skipped_too_large,
+        })
+    }
+}
+
 impl fmt::Display for AddRootReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.slug)
@@ -190,6 +254,10 @@ pub struct Engine {
     pub home_dir: PathBuf,
     pub cfg: Config,
     pub cloud: Cloud,
+    /// Slugs reserved by [`Engine::begin_add_root`] until register or cancel.
+    /// In memory only, so a second add cannot archive the staging repo while
+    /// pattern seeding runs without the home lock.
+    pending_adds: Vec<(String, PathBuf)>,
 }
 
 impl Engine {
@@ -205,6 +273,7 @@ impl Engine {
             home_dir: home_dir.to_path_buf(),
             cloud: cloud_at(&provider),
             cfg,
+            pending_adds: Vec::new(),
         })
     }
 
@@ -212,7 +281,33 @@ impl Engine {
 
     /// Start tracking `path`, or link to it when the cloud already knows the
     /// slug. Surfaces seed-folder skips and files over the per-file limit.
+    ///
+    /// Pattern seeding and the first copy run without the home lock so the
+    /// rest of the app can keep reading other roots. The lock is taken again
+    /// only to register. Those takes are sequential, not nested.
     pub fn add_root(&mut self, path: &Path, slug: Option<&str>) -> Result<AddRootReport> {
+        match self.begin_add_root(path, slug)? {
+            AddRootStart::Done(report) => Ok(report),
+            AddRootStart::Seed(seed) => {
+                let report = match seed.materialize() {
+                    Ok(report) => report,
+                    Err(err) => {
+                        self.cancel_add_root(&seed.slug);
+                        return Err(err);
+                    }
+                };
+                if let Err(err) = self.complete_add_root(&seed) {
+                    self.cancel_add_root(&seed.slug);
+                    return Err(err);
+                }
+                Ok(report)
+            }
+        }
+    }
+
+    /// Validate, init the staging repo, and either link an existing slug or
+    /// hand back an [`AddSeed`] the caller materializes without this lock.
+    pub fn begin_add_root(&mut self, path: &Path, slug: Option<&str>) -> Result<AddRootStart> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
         let cloud = self.cloud();
@@ -231,6 +326,7 @@ impl Engine {
         check_slug(&slug)?;
         self.check_placement(&path)?;
         self.check_unregistered(&slug, &path)?;
+        self.check_not_pending(&slug, &path)?;
 
         // The cloud decides first: a slug another device already created is a
         // Link, never a second unrelated history. A manifest we cannot read is
@@ -238,11 +334,11 @@ impl Engine {
         match cloud.read_manifest(&slug) {
             Some(_) => {
                 self.link_root_locked(&g, &cloud, &slug, &path)?;
-                return Ok(AddRootReport {
+                return Ok(AddRootStart::Done(AddRootReport {
                     slug,
                     skipped_folders: Vec::new(),
                     skipped_too_large: Vec::new(),
-                });
+                }));
             }
             None if cloud.slug_dir(&slug)?.join("manifest.json").exists() => bail!(
                 "the manifest for {slug} exists but could not be read; retry once the \
@@ -251,50 +347,112 @@ impl Engine {
             None => {}
         }
 
-        self.archive_stale_staging(&slug)?;
-        let limits = Limits::from_config(&self.cfg);
-        let mut repo = Repo::init(
-            &self.home,
-            &slug,
-            &path,
-            &self.cfg.device_name,
-            &self.cfg.device_id,
+        let reservation = Self::reserve_add(&self.home, &slug)?;
+        self.pending_adds.push((slug.clone(), path.clone()));
+        let prepared = (|| -> Result<AddSeed> {
+            self.archive_stale_staging(&slug)?;
+            Repo::init(
+                &self.home,
+                &slug,
+                &path,
+                &self.cfg.device_name,
+                &self.cfg.device_id,
+            )?;
+            let display_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| slug.clone());
+            let root = Root {
+                slug: slug.clone(),
+                path: path.clone(),
+                initializing: false,
+            };
+            // Written before the first commit so both arrive with the history
+            // every other device links to. `link_root_locked` writes neither.
+            let ignore = self
+                .cfg
+                .default_ignore
+                .as_deref()
+                .unwrap_or(project::DEFAULT_NEVER_IGNORE)
+                .to_string();
+            let patterns = project::patterns_for(&root, &self.home_dir, &self.cfg);
+            Ok(AddSeed {
+                slug: slug.clone(),
+                path: path.clone(),
+                patterns,
+                ignore,
+                limits: Limits::from_config(&self.cfg),
+                display_name,
+                is_agent: root.is_agent(&self.home_dir),
+                home: self.home.clone(),
+                home_dir: self.home_dir.clone(),
+                device_name: self.cfg.device_name.clone(),
+                device_id: self.cfg.device_id.clone(),
+                cloud_base: cloud.base.clone(),
+                _reservation: reservation,
+            })
+        })();
+        match prepared {
+            Ok(seed) => Ok(AddRootStart::Seed(seed)),
+            Err(err) => {
+                self.cancel_add_root(&slug);
+                Err(err)
+            }
+        }
+    }
+
+    /// Register a root whose staging history [`AddSeed::materialize`] already
+    /// published. Reloads config under a fresh home lock.
+    pub fn complete_add_root(&mut self, seed: &AddSeed) -> Result<()> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        self.check_unregistered(&seed.slug, &seed.path)?;
+        self.register(
+            &g,
+            Root {
+                slug: seed.slug.clone(),
+                path: seed.path.clone(),
+                initializing: false,
+            },
         )?;
-        repo.limits = limits;
-        let display_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| slug.clone());
-        let root = Root {
-            slug: slug.clone(),
-            path: path.clone(),
-            initializing: false,
-        };
-        // Written before the first commit so both arrive with the history
-        // every other device links to. `link_root_locked` writes neither.
-        let ignore = self
-            .cfg
-            .default_ignore
-            .as_deref()
-            .unwrap_or(project::DEFAULT_NEVER_IGNORE);
-        let patterns = project::patterns_for(&root, &self.home_dir, &self.cfg);
-        let (file, skipped_folders) = project::seed(&path, &patterns, ignore, limits)?;
-        project::write(&repo.staging, &file)?;
-        fs::write(repo.staging.join(project::IGNORE_FILE), ignore)?;
-        cloud.write_manifest_once(&Manifest {
-            slug: slug.clone(),
-            display_name,
-            is_agent: root.is_agent(&self.home_dir),
-        })?;
-        cloud.write_device_name_once(&slug, &self.cfg.device_id, &self.cfg.device_name)?;
-        let (_, report) = repo.commit_local(true, &self.home_dir)?;
-        repo.publish(&cloud)?;
-        self.register(&g, root)?;
-        Ok(AddRootReport {
-            slug,
-            skipped_folders,
-            skipped_too_large: report.skipped_too_large,
-        })
+        self.cancel_add_root(&seed.slug);
+        Ok(())
+    }
+
+    /// Drop a reservation left by [`Engine::begin_add_root`] when seeding fails.
+    pub fn cancel_add_root(&mut self, slug: &str) {
+        self.pending_adds.retain(|(pending, _)| pending != slug);
+    }
+
+    /// Cross-process hold on `<home>/adding/<slug>`. Released when the file
+    /// is dropped. A crash drops it too, so the next add can take the slug.
+    fn reserve_add(home: &Path, slug: &str) -> Result<File> {
+        let dir = home.join("adding");
+        fs::create_dir_all(&dir)?;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(dir.join(slug))?;
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(fs::TryLockError::WouldBlock) => bail!("{slug} is already being added"),
+            Err(fs::TryLockError::Error(err)) => {
+                Err(err).context(format!("locking add reservation for {slug}"))
+            }
+        }
+    }
+
+    fn check_not_pending(&self, slug: &str, path: &Path) -> Result<()> {
+        if let Some((other, _)) = self.pending_adds.iter().find(|(_, pending)| pending == path) {
+            bail!("{} is already being added as {other}", path.display());
+        }
+        if self.pending_adds.iter().any(|(pending, _)| pending == slug) {
+            bail!("{slug} is already being added");
+        }
+        Ok(())
     }
 
     /// Adopt an existing cloud slug onto a local path.
@@ -1157,6 +1315,7 @@ pub fn configure_provider(
             home_dir: home_dir.to_path_buf(),
             cloud: cloud_at(&src),
             cfg,
+            pending_adds: Vec::new(),
         };
         let src_cloud = e.cloud();
         for slug in e
@@ -1185,6 +1344,7 @@ pub fn configure_provider(
         home_dir: home_dir.to_path_buf(),
         cloud: cloud_at(&dest),
         cfg,
+        pending_adds: Vec::new(),
     };
     let dest_cloud = e.cloud();
     let mut out = Vec::new();
@@ -1669,6 +1829,37 @@ mod tests {
             serde_json::to_string(&RootStatus::Error("boom".into())).unwrap(),
             r#"{"kind":"Error","detail":"boom"}"#
         );
+    }
+
+    #[test]
+    fn a_second_engine_cannot_take_a_slug_while_it_is_seeding() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        let seed = match a
+            .engine
+            .begin_add_root(a.root.path(), Some("proj-claude"))
+            .unwrap()
+        {
+            AddRootStart::Seed(seed) => seed,
+            AddRootStart::Done(_) => panic!("expected a new root to seed"),
+        };
+
+        let cfg = Config::load(a.home.path()).unwrap();
+        let mut other = Engine::new(a.home.path(), a.home.path(), cfg).unwrap();
+        let err = match other.begin_add_root(a.root.path(), Some("proj-claude")) {
+            Ok(_) => panic!("a second add took a slug that is still seeding"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("already being added"),
+            "{err:#}"
+        );
+        assert!(
+            a.home.path().join("repos/proj-claude/.git").is_dir(),
+            "the in-progress staging repo must stay put"
+        );
+        drop(seed);
     }
 
     #[test]

@@ -14,6 +14,13 @@ export type SelectRootOptions = {
   focusSidebar?: boolean;
 };
 
+/** A project whose pattern files are still being copied in. */
+export type SeedingRoot = {
+  slug: string;
+  path: string;
+  name: string;
+};
+
 export type RootsState = {
   roots: RootRow[];
   providerDir: string | null;
@@ -27,6 +34,8 @@ export type RootsState = {
   resolvingRel: string | null;
   view: AppView;
   focusRequest: FocusRequest | null;
+  /** Adds in flight. Does not disable the rest of the app. */
+  seeding: SeedingRoot[];
 };
 
 export type RootsContextValue = RootsState & {
@@ -45,6 +54,8 @@ export type RootsContextValue = RootsState & {
   applyProvider: (dir: string) => void;
   /** Re-fetch configured roots, cloud-only rows, and file counts. */
   refreshRoots: () => Promise<void>;
+  /** Register `path` without locking the rest of the window. */
+  addProject: (path: string, slug: string) => Promise<void>;
   inflight: number;
   busy: boolean;
   banner: string | null;
@@ -63,7 +74,47 @@ export const emptyRootsState: RootsState = {
   resolvingRel: null,
   view: "root",
   focusRequest: null,
+  seeding: [],
 };
+
+/** Last path segment, or the slug when the path has none. */
+export function folderName(path: string, slug: string): string {
+  const name = path.split("/").filter((part) => part.length > 0).at(-1);
+  return name && name.length > 0 ? name : slug;
+}
+
+/**
+ * First component under `/Users/<name>` or `/home/<name>` starts with `.`.
+ * Matches `Root::is_agent` closely enough to place an optimistic row.
+ */
+export function looksLikeAgent(path: string): boolean {
+  const parts = path.split("/").filter((part) => part.length > 0);
+  const atHome = parts[0] === "Users" || parts[0] === "home";
+  const first = atHome ? parts[2] : undefined;
+  return first !== undefined && first.startsWith(".");
+}
+
+/** Show a linked placeholder for each add that has not landed in `roots` yet. */
+export function rootsWithSeeding(roots: RootRow[], seeding: SeedingRoot[]): RootRow[] {
+  const pending = seeding.filter(
+    (item) => !roots.some((row) => row.slug === item.slug && row.linked),
+  );
+  if (pending.length === 0) return roots;
+  const slugs = new Set(pending.map((item) => item.slug));
+  return [
+    ...roots.filter((row) => !slugs.has(row.slug)),
+    ...pending.map(
+      (item): RootRow => ({
+        slug: item.slug,
+        path: item.path,
+        name: item.name,
+        is_agent: looksLikeAgent(item.path),
+        linked: true,
+        status: { kind: "Pending" },
+      }),
+    ),
+  ];
+}
 
 /** Cloud-only rows are built so `is_agent` still groups `~/.claude` under Agents. */
 export function mergeRootsBySlug(

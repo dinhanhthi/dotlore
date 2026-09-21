@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Plus, RefreshCw } from "lucide-react";
+import { Loader2, Plus, RefreshCw } from "lucide-react";
 
 import { SearchBar } from "@/components/sidebar/SearchBar";
 import {
@@ -49,10 +49,25 @@ function conflictPathSet(views: ConflictView[]): Set<string> {
   return new Set(views.map((view) => String(view.live).replace(/\\/g, "/")));
 }
 
+function TreeSeeding({ name }: { name: string }) {
+  return (
+    <div className="flex h-full min-h-0 flex-col" aria-busy="true" aria-live="polite">
+      <header className="flex h-row shrink-0 items-center gap-3 border-b border-border px-3">
+        <span className="min-w-0 flex-1 truncate text-foreground">{name}</span>
+      </header>
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-muted-foreground">
+        <Loader2 className="size-5 animate-spin" aria-hidden />
+        <p className="text-center text-sm">Adding files…</p>
+      </div>
+    </div>
+  );
+}
+
 export function FileTree() {
-  const { roots, selectedSlug, selectedRel, selectFile, openResolver, busy } =
+  const { roots, selectedSlug, selectedRel, selectFile, openResolver, busy, seeding } =
     useRoots();
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
+  const seedingItem = seeding.find((item) => item.slug === selectedSlug) ?? null;
 
   const [files, setFiles] = useState<TrackedFile[]>([]);
   const [entries, setEntries] = useState<EntryView[]>([]);
@@ -69,7 +84,7 @@ export function FileTree() {
   const statusKey = root ? JSON.stringify(root.status) : "";
 
   const loadTree = useCallback(async () => {
-    if (!selectedSlug || !root?.linked) {
+    if (seedingItem || !selectedSlug || !root?.linked) {
       return {
         files: [] as TrackedFile[],
         listed: [] as EntryView[],
@@ -89,7 +104,7 @@ export function FileTree() {
       conflicts: conflictPathSet(views),
       maxFileBytes: maxMb * 1024 * 1024,
     };
-  }, [selectedSlug, root?.linked]);
+  }, [selectedSlug, root?.linked, seedingItem]);
 
   const applyTree = useCallback(
     (next: {
@@ -115,13 +130,14 @@ export function FileTree() {
   }, [loadTree, applyTree, selectedSlug, root?.linked]);
 
   useEffect(() => {
+    if (seedingItem) return;
     const started = { slug: selectedSlug, linked: !!root?.linked };
     void (async () => {
       const next = await loadTree();
       if (!treeLoadMatches(loadId.current, started)) return;
       applyTree(next);
     })();
-  }, [loadTree, applyTree, statusKey, selectedSlug, root?.linked]);
+  }, [loadTree, applyTree, statusKey, selectedSlug, root?.linked, seedingItem]);
 
   useEffect(() => {
     loadId.current = { slug: selectedSlug, linked: !!root?.linked };
@@ -160,6 +176,10 @@ export function FileTree() {
     },
     [filtering, isOpen, selectedSlug],
   );
+
+  if (seedingItem) {
+    return <TreeSeeding name={seedingItem.name} />;
+  }
 
   if (!root) {
     return <div className="h-full" />;

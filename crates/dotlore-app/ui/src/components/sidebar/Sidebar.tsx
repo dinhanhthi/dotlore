@@ -86,6 +86,7 @@ export function Sidebar() {
     toggleStar,
     refreshRoots,
     busy,
+    seeding,
   } = useRoots();
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<string[]>(() => readCollapsed());
@@ -180,7 +181,7 @@ export function Sidebar() {
         onToggleStar={() => toggleStar(row.slug)}
         onLink={() => void handleLink(row.slug)}
         onRemove={() => setRemoveTarget(row)}
-        writeDisabled={busy}
+        writeDisabled={busy || seeding.some((item) => item.slug === row.slug)}
         onRecover={
           row.status.kind === "Error" ? () => void handleRecover(row.slug) : undefined
         }
