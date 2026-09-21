@@ -1,4 +1,4 @@
-import { Settings } from "lucide-react";
+import { ChevronDown, Settings } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
@@ -230,7 +230,6 @@ export function SettingsPatterns() {
   return (
     <SettingsSeedList
       id="default-patterns"
-      label="Default patterns"
       hint="Applies the next time a project or agent folder is added. Folders already added stay as they are."
       lines={lines}
       disabled={busy}
@@ -245,13 +244,13 @@ export function SettingsPatterns() {
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
                 disabled={busy}
-                className="self-start"
+                className="shrink-0"
               />
             }
           >
             {selectedLabel}
+            <ChevronDown aria-hidden />
           </DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuRadioGroup
@@ -259,7 +258,11 @@ export function SettingsPatterns() {
               onValueChange={selectCatalog}
             >
               {catalogs.map((catalog) => (
-                <DropdownMenuRadioItem key={catalog.id} value={catalog.id}>
+                <DropdownMenuRadioItem
+                  key={catalog.id}
+                  value={catalog.id}
+                  closeOnClick
+                >
                   {catalog.label}
                 </DropdownMenuRadioItem>
               ))}
@@ -471,7 +474,13 @@ export function SettingsPanel({
           ))}
         </div>
       </DialogHeader>
-      <div className="h-[28rem] overflow-y-auto px-6 pt-5 pb-7">
+      <div
+        className={
+          tab === "patterns"
+            ? "flex h-[28rem] min-h-0 flex-col overflow-hidden px-6 pt-5 pb-7"
+            : "h-[28rem] overflow-y-auto px-6 pt-5 pb-7"
+        }
+      >
         {tab === "general" ? (
           <div
             role="tabpanel"
@@ -485,6 +494,7 @@ export function SettingsPanel({
             role="tabpanel"
             id="settings-panel-patterns"
             aria-labelledby="settings-tab-patterns"
+            className="flex min-h-0 flex-1 flex-col"
           >
             <SettingsPatterns />
           </div>
