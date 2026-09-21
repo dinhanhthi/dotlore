@@ -164,18 +164,18 @@ export function App() {
     ]);
     if (generation !== discoveryGen.current) return;
 
-    let discovered: RootRow[] | null = null;
+    const applied = applyRootDiscovery({
+      generation,
+      latestGeneration: discoveryGen.current,
+      local,
+      cloud,
+      previous: rootsRef.current,
+    });
+    if (!applied) return;
+    const discovered = applied.roots;
     setState((current) => {
-      const applied = applyRootDiscovery({
-        generation,
-        latestGeneration: discoveryGen.current,
-        local,
-        cloud,
-        previous: current.roots,
-      });
-      if (!applied) return current;
-      discovered = applied.roots;
-      const selected = applied.roots.find(
+      if (generation !== discoveryGen.current) return current;
+      const selected = discovered.find(
         (row) => row.slug === current.selectedSlug,
       );
       const stillSelected = selected !== undefined;
@@ -195,7 +195,7 @@ export function App() {
       }
       return {
         ...current,
-        roots: overlayStatuses(applied.roots, liveRef.current),
+        roots: overlayStatuses(discovered, liveRef.current),
         error,
         selectedSlug:
           stillSelected || seedingSelected ? current.selectedSlug : null,
@@ -203,7 +203,6 @@ export function App() {
         resolvingRel: keepLive ? current.resolvingRel : null,
       };
     });
-    if (!discovered) return;
     const trackedBySlug = await loadTrackedCounts(discovered);
     if (generation !== discoveryGen.current) return;
     setState((current) => ({ ...current, trackedBySlug }));
