@@ -1,9 +1,8 @@
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { Button } from "@/components/ui/button";
+import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
 import { viewerExtensions } from "@/lib/cm";
 import { readFile } from "@/lib/ipc";
 import { composeLivePath } from "@/lib/path";
@@ -71,13 +70,6 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
 
   const livePath = root ? composeLivePath(root.path, rel) : null;
 
-  function reveal() {
-    if (!livePath) return;
-    void revealItemInDir(livePath).catch(() => {
-      // Path missing or Finder unavailable — fail softly.
-    });
-  }
-
   let body: ReactNode;
   if (error) {
     body = <Message>{error}</Message>;
@@ -104,15 +96,7 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
         <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
           {content ? formatBytes(content.bytes_len) : ""}
         </span>
-        <Button
-          variant="ghost"
-          size="xs"
-          className="text-muted-foreground"
-          disabled={!livePath}
-          onClick={reveal}
-        >
-          Reveal in Finder
-        </Button>
+        <RevealInFinderButton path={livePath} />
       </header>
       {body}
     </div>
