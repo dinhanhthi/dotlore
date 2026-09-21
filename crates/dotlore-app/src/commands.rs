@@ -324,7 +324,11 @@ pub async fn provider_dir(state: State<'_, AppState>) -> Result<Option<String>, 
     .map_err(front_msg)?
 }
 
-#[tauri::command]
+/// `async` so the main thread never waits on it: [`git::which_git`] spawns
+/// `git --version`. No `spawn_blocking` and no `Result` — a child process is
+/// milliseconds, not the open-ended wait the home lock can be, and there is
+/// no join error to report through a bare `bool`.
+#[tauri::command(async)]
 pub fn git_missing() -> bool {
     git::which_git().is_none()
 }
