@@ -84,7 +84,14 @@ export function RootCard({ row }: RootCardProps) {
         onClick={() => selectRoot(row.slug, { focusSidebar: true })}
         className="flex flex-col gap-2 px-4 py-3.5 text-left"
       >
-        <span className="truncate font-medium text-foreground">{row.name}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-medium text-foreground">{row.name}</span>
+          {row.is_agent ? (
+            <Badge variant="secondary" className="shrink-0 font-normal">
+              Agent
+            </Badge>
+          ) : null}
+        </span>
         <span
           className="truncate font-path text-muted-foreground"
           title={row.path}
@@ -130,9 +137,6 @@ export function RootCard({ row }: RootCardProps) {
           <span className="tabular-nums">
             {fileCount} {fileCount === 1 ? "file" : "files"}
           </span>
-          {row.is_agent ? (
-            <span className="text-muted-foreground/80">Agent</span>
-          ) : null}
         </span>
         <div className="flex shrink-0 items-center gap-0.5">
           <button
