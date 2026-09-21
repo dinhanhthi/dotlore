@@ -8,6 +8,7 @@
 //! binaries call it. (`git::Git::command` reads `PATH`, to forward it into an
 //! otherwise cleared child environment.)
 
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::unix::fs::PermissionsExt;
@@ -57,6 +58,10 @@ pub struct Config {
     /// Never applied to agent folders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_patterns: Option<Vec<String>>,
+    /// Per-agent seed-pattern overrides. A missing key means that catalog's builtin.
+    /// `"other"` is the generic agent catalog. This map is never read for project folders.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_patterns: BTreeMap<String, Vec<String>>,
     /// Ignore text written at add time. `None` means use `project::DEFAULT_NEVER_IGNORE`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_ignore: Option<String>,
@@ -316,6 +321,7 @@ mod tests {
 
         let cfg = Config::load(home).unwrap();
         assert!(cfg.default_patterns.is_none());
+        assert!(cfg.agent_patterns.is_empty());
         assert!(cfg.default_ignore.is_none());
         assert!(cfg.max_file_mb.is_none());
         assert!(cfg.max_seed_folder_mb.is_none());
