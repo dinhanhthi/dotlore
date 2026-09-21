@@ -184,6 +184,25 @@ pub enum ResolveOutcome {
     Pending,
 }
 
+/// One include-list catalog and the lines that apply the next time a folder is added.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PatternCatalog {
+    pub id: String,
+    pub label: String,
+    pub lines: Vec<String>,
+}
+
+/// Dropdown order: `projects`, each [`project::AGENT_PATTERNS`] key, then `other`.
+fn catalog_ids() -> impl Iterator<Item = &'static str> {
+    std::iter::once("projects")
+        .chain(project::AGENT_PATTERNS.iter().map(|(id, _)| *id))
+        .chain(std::iter::once("other"))
+}
+
+fn lines_owned(lines: &[&str]) -> Vec<String> {
+    lines.iter().copied().map(str::to_string).collect()
+}
+
 /// The sync engine for one state directory.
 pub struct Engine {
     pub home: PathBuf,
@@ -555,9 +574,56 @@ impl Engine {
     }
 
     pub fn set_default_patterns(&mut self, patterns: Vec<String>) -> Result<()> {
+        self.set_pattern_catalog("projects", patterns)
+    }
+
+    /// Every builtin catalog, in dropdown order, with its effective lines.
+    pub fn pattern_catalogs(&self) -> Vec<PatternCatalog> {
+        let mut catalogs = Vec::new();
+        for id in catalog_ids() {
+            let Some(label) = project::catalog_label(id) else {
+                continue;
+            };
+            let lines = if id == "projects" {
+                self.default_patterns()
+            } else if let Some(over) = self.cfg.agent_patterns.get(id) {
+                over.clone()
+            } else {
+                match project::builtin_lines(id) {
+                    Some(builtin) => lines_owned(builtin),
+                    None => continue,
+                }
+            };
+            catalogs.push(PatternCatalog {
+                id: id.to_string(),
+                label: label.to_string(),
+                lines,
+            });
+        }
+        catalogs
+    }
+
+    /// Store one catalog. A list equal to that catalog's builtin clears the override.
+    /// An unknown id returns an error and does not write config.
+    pub fn set_pattern_catalog(&mut self, catalog: &str, patterns: Vec<String>) -> Result<()> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
-        self.cfg.default_patterns = Some(patterns);
+        let Some(builtin) = project::builtin_lines(catalog) else {
+            bail!("unknown pattern catalog {catalog}");
+        };
+        if patterns == lines_owned(builtin) {
+            if catalog == "projects" {
+                self.cfg.default_patterns = None;
+            } else {
+                self.cfg.agent_patterns.remove(catalog);
+            }
+        } else if catalog == "projects" {
+            self.cfg.default_patterns = Some(patterns);
+        } else {
+            self.cfg
+                .agent_patterns
+                .insert(catalog.to_string(), patterns);
+        }
         self.save(&g)
     }
 
@@ -572,7 +638,11 @@ impl Engine {
     pub fn set_default_ignore(&mut self, ignore: String) -> Result<()> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
-        self.cfg.default_ignore = Some(ignore);
+        self.cfg.default_ignore = if ignore == project::DEFAULT_NEVER_IGNORE {
+            None
+        } else {
+            Some(ignore)
+        };
         self.save(&g)
     }
 
@@ -1753,6 +1823,150 @@ mod tests {
         add(&mut a);
         let got = fs::read_to_string(staging(&a).join(".dotloreignore")).unwrap();
         assert_eq!(got, crate::project::DEFAULT_NEVER_IGNORE);
+    }
+
+    fn builtin_vec(catalog: &str) -> Vec<String> {
+        lines_owned(crate::project::builtin_lines(catalog).unwrap())
+    }
+
+    #[test]
+    fn set_pattern_catalog_equal_to_builtin_clears_the_override() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine
+            .set_pattern_catalog("projects", vec!["CLAUDE.md".into()])
+            .unwrap();
+        a.engine
+            .set_pattern_catalog("claude", vec!["custom.md".into()])
+            .unwrap();
+        let cfg = Config::load(a.home.path()).unwrap();
+        assert_eq!(cfg.default_patterns, Some(vec!["CLAUDE.md".into()]));
+        assert_eq!(
+            cfg.agent_patterns.get("claude").cloned(),
+            Some(vec!["custom.md".into()])
+        );
+
+        a.engine
+            .set_default_patterns(builtin_vec("projects"))
+            .unwrap();
+        a.engine
+            .set_pattern_catalog("claude", builtin_vec("claude"))
+            .unwrap();
+        let cfg = Config::load(a.home.path()).unwrap();
+        assert_eq!(cfg.default_patterns, None);
+        assert!(!cfg.agent_patterns.contains_key("claude"));
+    }
+
+    #[test]
+    fn pattern_catalogs_returns_a_claude_override() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let custom = vec!["custom.md".into(), "rules/".into()];
+        a.engine
+            .set_pattern_catalog("claude", custom.clone())
+            .unwrap();
+
+        let catalogs = a.engine.pattern_catalogs();
+        let ids: Vec<&str> = catalogs.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids.first().copied(), Some("projects"));
+        assert_eq!(ids.last().copied(), Some("other"));
+        assert!(
+            ids.iter().position(|id| *id == "claude") < ids.iter().position(|id| *id == "codex")
+        );
+
+        let claude = catalogs.iter().find(|c| c.id == "claude").unwrap();
+        assert_eq!(claude.label, "Claude");
+        assert_eq!(claude.lines, custom);
+        let projects = catalogs.iter().find(|c| c.id == "projects").unwrap();
+        assert_eq!(projects.lines, builtin_vec("projects"));
+    }
+
+    #[test]
+    fn set_pattern_catalog_rejects_an_unknown_id_without_writing() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine
+            .set_default_patterns(vec!["CLAUDE.md".into()])
+            .unwrap();
+        let before = fs::read(a.home.path().join("config.json")).unwrap();
+        let err = a
+            .engine
+            .set_pattern_catalog("nope", vec!["x".into()])
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown pattern catalog"));
+        let after = fs::read(a.home.path().join("config.json")).unwrap();
+        assert_eq!(before, after);
+        let cfg = Config::load(a.home.path()).unwrap();
+        assert_eq!(cfg.default_patterns, Some(vec!["CLAUDE.md".into()]));
+        assert!(cfg.agent_patterns.is_empty());
+    }
+
+    #[test]
+    fn set_default_ignore_of_the_builtin_text_stores_none() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.set_default_ignore("*.secret\n".into()).unwrap();
+        assert_eq!(
+            Config::load(a.home.path())
+                .unwrap()
+                .default_ignore
+                .as_deref(),
+            Some("*.secret\n")
+        );
+        a.engine
+            .set_default_ignore(crate::project::DEFAULT_NEVER_IGNORE.to_string())
+            .unwrap();
+        assert_eq!(Config::load(a.home.path()).unwrap().default_ignore, None);
+    }
+
+    #[test]
+    fn add_root_of_an_agent_folder_uses_the_claude_override() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let user_home = TempDir::new().unwrap();
+        a.engine.home_dir = user_home.path().canonicalize().unwrap();
+        let claude = a.engine.home_dir.join(".claude");
+        fs::create_dir_all(&claude).unwrap();
+        fs::write(claude.join("custom.md"), "hi\n").unwrap();
+        fs::write(claude.join("settings.json"), "{}\n").unwrap();
+        a.engine
+            .set_pattern_catalog("claude", vec!["custom.md".into()])
+            .unwrap();
+
+        a.engine.add_root(&claude, Some("claude-agent")).unwrap();
+
+        let staging = a.home.path().join("repos/claude-agent");
+        let file = crate::project::read(&staging).unwrap();
+        let tracked = file.tracked();
+        assert!(tracked.is_explicit(Path::new("custom.md")));
+        assert!(!tracked.is_explicit(Path::new("settings.json")));
+        assert!(cloud_of(&a).read_manifest("claude-agent").unwrap().is_agent);
+    }
+
+    #[test]
+    fn set_pattern_catalog_after_add_root_leaves_the_include_list_unchanged() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine
+            .set_pattern_catalog("projects", vec!["CLAUDE.md".into(), "docs/".into()])
+            .unwrap();
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        write(&a, "README.md", b"nope\n");
+        add(&mut a);
+
+        let before = fs::read(staging(&a).join(".dotloreproject")).unwrap();
+        a.engine
+            .set_pattern_catalog("projects", vec!["README.md".into()])
+            .unwrap();
+        let after = fs::read(staging(&a).join(".dotloreproject")).unwrap();
+        assert_eq!(before, after);
+
+        let file = crate::project::read(&staging(&a)).unwrap();
+        let tracked = file.tracked();
+        assert!(tracked.is_explicit(Path::new("CLAUDE.md")));
+        assert!(tracked.is_explicit(Path::new("docs")));
+        assert!(!tracked.contains_rel(Path::new("README.md")));
     }
 
     #[test]

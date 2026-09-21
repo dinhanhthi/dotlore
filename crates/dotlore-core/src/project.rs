@@ -289,7 +289,53 @@ pub struct Skipped {
     pub bytes: u64,
 }
 
+/// Catalog ids in dropdown order: `projects`, each [`AGENT_PATTERNS`] key, then `other`.
+const CATALOGS: &[(&str, &str)] = &[
+    ("projects", "Projects"),
+    ("claude", "Claude"),
+    ("codex", "Codex"),
+    ("cursor", "Cursor"),
+    ("gemini", "Gemini"),
+    ("opencode", "OpenCode"),
+    ("continue", "Continue"),
+    ("junie", "Junie"),
+    ("kiro", "Kiro"),
+    ("roo", "Roo"),
+    ("cline", "Cline"),
+    ("windsurf", "Windsurf"),
+    ("other", "Other agents"),
+];
+
+/// Builtin include-list lines for a catalog id.
+///
+/// `projects` is [`DEFAULT_PATTERNS`], each agent id is that [`AGENT_PATTERNS`]
+/// slice, and `other` is [`GENERIC_AGENT_PATTERNS`]. Any other id returns `None`.
+pub fn builtin_lines(catalog: &str) -> Option<&'static [&'static str]> {
+    if catalog_label(catalog).is_none() {
+        return None;
+    }
+    match catalog {
+        "projects" => Some(DEFAULT_PATTERNS),
+        "other" => Some(GENERIC_AGENT_PATTERNS),
+        id => AGENT_PATTERNS
+            .iter()
+            .find(|(key, _)| *key == id)
+            .map(|(_, lines)| *lines),
+    }
+}
+
+/// Display label for a catalog id. Any other id returns `None`.
+pub fn catalog_label(catalog: &str) -> Option<&'static str> {
+    CATALOGS
+        .iter()
+        .find(|(id, _)| *id == catalog)
+        .map(|(_, label)| *label)
+}
+
 /// Include-list patterns for `root`. Agent folders never read `cfg.default_patterns`.
+///
+/// An agent catalog uses `cfg.agent_patterns` when that id is present, including
+/// an empty list. A missing key uses [`builtin_lines`].
 pub fn patterns_for(root: &config::Root, home_dir: &Path, cfg: &Config) -> Vec<String> {
     if root.is_agent(home_dir) {
         let key = root
@@ -298,12 +344,15 @@ pub fn patterns_for(root: &config::Root, home_dir: &Path, cfg: &Config) -> Vec<S
             .and_then(|n| n.to_str())
             .map(|n| n.trim_start_matches('.'))
             .unwrap_or("");
-        let patterns = AGENT_PATTERNS
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map(|(_, p)| *p)
-            .unwrap_or(GENERIC_AGENT_PATTERNS);
-        return owned(patterns);
+        let catalog = if AGENT_PATTERNS.iter().any(|(id, _)| *id == key) {
+            key
+        } else {
+            "other"
+        };
+        if let Some(patterns) = cfg.agent_patterns.get(catalog) {
+            return patterns.clone();
+        }
+        return owned(builtin_lines(catalog).unwrap_or(&[]));
     }
     match &cfg.default_patterns {
         Some(p) => p.clone(),
@@ -1049,6 +1098,65 @@ mod tests {
         let keys = tracked_keys(&file);
         assert!(keys.contains(&"rules/".into()), "{keys:?}");
         assert!(!keys.iter().any(|k| k == "docs" || k == "docs/"));
+    }
+
+    #[test]
+    fn a_claude_override_is_returned_for_a_claude_root() {
+        let td = tempfile::TempDir::new().unwrap();
+        let home = td.path();
+        let root = agent_root(home, ".claude");
+        let mut cfg = crate::config::Config::default();
+        cfg.agent_patterns
+            .insert("claude".into(), vec!["custom.md".into()]);
+        assert_eq!(
+            patterns_for(&root, home, &cfg),
+            vec!["custom.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_other_override_is_returned_for_an_unknown_agent_and_not_for_claude() {
+        let td = tempfile::TempDir::new().unwrap();
+        let home = td.path();
+        let unknown = agent_root(home, ".newagent");
+        let claude = agent_root(home, ".claude");
+        let mut cfg = crate::config::Config::default();
+        cfg.agent_patterns
+            .insert("other".into(), vec!["only-other.md".into()]);
+        assert_eq!(
+            patterns_for(&unknown, home, &cfg),
+            vec!["only-other.md".to_string()]
+        );
+        assert_eq!(
+            patterns_for(&claude, home, &cfg),
+            owned(builtin_lines("claude").unwrap())
+        );
+    }
+
+    #[test]
+    fn a_missing_claude_key_returns_the_builtin_claude_slice() {
+        let td = tempfile::TempDir::new().unwrap();
+        let home = td.path();
+        let root = agent_root(home, ".claude");
+        let cfg = crate::config::Config::default();
+        assert!(!cfg.agent_patterns.contains_key("claude"));
+        let builtin = AGENT_PATTERNS
+            .iter()
+            .find(|(key, _)| *key == "claude")
+            .map(|(_, lines)| *lines)
+            .unwrap();
+        assert_eq!(builtin_lines("claude"), Some(builtin));
+        assert_eq!(patterns_for(&root, home, &cfg), owned(builtin));
+    }
+
+    #[test]
+    fn an_empty_claude_vec_returns_an_empty_list() {
+        let td = tempfile::TempDir::new().unwrap();
+        let home = td.path();
+        let root = agent_root(home, ".claude");
+        let mut cfg = crate::config::Config::default();
+        cfg.agent_patterns.insert("claude".into(), Vec::new());
+        assert_eq!(patterns_for(&root, home, &cfg), Vec::<String>::new());
     }
 
     #[test]
