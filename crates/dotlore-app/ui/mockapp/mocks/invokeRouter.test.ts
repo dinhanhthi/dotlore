@@ -223,14 +223,12 @@ describe("link_root", () => {
 });
 
 describe("list_entries", () => {
-  it("seeds explicit entries from demo file keys", async () => {
+  it("seeds first-level demo includes (files stay files, nested paths are folders)", async () => {
     resetStore();
     await expect(route("list_entries", { slug: "dotlore" })).resolves.toEqual([
-      { key: ".claude/settings.json", kind: "file", covering: [] },
+      { key: ".claude/", kind: "directory", covering: [] },
       { key: "CLAUDE.md", kind: "file", covering: [] },
-      { key: "docs/architecture.md", kind: "file", covering: [] },
-      { key: "docs/dump.bin", kind: "file", covering: [] },
-      { key: "docs/video.bin", kind: "file", covering: [] },
+      { key: "docs/", kind: "directory", covering: [] },
     ]);
   });
 });
@@ -389,21 +387,27 @@ describe("untrack_entry", () => {
     expect(store.entries.demo).toEqual([]);
   });
 
-  it("rejects an inherited-only path and names the covering entry", async () => {
+  it("punches a hole in an inherited-only path and keeps file bytes", async () => {
     resetStore({
       files: {
         demo: {
           "docs/a.md": { text: "a\n", binary: false, too_large: false },
+          "docs/b.md": { text: "b\n", binary: false, too_large: false },
         },
       },
       entries: {
         demo: [{ key: "docs/", kind: "directory", covering: [] }],
       },
     });
-    await expect(
-      route("untrack_entry", { slug: "demo", rel: "docs/a.md" }),
-    ).rejects.toThrow(/docs\//);
+    await route("untrack_entry", { slug: "demo", rel: "docs/a.md" });
     expect(store.files.demo?.["docs/a.md"]?.text).toBe("a\n");
+    expect(store.excludes.demo).toContain("docs/a.md");
+    expect(store.entries.demo).toEqual([
+      { key: "docs/", kind: "directory", covering: [] },
+    ]);
+    await expect(route("tracked_files", { slug: "demo" })).resolves.toEqual([
+      expect.objectContaining({ rel: "docs/b.md" }),
+    ]);
   });
 });
 
@@ -453,6 +457,7 @@ const MOCK_STATE_KEYS = [
   "defaultIgnore",
   "defaultPatterns",
   "entries",
+  "excludes",
   "files",
   "gitMissing",
   "linkable",
@@ -483,6 +488,7 @@ describe("store fixtures", () => {
       conflicts: {},
       linkable: [],
       entries: {},
+      excludes: {},
       pickerExtra: {},
       defaultPatterns: ["only"],
       defaultIgnore: "x",

@@ -225,6 +225,7 @@ export function FileTree() {
             }}
             entries={entries}
             onUntrack={setUntrackTarget}
+            rootPath={root.path}
             maxFileBytes={maxFileBytes}
           />
         ))}

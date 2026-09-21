@@ -32,12 +32,28 @@ export function parentRel(rel: string): string | null {
 }
 
 export function untrackCopy(entry: EntryView): string {
-  const every = `The include entry ${entry.key} is removed on every Mac.`;
   const stay = "Files stay on disk.";
   if (entry.covering.length > 0) {
-    return `${every} ${stay} Overlapping coverage remains: ${entry.covering.join(", ")}.`;
+    return `This path stops syncing on every Mac. ${stay} ${entry.key} is excluded from ${entry.covering.join(", ")}.`;
   }
-  return `${every} ${stay} Files under this entry will stop syncing.`;
+  return `The include entry ${entry.key} is removed on every Mac. ${stay} Files under this entry will stop syncing.`;
+}
+
+/** Explicit entry, or a synthesized hole-punch target for an inherited path. */
+export function untrackTarget(
+  path: string,
+  kind: "file" | "folder",
+  entries: EntryView[],
+): EntryView | null {
+  const explicit = explicitEntry(path, entries);
+  if (explicit) return explicit;
+  const covering = coveringEntry(path, entries);
+  if (!covering) return null;
+  return {
+    key: kind === "folder" ? `${path.replace(/\/$/, "")}/` : path,
+    kind: kind === "folder" ? "directory" : "file",
+    covering: [covering.key],
+  };
 }
 
 export function fileTooLarge(info: InspectedEntryDto): boolean {

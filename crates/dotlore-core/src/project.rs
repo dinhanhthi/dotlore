@@ -2,8 +2,9 @@
 //!
 //! Private names live in a staging repo and must never be mirrored into a
 //! live root, nor applied from a peer's tree. The include-list is a
-//! generation-addressed map of explicit entries; tombstones participate in
-//! per-key merge only and are not negative path exclusions.
+//! generation-addressed map of explicit entries. Tombstones participate in
+//! per-key merge; a `Removed` key under a still-tracked parent punches a hole
+//! in that parent (the path stops syncing, live bytes stay).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -445,10 +446,11 @@ pub struct ProjectFile {
     pub entries: BTreeMap<String, EntryRecord>,
 }
 
-/// Tracked explicit entries, used to decide coverage and traversal.
+/// Tracked explicit entries plus Removed keys that punch a hole in a parent.
 #[derive(Clone, Debug, Default)]
 pub struct EntryList {
     keys: BTreeSet<String>,
+    excluded: BTreeSet<String>,
 }
 
 /// Parse a `.dotloreproject` body. Every key must be a plain relative path.
@@ -501,43 +503,67 @@ impl ProjectFile {
         Ok(serde_json::to_vec(self)?)
     }
 
-    /// Explicit `Tracked` keys, without tombstones.
+    /// Explicit `Tracked` keys, plus `Removed` keys that punch a hole in a parent.
     pub fn tracked(&self) -> EntryList {
-        EntryList {
-            keys: self
-                .entries
-                .iter()
-                .filter(|(_, rec)| rec.state == State::Tracked)
-                .map(|(k, _)| k.clone())
-                .collect(),
-        }
+        let keys: BTreeSet<String> = self
+            .entries
+            .iter()
+            .filter(|(_, rec)| rec.state == State::Tracked)
+            .map(|(k, _)| k.clone())
+            .collect();
+        let excluded = self
+            .entries
+            .iter()
+            .filter(|(k, rec)| {
+                rec.state == State::Removed && covering_key(&keys, Path::new(k)).is_some()
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        EntryList { keys, excluded }
     }
 
-    /// Tombstone one explicit include entry. Inherited-only paths are refused.
+    /// Tombstone `rel`. An inherited path under a tracked directory becomes a
+    /// hole in that parent. `as_directory` picks the key form for a new hole;
+    /// `None` defaults to a file key.
     pub fn untrack(&mut self, rel: &Path) -> Result<()> {
+        self.untrack_as(rel, None)
+    }
+
+    pub fn untrack_as(&mut self, rel: &Path, as_directory: Option<bool>) -> Result<()> {
         if let Some(key) = self.explicit_key(rel) {
             if self.entries[&key].state == State::Removed {
                 return Ok(());
             }
-            let gen = self.max_gen().saturating_add(1);
-            self.entries.insert(
-                key,
-                EntryRecord {
-                    gen,
-                    state: State::Removed,
-                },
-            );
+            self.tombstone(key);
             return Ok(());
         }
-        if let Some(cover) = covering_key(&self.tracked().keys, rel) {
-            bail!(
-                "cannot untrack {}: covered by tracked entry {cover}",
-                rel.display()
-            );
+        if covering_key(&self.tracked().keys, rel).is_some() {
+            let base = path_key(rel);
+            if base.is_empty() {
+                bail!("cannot untrack the project root");
+            }
+            let key = if as_directory.unwrap_or(false) {
+                dir_key(&base)
+            } else {
+                base
+            };
+            self.tombstone(key);
+            return Ok(());
         }
         bail!(
             "cannot untrack {}: not an explicit include entry",
             rel.display()
+        );
+    }
+
+    fn tombstone(&mut self, key: String) {
+        let gen = self.max_gen().saturating_add(1);
+        self.entries.insert(
+            key,
+            EntryRecord {
+                gen,
+                state: State::Removed,
+            },
         );
     }
 
@@ -569,9 +595,24 @@ impl ProjectFile {
 }
 
 impl EntryList {
-    /// True when `rel` equals a tracked entry or sits under a tracked directory.
+    /// True when `rel` equals a tracked entry or sits under a tracked directory
+    /// and is not carved out by a more specific exclude. An explicit tracked
+    /// key wins over an excluded ancestor (re-include).
     pub fn contains_rel(&self, rel: &Path) -> bool {
-        self.is_explicit(rel) || covering_key(&self.keys, rel).is_some()
+        if self.is_explicit(rel) {
+            return true;
+        }
+        if self.is_excluded(rel) {
+            return false;
+        }
+        covering_key(&self.keys, rel).is_some()
+    }
+
+    fn is_excluded(&self, rel: &Path) -> bool {
+        let key = path_key(rel);
+        self.excluded.contains(&key)
+            || self.excluded.contains(&dir_key(&key))
+            || covering_key(&self.excluded, rel).is_some()
     }
 
     /// True when a tracked entry lives strictly under `rel` (ancestor walk).
@@ -776,7 +817,10 @@ mod tests {
         ]);
         child_removed.untrack(Path::new("docs/readme.md")).unwrap();
         let after_child = child_removed.tracked();
-        assert!(after_child.contains_rel(Path::new("docs/readme.md")));
+        assert!(
+            !after_child.contains_rel(Path::new("docs/readme.md")),
+            "untracking the child punches a hole in the parent"
+        );
         assert!(!after_child.is_explicit(Path::new("docs/readme.md")));
         assert!(after_child.is_explicit(Path::new("docs")));
         assert!(after_child.contains_rel(Path::new("docs/other.md")));
@@ -794,16 +838,33 @@ mod tests {
     }
 
     #[test]
-    fn removing_an_inherited_only_path_is_rejected() {
+    fn untracking_an_inherited_only_path_punches_a_hole() {
         let mut file = pf(&[("docs/", 1, State::Tracked)]);
-        let err = file.untrack(Path::new("docs/foo.md")).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("docs/"),
-            "error must name the covering entry, got {msg}"
-        );
-        assert!(!file.entries.contains_key("docs/foo.md"));
+        file.untrack(Path::new("docs/foo.md")).unwrap();
+        assert_eq!(file.entries["docs/foo.md"].state, State::Removed);
         assert_eq!(file.entries["docs/"].state, State::Tracked);
+        let list = file.tracked();
+        assert!(!list.contains_rel(Path::new("docs/foo.md")));
+        assert!(list.contains_rel(Path::new("docs/other.md")));
+        file.untrack(Path::new("docs/foo.md")).unwrap();
+        assert_eq!(file.entries["docs/foo.md"].state, State::Removed);
+    }
+
+    #[test]
+    fn untracking_an_inherited_directory_writes_a_trailing_slash_key() {
+        let mut file = pf(&[("docs/", 1, State::Tracked)]);
+        file.untrack_as(Path::new("docs/secret"), Some(true))
+            .unwrap();
+        assert_eq!(file.entries["docs/secret/"].state, State::Removed);
+        assert!(
+            !file.entries.contains_key("docs/secret"),
+            "a file-key hole would leave children under docs/secret/ covered"
+        );
+        assert_eq!(file.entries["docs/"].state, State::Tracked);
+        let list = file.tracked();
+        assert!(!list.contains_rel(Path::new("docs/secret")));
+        assert!(!list.contains_rel(Path::new("docs/secret/foo.md")));
+        assert!(list.contains_rel(Path::new("docs/other.md")));
     }
 
     fn put(path: &Path, body: &str) {

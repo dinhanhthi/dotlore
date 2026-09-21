@@ -1,11 +1,20 @@
-import { ChevronDown, ChevronRight, Minus } from "lucide-react";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { composeLivePath } from "@/lib/path";
 import type { FileStatus, NodeWeight, TreeNode as TreeNodeData } from "@/lib/tree";
 import { nodeStatus, nodeWeight } from "@/lib/tree";
 import type { EntryView } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-import { coveringEntry, explicitEntry, formatBytes } from "./entries";
+import { coveringEntry, formatBytes, untrackTarget } from "./entries";
 
 function weightClass(weight: NodeWeight): string {
   switch (weight) {
@@ -39,6 +48,7 @@ type TreeNodeProps = {
   onSelect: (path: string) => void;
   entries: EntryView[];
   onUntrack: (entry: EntryView) => void;
+  rootPath: string;
   maxFileBytes: number;
 };
 
@@ -52,14 +62,15 @@ export function TreeNode({
   onSelect,
   entries,
   onUntrack,
+  rootPath,
   maxFileBytes,
 }: TreeNodeProps) {
   const status = nodeStatus(node, conflictSet);
   const weight = nodeWeight(node, maxFileBytes);
   const selected = node.kind === "file" && selectedRel === node.path;
   const open = node.kind === "folder" && isOpen(node.path, depth);
-  const explicit = explicitEntry(node.path, entries);
   const covering = coveringEntry(node.path, entries);
+  const target = untrackTarget(node.path, node.kind, entries);
   const overLimit =
     node.kind === "file" && weight === "danger"
       ? "Exceeds the size limit and is not being synced"
@@ -67,70 +78,80 @@ export function TreeNode({
 
   return (
     <>
-      <div
-        className={cn(
-          "group relative flex h-8 w-full items-center gap-2 rounded-2xl pr-2",
-          "transition-colors duration-[var(--dur-short)] ease-[var(--ease-out)]",
-          "hover:bg-muted/70",
-          selected && "bg-muted",
-        )}
-        style={{ paddingLeft: 10 + depth * 14 }}
-        title={covering ? `Covered by ${covering.key}` : undefined}
-      >
-        {node.kind === "folder" ? (
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-label={open ? `Collapse ${node.name}` : `Expand ${node.name}`}
-            onClick={() => onToggle(node.path, depth)}
-            className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground"
-          >
-            {open ? (
-              <ChevronDown aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-            ) : (
-              <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-            )}
-            <span className="min-w-0 truncate text-sm">{node.name}</span>
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onSelect(node.path)}
-            className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground"
-          >
-            <span className="size-4 shrink-0" aria-hidden />
-            <span className="min-w-0 truncate text-sm">{node.name}</span>
-          </button>
-        )}
-        <span
-          className={cn(
-            "ml-auto shrink-0 text-right tabular-nums text-xs",
-            weightClass(weight),
-          )}
-          title={overLimit}
+      <ContextMenu>
+        <ContextMenuTrigger
+          render={
+            <div
+              className={cn(
+                "group relative flex h-8 w-full items-center gap-2 rounded-2xl pr-2",
+                "transition-colors duration-[var(--dur-short)] ease-[var(--ease-out)]",
+                "hover:bg-muted/70",
+                selected && "bg-muted",
+              )}
+              style={{ paddingLeft: 10 + depth * 14 }}
+              title={covering ? `Covered by ${covering.key}` : undefined}
+            />
+          }
         >
-          {formatBytes(node.bytes)}
-        </span>
-        {explicit ? (
-          <button
-            type="button"
-            aria-label="Untrack"
-            onClick={(event) => {
-              event.stopPropagation();
-              onUntrack(explicit);
-            }}
+          {node.kind === "folder" ? (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-label={open ? `Collapse ${node.name}` : `Expand ${node.name}`}
+              onClick={() => onToggle(node.path, depth)}
+              className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground"
+            >
+              {open ? (
+                <ChevronDown aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+              ) : (
+                <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+              )}
+              <span className="min-w-0 truncate text-sm">{node.name}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onSelect(node.path)}
+              className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground"
+            >
+              <span className="size-4 shrink-0" aria-hidden />
+              <span className="min-w-0 truncate text-sm">{node.name}</span>
+            </button>
+          )}
+          <span
             className={cn(
-              "shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground",
-              "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+              "ml-auto shrink-0 text-right tabular-nums text-xs",
+              weightClass(weight),
             )}
+            title={overLimit}
           >
-            <Minus aria-hidden className="size-3.5" />
-          </button>
-        ) : covering ? (
-          <span className="sr-only">Covered by {covering.key}</span>
-        ) : null}
-        <StatusMark status={status} />
-      </div>
+            {formatBytes(node.bytes)}
+          </span>
+          {covering ? (
+            <span className="sr-only">Covered by {covering.key}</span>
+          ) : null}
+          <StatusMark status={status} />
+        </ContextMenuTrigger>
+        <ContextMenuContent className="min-w-40">
+          <ContextMenuItem
+            onClick={() => {
+              void revealItemInDir(composeLivePath(rootPath, node.path)).catch(() => {
+                // Path missing or Finder unavailable.
+              });
+            }}
+          >
+            Reveal in Finder
+          </ContextMenuItem>
+          {target ? (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem variant="destructive" onClick={() => onUntrack(target)}>
+                Untrack
+              </ContextMenuItem>
+            </>
+          ) : null}
+        </ContextMenuContent>
+      </ContextMenu>
       {open &&
         node.children.map((child) => (
           <TreeNode
@@ -144,6 +165,7 @@ export function TreeNode({
             onSelect={onSelect}
             entries={entries}
             onUntrack={onUntrack}
+            rootPath={rootPath}
             maxFileBytes={maxFileBytes}
           />
         ))}

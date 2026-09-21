@@ -523,7 +523,8 @@ impl Engine {
         Ok(TrackOutcome::Done(status))
     }
 
-    /// Tombstone one explicit include entry. Lexical; the live path may be missing.
+    /// Tombstone one include path. Inherited paths under a tracked directory
+    /// become a hole in that parent. Lexical when the live path is missing.
     pub fn untrack_entry(&mut self, slug: &str, rel: &Path) -> Result<RootStatus> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
@@ -533,8 +534,9 @@ impl Engine {
             bail!("unsafe path {}", rel.display());
         }
         let repo = self.repo_for(&root)?;
+        let as_dir = root.path.join(rel).is_dir() || repo.staging.join(rel).is_dir();
         let mut file = repo.project_file()?;
-        file.untrack(rel)?;
+        file.untrack_as(rel, Some(as_dir))?;
         project::write(&repo.staging, &file)?;
         let status = self.run_cycle(&cloud, &root, FetchMode::Normal);
         self.settle(&g, slug, &status)?;
@@ -1958,22 +1960,65 @@ mod tests {
     }
 
     #[test]
-    fn untrack_entry_rejects_an_inherited_only_path() {
+    fn untrack_entry_punches_a_hole_in_an_inherited_only_path() {
         let provider = TempDir::new().unwrap();
         let mut a = device(provider.path(), 'a');
         write(&a, "docs/a.md", b"a\n");
+        write(&a, "docs/b.md", b"b\n");
         add(&mut a);
 
-        let err = a
-            .engine
-            .untrack_entry("proj-claude", Path::new("docs/a.md"))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("docs/"), "{err}");
-        assert!(
-            crate::project::read(&staging(&a)).unwrap().entries["docs/"].state
-                == crate::project::State::Tracked
+        assert_eq!(
+            a.engine
+                .untrack_entry("proj-claude", Path::new("docs/a.md"))
+                .unwrap(),
+            RootStatus::Synced
         );
+        let file = crate::project::read(&staging(&a)).unwrap();
+        assert_eq!(file.entries["docs/"].state, crate::project::State::Tracked);
+        assert_eq!(
+            file.entries["docs/a.md"].state,
+            crate::project::State::Removed
+        );
+        assert!(a.root.path().join("docs/a.md").is_file());
+        let rels = rels(&a.engine.tracked_files("proj-claude").unwrap());
+        assert!(
+            !rels.iter().any(|r| r == "docs/a.md"),
+            "inherited untrack must drop the path: {rels:?}"
+        );
+        assert!(rels.iter().any(|r| r == "docs/b.md"));
+    }
+
+    #[test]
+    fn untrack_entry_punches_a_hole_in_an_inherited_directory() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "docs/secret/a.md", b"a\n");
+        write(&a, "docs/keep.md", b"keep\n");
+        add(&mut a);
+
+        assert_eq!(
+            a.engine
+                .untrack_entry("proj-claude", Path::new("docs/secret"))
+                .unwrap(),
+            RootStatus::Synced
+        );
+        let file = crate::project::read(&staging(&a)).unwrap();
+        assert_eq!(file.entries["docs/"].state, crate::project::State::Tracked);
+        assert_eq!(
+            file.entries["docs/secret/"].state,
+            crate::project::State::Removed
+        );
+        assert!(
+            !file.entries.contains_key("docs/secret"),
+            "live directory must tombstone the dir key so children drop"
+        );
+        assert!(a.root.path().join("docs/secret/a.md").is_file());
+        let rels = rels(&a.engine.tracked_files("proj-claude").unwrap());
+        assert!(
+            !rels.iter().any(|r| r == "docs/secret/a.md"),
+            "inherited directory untrack must drop children: {rels:?}"
+        );
+        assert!(rels.iter().any(|r| r == "docs/keep.md"));
     }
 
     #[test]
@@ -2001,9 +2046,9 @@ mod tests {
         let parent = after.iter().find(|e| e.key == "docs/").unwrap();
         assert_eq!(parent.kind, EntryKind::Directory);
         assert!(
-            rels(&a.engine.tracked_files("proj-claude").unwrap())
+            !rels(&a.engine.tracked_files("proj-claude").unwrap())
                 .contains(&"docs/readme.md".into()),
-            "parent still covers the child path"
+            "untracking the child must punch a hole in the parent"
         );
 
         let mut b = device(provider.path(), 'b');
@@ -2012,8 +2057,11 @@ mod tests {
         let b_entries = b.engine.list_entries("proj-claude").unwrap();
         assert!(b_entries.iter().any(|e| e.key == "docs/"));
         assert!(!b_entries.iter().any(|e| e.key == "docs/readme.md"));
-        assert!(rels(&b.engine.tracked_files("proj-claude").unwrap())
-            .contains(&"docs/readme.md".into()));
+        assert!(
+            !rels(&b.engine.tracked_files("proj-claude").unwrap())
+                .contains(&"docs/readme.md".into()),
+            "the hole must sync to a newly linked peer"
+        );
     }
 
     /// Two devices adding the same slug must not mint unrelated histories:

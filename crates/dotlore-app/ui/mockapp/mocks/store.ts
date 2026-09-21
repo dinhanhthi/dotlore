@@ -53,6 +53,7 @@ export type MockState = {
   conflicts: Record<string, ConflictView[]>;
   linkable: LinkableRow[];
   entries: Record<string, EntryView[]>;
+  excludes: Record<string, string[]>;
   pickerExtra: Record<string, Record<string, PickerRow[]>>;
   defaultPatterns: string[];
   defaultIgnore: string;
@@ -68,6 +69,25 @@ export function entriesFromFiles(
     out[slug] = Object.keys(recs)
       .sort()
       .map((key) => ({ key, kind: "file" as const, covering: [] }));
+  }
+  return out;
+}
+
+/** First-level includes: a file stays a file; nested paths become a folder entry. */
+function folderStyleEntries(
+  files: Record<string, Record<string, FileRecord>>,
+): Record<string, EntryView[]> {
+  const out: Record<string, EntryView[]> = {};
+  for (const [slug, recs] of Object.entries(files)) {
+    const seen = new Map<string, EntryView["kind"]>();
+    for (const rel of Object.keys(recs)) {
+      const slash = rel.indexOf("/");
+      if (slash === -1) seen.set(rel, "file");
+      else seen.set(`${rel.slice(0, slash)}/`, "directory");
+    }
+    out[slug] = [...seen.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, kind]) => ({ key, kind, covering: [] }));
   }
   return out;
 }
@@ -91,7 +111,8 @@ export function emptyPopulated(): MockState {
     files,
     conflicts: demoConflicts(),
     linkable: [...LINKABLE_ROWS],
-    entries: entriesFromFiles(files),
+    entries: folderStyleEntries(files),
+    excludes: {},
     pickerExtra: {},
     defaultPatterns: [...DEFAULT_PATTERNS],
     defaultIgnore: DEFAULT_IGNORE,
@@ -115,6 +136,10 @@ export function resetStore(next?: Partial<MockState>): void {
       : next?.files
         ? entriesFromFiles(next.files)
         : seed.entries;
+  store.excludes =
+    next && "excludes" in next
+      ? clone(next.excludes ?? {})
+      : seed.excludes;
   store.pickerExtra =
     next && "pickerExtra" in next
       ? clone(next.pickerExtra ?? {})

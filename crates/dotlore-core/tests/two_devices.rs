@@ -1003,7 +1003,7 @@ fn untrack_preserves_bytes_and_publishes_only_manifest_changes() {
     assert!(!listed_keys(&mut a).iter().any(|k| k == "gone.md"));
     assert!(!listed_keys(&mut b).iter().any(|k| k == "gone.md"));
 
-    // Parent + child: untracking the child leaves parent coverage.
+    // Parent + child: untracking the child punches a hole; siblings stay.
     write(&a, "notes/readme.md", b"child\n");
     write(&a, "notes/other.md", b"sibling\n");
     a.engine
@@ -1026,8 +1026,8 @@ fn untrack_preserves_bytes_and_publishes_only_manifest_changes() {
     assert!(!listed_keys(&mut a).iter().any(|k| k == "notes/readme.md"));
     let rels = tracked_rels(&mut a);
     assert!(
-        rels.iter().any(|r| r == "notes/readme.md"),
-        "parent must still cover the child path: {rels:?}"
+        !rels.iter().any(|r| r == "notes/readme.md"),
+        "untracking the child must punch a hole: {rels:?}"
     );
     assert!(rels.iter().any(|r| r == "notes/other.md"));
 
@@ -1040,7 +1040,8 @@ fn untrack_preserves_bytes_and_publishes_only_manifest_changes() {
     assert_eq!(content_blobs(&b), notes_blobs);
     assert!(listed_keys(&mut b).iter().any(|k| k == "notes/"));
     assert!(!listed_keys(&mut b).iter().any(|k| k == "notes/readme.md"));
-    assert!(tracked_rels(&mut b).iter().any(|r| r == "notes/readme.md"));
+    assert!(!tracked_rels(&mut b).iter().any(|r| r == "notes/readme.md"));
+    assert!(tracked_rels(&mut b).iter().any(|r| r == "notes/other.md"));
 
     // Untracking the parent leaves the child entry.
     a.engine

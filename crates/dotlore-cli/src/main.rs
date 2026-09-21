@@ -407,20 +407,17 @@ fn untrack(e: &mut Engine, slug: &str, rel: &Path) -> Result<()> {
 
 /// Remaining explicit entries that still cover `rel` after an untrack.
 ///
-/// After a successful untrack the key is gone from [`Engine::list_entries`].
-/// A parent directory that still tracks the path is what the user needs to
-/// see; if the key itself is still listed (covered by another entry's view),
-/// its `covering` list is the source of truth.
+/// After a successful untrack the key is gone from [`Engine::list_entries`]
+/// and a parent no longer covers it (the tombstone punches a hole). Only an
+/// exact remaining key — a sibling include that still lists this path in
+/// `covering` — is reported.
 fn remaining_coverage(entries: &[EntryView], rel: &Path) -> Vec<String> {
     let want = rel_key(rel);
-    if let Some(ev) = entries.iter().find(|e| same_entry_key(&e.key, &want)) {
-        return ev.covering.clone();
-    }
     entries
         .iter()
-        .filter(|e| covers_rel(&e.key, &want))
-        .map(|e| e.key.clone())
-        .collect()
+        .find(|e| same_entry_key(&e.key, &want))
+        .map(|e| e.covering.clone())
+        .unwrap_or_default()
 }
 
 fn rel_key(rel: &Path) -> String {
@@ -429,14 +426,6 @@ fn rel_key(rel: &Path) -> String {
 
 fn same_entry_key(entry: &str, rel: &str) -> bool {
     entry.trim_end_matches('/') == rel
-}
-
-fn covers_rel(entry_key: &str, rel: &str) -> bool {
-    if !entry_key.ends_with('/') {
-        return false;
-    }
-    let prefix = entry_key.trim_end_matches('/');
-    rel == prefix || rel.starts_with(&format!("{prefix}/"))
 }
 
 fn entries(e: &mut Engine, slug: &str) -> Result<()> {
@@ -908,10 +897,7 @@ mod tests {
             kind: EntryKind::Directory,
             covering: vec![],
         }];
-        assert_eq!(
-            remaining_coverage(&entries, Path::new("docs/readme.md")),
-            ["docs/"]
-        );
+        assert!(remaining_coverage(&entries, Path::new("docs/readme.md")).is_empty());
         assert!(remaining_coverage(&entries, Path::new("notes.md")).is_empty());
     }
 

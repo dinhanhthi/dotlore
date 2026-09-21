@@ -93,7 +93,21 @@ function withCovering(entries: EntryView[]): EntryView[] {
     .sort((a, b) => a.key.localeCompare(b.key));
 }
 
-function coveredBy(rel: string, entries: EntryView[]): boolean {
+function isExcluded(rel: string, excludes: string[]): boolean {
+  return excludes.some((key) => {
+    if (key.endsWith("/")) {
+      const base = key.replace(/\/$/, "");
+      return rel === base || rel.startsWith(`${base}/`);
+    }
+    return rel === key;
+  });
+}
+
+function coveredBy(rel: string, entries: EntryView[], excludes: string[] = []): boolean {
+  if (entries.some((entry) => entry.key === rel || entry.key === `${rel}/`)) {
+    return true;
+  }
+  if (isExcluded(rel, excludes)) return false;
   return entries.some((entry) => {
     if (entry.kind === "file") return entry.key === rel;
     const base = entry.key.replace(/\/$/, "");
@@ -101,15 +115,27 @@ function coveredBy(rel: string, entries: EntryView[]): boolean {
   });
 }
 
+function excludeKey(slug: string, rel: string): string {
+  const files = store.files[slug] ?? {};
+  if (files[rel]) return rel;
+  const prefix = `${rel}/`;
+  if (Object.keys(files).some((path) => path.startsWith(prefix))) {
+    return prefix;
+  }
+  return rel;
+}
+
+function dropExclude(slug: string, key: string): void {
+  const list = store.excludes[slug];
+  if (!list) return;
+  store.excludes[slug] = list.filter((item) => item !== key && item !== `${key}/`);
+}
+
 function coveringKey(entries: EntryView[], rel: string): string | undefined {
-  const explicit = entries.find(
-    (entry) => entry.key === rel || entry.key === `${rel}/`,
-  );
-  if (explicit) return undefined;
   return entries.find((entry) => {
     if (entry.kind !== "directory") return false;
     const base = entry.key.replace(/\/$/, "");
-    return rel === base || rel.startsWith(`${base}/`);
+    return rel !== base && rel.startsWith(`${base}/`);
   })?.key;
 }
 
@@ -232,7 +258,7 @@ const handlers: Record<
     const slug = argString(args, "slug");
     const entries = store.entries[slug] ?? [];
     return Object.entries(store.files[slug] ?? {})
-      .filter(([rel]) => coveredBy(rel, entries))
+      .filter(([rel]) => coveredBy(rel, entries, store.excludes[slug] ?? []))
       .map(([rel, record]) => toTrackedFile(rel, record));
   },
   read_file: (args) => {
@@ -385,6 +411,7 @@ const handlers: Record<
     if (!list.some((entry) => entry.key === key)) {
       list.push({ key, kind, covering: [] });
     }
+    dropExclude(slug, key);
     store.entries[slug] = withCovering(list);
     return { outcome: "done" };
   },
@@ -394,15 +421,21 @@ const handlers: Record<
     if (!plainRel(rel, false)) throw new Error(`unsafe path ${rel}`);
     const list = store.entries[slug] ?? [];
     const exact = list.find((entry) => entry.key === rel || entry.key === `${rel}/`);
-    if (!exact) {
-      const cover = coveringKey(list, rel);
-      if (cover) {
-        throw new Error(`cannot untrack ${rel}: covered by tracked entry ${cover}`);
-      }
-      throw new Error(`cannot untrack ${rel}: not an explicit include entry`);
+    const cover = coveringKey(list, rel);
+    if (exact && !cover) {
+      store.entries[slug] = withCovering(list.filter((entry) => entry.key !== exact.key));
+      return store.entries[slug];
     }
-    store.entries[slug] = withCovering(list.filter((entry) => entry.key !== exact.key));
-    return store.entries[slug];
+    if (cover || exact) {
+      if (exact) {
+        store.entries[slug] = withCovering(list.filter((entry) => entry.key !== exact.key));
+      }
+      const key = excludeKey(slug, rel);
+      const excluded = store.excludes[slug] ?? (store.excludes[slug] = []);
+      if (!excluded.includes(key)) excluded.push(key);
+      return store.entries[slug] ?? [];
+    }
+    throw new Error(`cannot untrack ${rel}: not an explicit include entry`);
   },
   icloud_dir: () => icloudPath(),
   list_gdrive_mounts: () => gdriveMounts(),

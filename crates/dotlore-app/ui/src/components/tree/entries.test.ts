@@ -5,6 +5,7 @@ import {
   explicitEntry,
   parentRel,
   untrackCopy,
+  untrackTarget,
 } from "./entries";
 import type { EntryView } from "@/lib/types";
 
@@ -53,13 +54,37 @@ describe("untrackCopy", () => {
     expect(text).toMatch(/stay on disk/);
   });
 
-  it("lists remaining coverage and does not promise files stop syncing", () => {
+  it("says an inherited path is excluded from its covering folder", () => {
     const text = untrackCopy(readme);
     expect(text).toContain("docs/");
-    expect(text.toLowerCase()).not.toContain("stop syncing");
+    expect(text.toLowerCase()).toContain("excluded");
+    expect(text.toLowerCase()).toContain("stops syncing");
   });
 
   it("promises files stop syncing only when nothing else covers them", () => {
     expect(untrackCopy(claude).toLowerCase()).toContain("stop syncing");
   });
 });
+
+describe("untrackTarget", () => {
+  it("returns the explicit include entry", () => {
+    expect(untrackTarget("CLAUDE.md", "file", [claude, docs])).toEqual(claude);
+  });
+
+  it("synthesizes a hole-punch target for an inherited file", () => {
+    expect(untrackTarget("docs/readme.md", "file", [docs])).toEqual({
+      key: "docs/readme.md",
+      kind: "file",
+      covering: ["docs/"],
+    });
+  });
+
+  it("uses a directory key for an inherited folder", () => {
+    expect(untrackTarget("docs/secret", "folder", [docs])).toEqual({
+      key: "docs/secret/",
+      kind: "directory",
+      covering: ["docs/"],
+    });
+  });
+});
+
