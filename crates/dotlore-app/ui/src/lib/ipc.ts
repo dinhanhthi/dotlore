@@ -4,11 +4,17 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { errorMessage } from "./errors";
 import type {
   ConflictView,
+  EntryView,
   FileContent,
+  InspectedEntryDto,
+  LinkableRow,
+  PickerRow,
   ResolutionDto,
   ResolveResultDto,
   RootRow,
   StatusPayload,
+  TrackedFile,
+  TrackResultDto,
 } from "./types";
 
 export type WorkSnapshot = {
@@ -64,7 +70,7 @@ export function listRoots(): Promise<RootRow[]> {
   return invoke("list_roots");
 }
 
-export function trackedFiles(slug: string): Promise<string[]> {
+export function trackedFiles(slug: string): Promise<TrackedFile[]> {
   return invoke("tracked_files", { slug });
 }
 
@@ -142,8 +148,76 @@ export function recoverRoot(slug: string): Promise<void> {
   return run(() => invoke("recover_root", { slug }));
 }
 
-export function listLinkable(): Promise<string[]> {
+export function listLinkable(): Promise<LinkableRow[]> {
   return invoke("list_linkable");
+}
+
+export function listEntries(slug: string): Promise<EntryView[]> {
+  return invoke("list_entries", { slug });
+}
+
+export function listEntryChildren(
+  slug: string,
+  rel: string,
+): Promise<PickerRow[]> {
+  return invoke("list_entry_children", { slug, rel });
+}
+
+export function inspectEntry(
+  slug: string,
+  rel: string,
+): Promise<InspectedEntryDto> {
+  return invoke("inspect_entry", { slug, rel });
+}
+
+export function trackEntry(
+  slug: string,
+  rel: string,
+  confirmedFolderBytes?: number | null,
+): Promise<TrackResultDto> {
+  return run(() =>
+    invoke("track_entry", {
+      slug,
+      rel,
+      confirmedFolderBytes: confirmedFolderBytes ?? null,
+    }),
+  );
+}
+
+export function untrackEntry(slug: string, rel: string): Promise<EntryView[]> {
+  return run(() => invoke("untrack_entry", { slug, rel }));
+}
+
+export function defaultPatterns(): Promise<string[]> {
+  return invoke("default_patterns");
+}
+
+export function setDefaultPatterns(patterns: string[]): Promise<void> {
+  return run(() => invoke("set_default_patterns", { patterns }));
+}
+
+export function defaultIgnore(): Promise<string> {
+  return invoke("default_ignore");
+}
+
+export function setDefaultIgnore(ignore: string): Promise<void> {
+  return run(() => invoke("set_default_ignore", { ignore }));
+}
+
+export function maxFileMb(): Promise<number> {
+  return invoke("max_file_mb");
+}
+
+export function setMaxFileMb(mb: number): Promise<void> {
+  return run(() => invoke("set_max_file_mb", { mb }));
+}
+
+export function maxSeedFolderMb(): Promise<number> {
+  return invoke("max_seed_folder_mb");
+}
+
+export function setMaxSeedFolderMb(mb: number): Promise<void> {
+  return run(() => invoke("set_max_seed_folder_mb", { mb }));
 }
 
 export function icloudDir(): Promise<string> {

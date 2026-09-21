@@ -13,6 +13,8 @@
 //! in [`crate::repo`]: a pending one is always recovered *after* the root has
 //! been checked for existence and *before* any new local commit.
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -20,11 +22,12 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 
-use crate::cloud::{Cloud, Kind, Manifest};
+use crate::cloud::{Cloud, Manifest};
 use crate::config::{self, Config, HomeLock, Root};
 use crate::conflict;
 use crate::git::{self, Git};
-use crate::mirror::FileState;
+use crate::mirror::{self, FileState, Node};
+use crate::project::{self, Limits, State};
 use crate::repo::{
     provider_key, remote_ref, unique_id, FetchMode, Repo, ResumeOutcome, Transaction,
 };
@@ -86,6 +89,85 @@ pub struct ResolutionSnapshot {
     pub siblings: Vec<SiblingView>,
 }
 
+/// One explicit include-list entry, for management (missing/empty included).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryView {
+    pub key: String,
+    pub kind: EntryKind,
+    /// Other explicit tracked keys that still cover this path.
+    pub covering: Vec<String>,
+}
+
+/// File versus directory, taken from the trailing `/` on the key.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum EntryKind {
+    File,
+    Directory,
+}
+
+/// One live or staged file as the tree lists it. Folder sizes are summed
+/// later in the frontend from this file list.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct TrackedFile {
+    pub rel: String,
+    pub bytes: u64,
+    pub state: FileSync,
+}
+
+/// Whether a listed file is on disk and within the per-file limit.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FileSync {
+    Synced,
+    TooLarge,
+    Pending,
+}
+
+/// What [`Engine::add_root`] seeded, plus files the first mirror skipped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddRootReport {
+    pub slug: String,
+    pub skipped_folders: Vec<project::Skipped>,
+    pub skipped_too_large: Vec<(PathBuf, u64)>,
+}
+
+impl fmt::Display for AddRootReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.slug)
+    }
+}
+
+impl PartialEq<str> for AddRootReport {
+    fn eq(&self, other: &str) -> bool {
+        self.slug == other
+    }
+}
+
+impl PartialEq<&str> for AddRootReport {
+    fn eq(&self, other: &&str) -> bool {
+        self.slug == *other
+    }
+}
+
+/// Preview of a path the user may add. `bytes` excludes ignored, unsafe,
+/// and over-file-limit content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InspectedEntry {
+    pub kind: EntryKind,
+    pub bytes: u64,
+    pub folder_limit: u64,
+    pub confirmation_required: bool,
+    pub skipped_too_large: Vec<(PathBuf, u64)>,
+}
+
+/// Result of [`Engine::track_entry`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrackOutcome {
+    Done(RootStatus),
+    NeedsConfirmation(InspectedEntry),
+}
+
 /// Outcome of a save from the resolver.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ResolveOutcome {
@@ -129,15 +211,19 @@ impl Engine {
     // --- public entry points ----------------------------------------------
 
     /// Start tracking `path`, or link to it when the cloud already knows the
-    /// slug. Returns the slug.
-    pub fn add_root(&mut self, path: &Path, slug: Option<&str>) -> Result<String> {
+    /// slug. Surfaces seed-folder skips and files over the per-file limit.
+    pub fn add_root(&mut self, path: &Path, slug: Option<&str>) -> Result<AddRootReport> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
         let cloud = self.cloud();
 
         // Every rejection happens before the first byte is written anywhere.
         let path = resolve_target(path)?;
-        let kind = kind_of(&path)?;
+        let md = fs::symlink_metadata(&path)
+            .with_context(|| format!("{} is unreadable", path.display()))?;
+        if !md.is_dir() {
+            bail!("{} is not a directory", path.display());
+        }
         let slug = match slug {
             Some(s) => s.to_string(),
             None => config::default_slug(&path, &self.home_dir),
@@ -152,7 +238,11 @@ impl Engine {
         match cloud.read_manifest(&slug) {
             Some(_) => {
                 self.link_root_locked(&g, &cloud, &slug, &path)?;
-                return Ok(slug);
+                return Ok(AddRootReport {
+                    slug,
+                    skipped_folders: Vec::new(),
+                    skipped_too_large: Vec::new(),
+                });
             }
             None if cloud.slug_dir(&slug)?.join("manifest.json").exists() => bail!(
                 "the manifest for {slug} exists but could not be read; retry once the \
@@ -162,35 +252,49 @@ impl Engine {
         }
 
         self.archive_stale_staging(&slug)?;
-        let repo = Repo::init(
+        let limits = Limits::from_config(&self.cfg);
+        let mut repo = Repo::init(
             &self.home,
             &slug,
             &path,
             &self.cfg.device_name,
             &self.cfg.device_id,
-            kind,
         )?;
-        // Written before the first commit so it is part of the history every
-        // other device links to, and so `ignore_text` filters this mirror.
-        let ignore = repo.ignore_text(&self.home_dir);
-        fs::write(repo.staging.join(".dotloreignore"), ignore)?;
+        repo.limits = limits;
+        let display_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| slug.clone());
+        let root = Root {
+            slug: slug.clone(),
+            path: path.clone(),
+            initializing: false,
+        };
+        // Written before the first commit so both arrive with the history
+        // every other device links to. `link_root_locked` writes neither.
+        let ignore = self
+            .cfg
+            .default_ignore
+            .as_deref()
+            .unwrap_or(project::DEFAULT_NEVER_IGNORE);
+        let patterns = project::patterns_for(&root, &self.home_dir, &self.cfg);
+        let (file, skipped_folders) = project::seed(&path, &patterns, ignore, limits)?;
+        project::write(&repo.staging, &file)?;
+        fs::write(repo.staging.join(project::IGNORE_FILE), ignore)?;
         cloud.write_manifest_once(&Manifest {
             slug: slug.clone(),
-            kind,
+            display_name,
+            is_agent: root.is_agent(&self.home_dir),
         })?;
         cloud.write_device_name_once(&slug, &self.cfg.device_id, &self.cfg.device_name)?;
-        repo.commit_local(true, &self.home_dir)?;
+        let (_, report) = repo.commit_local(true, &self.home_dir)?;
         repo.publish(&cloud)?;
-        self.register(
-            &g,
-            Root {
-                slug: slug.clone(),
-                path,
-                kind,
-                initializing: false,
-            },
-        )?;
-        Ok(slug)
+        self.register(&g, root)?;
+        Ok(AddRootReport {
+            slug,
+            skipped_folders,
+            skipped_too_large: report.skipped_too_large,
+        })
     }
 
     /// Adopt an existing cloud slug onto a local path.
@@ -265,32 +369,235 @@ impl Engine {
         Ok(out)
     }
 
-    /// Root-relative paths currently tracked for `slug`, sorted.
-    pub fn tracked_files(&mut self, slug: &str) -> Result<Vec<String>> {
+    /// Root-relative files currently tracked for `slug`, sorted by `rel`.
+    ///
+    /// Live files come from the same include-list walk as `mirror::walk`.
+    /// Over-limit files never reach staging, so they are listed here as
+    /// `TooLarge`. Staged paths with no live file (or a missing root) are
+    /// `Pending`.
+    pub fn tracked_files(&mut self, slug: &str) -> Result<Vec<TrackedFile>> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
         let root = self.root_cfg(slug)?;
         let repo = self.repo_for(&root)?;
-        let out = repo.git.ok(&["ls-files", "-z"])?;
+        let entries = repo.project_file()?.tracked();
+        let ignore = repo.ignore_text(&self.home_dir);
+        let limits = Limits::from_config(&self.cfg);
+        let staged = repo.git.ok(&["ls-files", "-z"])?;
+        let live_path = root.path.clone();
         drop(g);
-        let mut files: Vec<String> = out
+
+        let staged: Vec<String> = staged
             .split('\0')
             .filter(|s| !s.is_empty())
             .filter(|s| !is_internal(s))
-            .filter_map(|s| {
-                if root.kind != Kind::File {
-                    return Some(s.to_string());
+            .filter(|s| entries.contains_rel(Path::new(s)))
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut by_rel = BTreeMap::new();
+        if root_present(&live_path) {
+            for (rel, bytes, too_large) in mirror::list_live(&live_path, &entries, &ignore, limits)?
+            {
+                let rel = rel.to_string_lossy().into_owned();
+                if is_internal(&rel) {
+                    continue;
                 }
-                if s != "content" {
-                    return None;
-                }
-                root.path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
+                let state = if too_large {
+                    FileSync::TooLarge
+                } else {
+                    FileSync::Synced
+                };
+                by_rel.insert(rel.clone(), TrackedFile { rel, bytes, state });
+            }
+        }
+        for rel in staged {
+            by_rel.entry(rel.clone()).or_insert(TrackedFile {
+                rel,
+                bytes: 0,
+                state: FileSync::Pending,
+            });
+        }
+        Ok(by_rel.into_values().collect())
+    }
+
+    /// Explicit include-list keys for `slug`, including missing/empty entries.
+    pub fn list_entries(&mut self, slug: &str) -> Result<Vec<EntryView>> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let repo = self.repo_for(&self.root_cfg(slug)?)?;
+        let file = repo.project_file()?;
+        drop(g);
+        let mut out: Vec<EntryView> = file
+            .entries
+            .iter()
+            .filter(|(_, rec)| rec.state == State::Tracked)
+            .map(|(key, _)| EntryView {
+                covering: file.covering_keys(key),
+                kind: if key.ends_with('/') {
+                    EntryKind::Directory
+                } else {
+                    EntryKind::File
+                },
+                key: key.clone(),
             })
             .collect();
-        files.sort();
-        Ok(files)
+        out.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(out)
+    }
+
+    /// Preview `rel` under `slug`. Read-only: a cancelled add does not mutate.
+    pub fn inspect_entry(&mut self, slug: &str, rel: &Path) -> Result<InspectedEntry> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let root = self.root_cfg(slug)?;
+        let repo = self.repo_for(&root)?;
+        let limits = Limits::from_config(&self.cfg);
+        let ignore = repo.ignore_text(&self.home_dir);
+        drop(g);
+        inspect_live(&root.path, rel, &ignore, limits)
+    }
+
+    /// Track `rel` under `slug`. Uses safe live-path inspection.
+    ///
+    /// An oversized folder requires `confirmed_folder_bytes` of at least the
+    /// newly measured total. Confirmation never overrides the per-file limit.
+    pub fn track_entry(
+        &mut self,
+        slug: &str,
+        rel: &Path,
+        confirmed_folder_bytes: Option<u64>,
+    ) -> Result<TrackOutcome> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let cloud = self.cloud();
+        let root = self.root_cfg(slug)?;
+        if !plain_rel(rel) {
+            bail!("unsafe path {}", rel.display());
+        }
+        let limits = Limits::from_config(&self.cfg);
+        let repo = self.repo_for(&root)?;
+        let ignore = repo.ignore_text(&self.home_dir);
+        let preview = inspect_live(&root.path, rel, &ignore, limits)?;
+        match preview.kind {
+            EntryKind::File => {
+                if let Some((_, len)) = preview.skipped_too_large.first() {
+                    bail!(
+                        "{} is {len} bytes (limit {} bytes)",
+                        rel.display(),
+                        limits.max_file_bytes
+                    );
+                }
+            }
+            EntryKind::Directory => {
+                if preview.confirmation_required {
+                    let approved = confirmed_folder_bytes.unwrap_or(0);
+                    if approved < preview.bytes {
+                        return Ok(TrackOutcome::NeedsConfirmation(preview));
+                    }
+                }
+            }
+        }
+        let key = match preview.kind {
+            EntryKind::Directory => format!("{}/", trim_rel(rel).display()),
+            EntryKind::File => trim_rel(rel).display().to_string(),
+        };
+        let mut file = repo.project_file()?;
+        let gen = file
+            .entries
+            .values()
+            .map(|e| e.gen)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        file.entries.insert(
+            key,
+            project::EntryRecord {
+                gen,
+                state: State::Tracked,
+            },
+        );
+        project::write(&repo.staging, &file)?;
+        let status = self.run_cycle(&cloud, &root, FetchMode::Normal);
+        self.settle(&g, slug, &status)?;
+        Ok(TrackOutcome::Done(status))
+    }
+
+    /// Tombstone one explicit include entry. Lexical; the live path may be missing.
+    pub fn untrack_entry(&mut self, slug: &str, rel: &Path) -> Result<RootStatus> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let cloud = self.cloud();
+        let root = self.root_cfg(slug)?;
+        if !plain_rel(rel) {
+            bail!("unsafe path {}", rel.display());
+        }
+        let repo = self.repo_for(&root)?;
+        let mut file = repo.project_file()?;
+        file.untrack(rel)?;
+        project::write(&repo.staging, &file)?;
+        let status = self.run_cycle(&cloud, &root, FetchMode::Normal);
+        self.settle(&g, slug, &status)?;
+        Ok(status)
+    }
+
+    /// Effective project seed patterns (`None` in config → `DEFAULT_PATTERNS`).
+    pub fn default_patterns(&self) -> Vec<String> {
+        match &self.cfg.default_patterns {
+            Some(p) => p.clone(),
+            None => project::DEFAULT_PATTERNS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+        }
+    }
+
+    pub fn set_default_patterns(&mut self, patterns: Vec<String>) -> Result<()> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        self.cfg.default_patterns = Some(patterns);
+        self.save(&g)
+    }
+
+    /// Effective ignore text (`None` in config → `DEFAULT_NEVER_IGNORE`).
+    pub fn default_ignore(&self) -> String {
+        self.cfg
+            .default_ignore
+            .clone()
+            .unwrap_or_else(|| project::DEFAULT_NEVER_IGNORE.to_string())
+    }
+
+    pub fn set_default_ignore(&mut self, ignore: String) -> Result<()> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        self.cfg.default_ignore = Some(ignore);
+        self.save(&g)
+    }
+
+    /// Effective per-file ceiling in MiB (`None` in config → 50).
+    pub fn max_file_mb(&self) -> u64 {
+        self.cfg.max_file_mb.unwrap_or(Limits::DEFAULT_MAX_FILE_MB)
+    }
+
+    pub fn set_max_file_mb(&mut self, mb: u64) -> Result<()> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        self.cfg.max_file_mb = Some(mb);
+        self.save(&g)
+    }
+
+    /// Effective seed/add folder ceiling in MiB (`None` in config → 200).
+    pub fn max_seed_folder_mb(&self) -> u64 {
+        self.cfg
+            .max_seed_folder_mb
+            .unwrap_or(Limits::DEFAULT_MAX_SEED_FOLDER_MB)
+    }
+
+    pub fn set_max_seed_folder_mb(&mut self, mb: u64) -> Result<()> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        self.cfg.max_seed_folder_mb = Some(mb);
+        self.save(&g)
     }
 
     /// The bytes of one exact `(live, sibling)` pair, as committed.
@@ -410,29 +717,24 @@ impl Engine {
         path: &Path,
     ) -> Result<RootStatus> {
         check_slug(slug)?;
-        let manifest = cloud.read_manifest(slug).ok_or_else(|| {
+        cloud.read_manifest(slug).ok_or_else(|| {
             anyhow!(
                 "no readable manifest for {slug} in {}",
                 cloud.base.display()
             )
         })?;
-        let kind = manifest.kind;
         let path = resolve_target(path)?;
         match fs::symlink_metadata(&path) {
-            Ok(_) if kind_of(&path)? != kind => {
-                bail!("{} does not match the {kind:?} slug {slug}", path.display())
-            }
-            Ok(_) => {}
-            // A file root may be created by the first sync; a directory root
-            // must already be there.
-            Err(_) if kind == Kind::File => {}
+            Ok(md) if md.is_dir() => {}
+            Ok(_) => bail!("{} is not a directory", path.display()),
             Err(e) => return Err(e).with_context(|| format!("{} is missing", path.display())),
         }
         self.check_placement(&path)?;
         self.check_unregistered(slug, &path)?;
 
-        // No `.dotloreignore` and no local first commit: both arrive with the
-        // history the creating device published.
+        // No `.dotloreignore`, no `.dotloreproject`, and no local first
+        // commit: all three arrive with the history the creating device
+        // published.
         self.archive_stale_staging(slug)?;
         Repo::init(
             &self.home,
@@ -440,13 +742,11 @@ impl Engine {
             &path,
             &self.cfg.device_name,
             &self.cfg.device_id,
-            kind,
         )?;
         cloud.write_device_name_once(slug, &self.cfg.device_id, &self.cfg.device_name)?;
         let root = Root {
             slug: slug.to_string(),
             path,
-            kind,
             initializing: true,
         };
         self.register(g, root.clone())?;
@@ -514,7 +814,6 @@ impl Engine {
             &root.path,
             &self.cfg.device_name,
             &self.cfg.device_id,
-            root.kind,
         )
         .map(|r| {
             r.git
@@ -535,7 +834,6 @@ impl Engine {
                 &root.path,
                 &self.cfg.device_name,
                 &self.cfg.device_id,
-                root.kind,
             )?;
         }
 
@@ -564,11 +862,9 @@ impl Engine {
         // Before resuming anything: `mirror::apply_to_root` creates missing
         // parent directories and treats a missing file as "absent", so
         // resuming a journalled apply against a root the user deleted would
-        // quietly recreate it. Only a not-yet-initialized *file* root may
-        // legitimately be absent (I8: its Link creates it); anything else that
-        // is gone is a root the user moved, never a deletion to publish.
-        let may_be_absent = root.initializing && root.kind == Kind::File;
-        if !may_be_absent && !root_present(&root.path, root.kind) {
+        // quietly recreate it. A project folder must already exist; a missing
+        // one is a root the user moved, never a deletion to publish.
+        if !root_present(&root.path) {
             return Ok(RootStatus::RootMissing);
         }
 
@@ -585,12 +881,12 @@ impl Engine {
                     repo.publish(cloud)?;
                     None
                 }
-                ResumeOutcome::Pending(_) => return Ok(stalled(&root.slug, root.kind, &tx)),
+                ResumeOutcome::Pending(_) => return Ok(stalled(&root.slug, &tx)),
             },
             None => None,
         };
 
-        if pending.is_none() && root_present(&root.path, root.kind) {
+        if pending.is_none() && root_present(&root.path) {
             repo.commit_local(false, &self.home_dir)?;
         }
         // Decided against durable `main`, before anything is merged, so the
@@ -630,7 +926,7 @@ impl Engine {
         tx.set_target(&repo)?;
         if !tx.apply(&repo, &self.home_dir)?.is_empty() {
             // Journal intact; nothing is published until the root agrees.
-            return Ok(stalled(&root.slug, root.kind, &tx));
+            return Ok(stalled(&root.slug, &tx));
         }
         tx.finalize(&repo)?;
         repo.publish(cloud)?;
@@ -671,14 +967,15 @@ impl Engine {
     }
 
     fn repo_for(&self, root: &Root) -> Result<Repo> {
-        Repo::open(
+        let mut repo = Repo::open(
             &self.home,
             &root.slug,
             &root.path,
             &self.cfg.device_name,
             &self.cfg.device_id,
-            root.kind,
-        )
+        )?;
+        repo.limits = Limits::from_config(&self.cfg);
+        Ok(repo)
     }
 
     /// `self.cfg` was loaded under the guard we still hold, so it is the
@@ -892,7 +1189,12 @@ pub fn configure_provider(
     for root in e.cfg.roots.clone() {
         dest_cloud.write_manifest_once(&Manifest {
             slug: root.slug.clone(),
-            kind: root.kind,
+            display_name: root
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.slug.clone()),
+            is_agent: root.is_agent(home_dir),
         })?;
         dest_cloud.write_device_name_once(&root.slug, &e.cfg.device_id, &e.cfg.device_name)?;
         let status = e.sync_root_locked(&g, &dest_cloud, &root.slug)?;
@@ -918,88 +1220,62 @@ fn cloud_at(provider_dir: &Path) -> Cloud {
 /// Why an apply did not finish, as a status a user can act on.
 ///
 /// A path that raced a live edit is genuinely `Pending` — the next cycle picks
-/// it up. A path blocked by a symlink in the live root, by a target entry that
-/// is not a regular file, or by an entry that maps to no live path at all is
-/// re-skipped on every attempt forever: the whole root then stops committing
-/// and publishing behind the same `Pending` the UI shows for "no bundles yet",
-/// with nothing to act on. That one is `Error` naming the paths.
+/// it up. A path blocked by a symlink in the live root or by a target entry
+/// that is not a regular file is re-skipped on every attempt forever: the
+/// whole root then stops committing and publishing behind the same `Pending`
+/// the UI shows for "no bundles yet", with nothing to act on. That one is
+/// `Error` naming the paths.
 ///
 /// The root stays frozen as a whole while any path is blocked: finalizing the
 /// unblocked paths would advance `main` past a root that does not match it,
 /// which is the invariant the transaction exists to hold.
-fn stalled(slug: &str, kind: Kind, tx: &Transaction) -> RootStatus {
-    match stall_message(slug, kind, tx.blocked()) {
+fn stalled(slug: &str, tx: &Transaction) -> RootStatus {
+    match stall_message(slug, tx.blocked()) {
         Some(m) => RootStatus::Error(m),
         None => RootStatus::Pending,
     }
 }
 
-/// The blocked-path message, split by what the user can actually do.
+/// The blocked-path message: a live path the user can move aside, plus the
+/// recover hinge for when that does not apply.
 ///
-/// Only one of the three causes clears from this Mac: moving aside a symlink
-/// or directory the user owns lets the very next cycle finish. The other two
-/// live in the pinned target, and `cycle` returns `stalled` *before*
-/// `fetch_bundles`, so while the journal stands this device never fetches and
-/// a peer's corrective commit cannot arrive. Rebuilding the staging repo is
-/// then the only exit, so the message names it rather than promising a next
-/// sync that cannot happen.
+/// `cycle` returns `stalled` *before* `fetch_bundles`, so while the journal
+/// stands this device never fetches and a peer's corrective commit cannot
+/// arrive. Rebuilding the staging repo is then the only exit, so the message
+/// names it rather than promising a next sync that cannot happen.
 ///
 /// Separate from [`stalled`] because a `Transaction`'s blocked list can only
 /// be produced by a real apply, and this text is the part worth asserting on.
-fn stall_message(slug: &str, kind: Kind, blocked: &[PathBuf]) -> Option<String> {
+fn stall_message(slug: &str, blocked: &[PathBuf]) -> Option<String> {
     if blocked.is_empty() {
         return None;
     }
-    // A `Kind::File` root has exactly one logical entry, `content`; anything
-    // else in the target tree came from a peer and maps nowhere, whatever the
-    // live file looks like.
-    let (unmappable, unwritable): (Vec<&PathBuf>, Vec<&PathBuf>) = blocked
+    let names = blocked
         .iter()
-        .partition(|p| kind == Kind::File && p.as_path() != Path::new("content"));
-    let names = |v: &[&PathBuf]| {
-        v.iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let mut out = Vec::new();
-    if !unmappable.is_empty() {
-        out.push(format!(
-            "cannot map {} into the single-file root {slug}: a peer published an entry beside \
-             `content`, and nothing done to the live file changes that. Nothing was overwritten.",
-            names(&unmappable)
-        ));
-    }
-    if !unwritable.is_empty() {
-        out.push(format!(
-            "cannot write {} in the live root of {slug}: the live path is a symlink or a \
-             directory, or the peer's version of it is not a regular file. Nothing was \
-             overwritten; if it is a path you put there, move it aside and the next sync \
-             continues.",
-            names(&unwritable)
-        ));
-    }
-    // Only the unwritable branch offers a local remedy, so only it gets the
-    // "if that did not work" hinge.
-    let hinge = if unwritable.is_empty() {
-        "Sync"
-    } else {
-        "If that does not apply or does not help, sync"
-    };
-    out.push(format!(
-        "{hinge} for {slug} stays stopped: while this \
-         apply stands the device never fetches, so a peer's correction cannot even arrive. \
-         Once one is published, move repos/{slug} aside under the dotlore home and run \
-         `dotlore recover {slug}`; recover on its own only re-reads the same stopped apply."
-    ));
-    Some(out.join(" "))
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "cannot write {names} in the live root of {slug}: the live path is a symlink or a \
+         directory, or the peer's version of it is not a regular file. Nothing was \
+         overwritten; if it is a path you put there, move it aside and the next sync \
+         continues. If that does not apply or does not help, sync for {slug} stays stopped: \
+         while this apply stands the device never fetches, so a peer's correction cannot \
+         even arrive. Once one is published, move repos/{slug} aside under the dotlore \
+         home and run `dotlore recover {slug}`; recover on its own only re-reads the same \
+         stopped apply."
+    ))
 }
 
 fn root_status(repo: &Repo) -> Result<RootStatus> {
     if !repo.has_main() {
         return Ok(RootStatus::Pending);
     }
-    match conflict::list(&repo.git)?.len() {
+    match conflict::list(&repo.git)?
+        .iter()
+        .filter(|c| c.live != Path::new(crate::project::IGNORE_FILE))
+        .count()
+    {
         0 => Ok(RootStatus::Synced),
         n => Ok(RootStatus::Conflicts(n)),
     }
@@ -1060,12 +1336,9 @@ fn needs_merge(repo: &Repo, key: &str, device: &str) -> Result<bool> {
     Ok(true)
 }
 
-fn root_present(path: &Path, kind: Kind) -> bool {
+fn root_present(path: &Path) -> bool {
     match fs::symlink_metadata(path) {
-        Ok(md) => match kind {
-            Kind::Dir => md.is_dir(),
-            Kind::File => md.is_file(),
-        },
+        Ok(md) => md.is_dir(),
         Err(_) => false,
     }
 }
@@ -1120,30 +1393,12 @@ fn resolve_target(path: &Path) -> Result<PathBuf> {
     }
 }
 
-/// Staging-private names: the ignore file, and conflict siblings.
+/// Staging-private names: never listed as tracked files.
 fn is_internal(path: &str) -> bool {
     Path::new(path).components().any(|c| match c {
-        Component::Normal(n) => {
-            let n = n.to_string_lossy();
-            n == ".dotloreignore" || n.contains(".conflict-")
-        }
+        Component::Normal(n) => crate::project::staging_private(&n.to_string_lossy()),
         _ => true,
     })
-}
-
-fn kind_of(path: &Path) -> Result<Kind> {
-    let md =
-        fs::symlink_metadata(path).with_context(|| format!("{} is unreadable", path.display()))?;
-    if md.is_dir() {
-        Ok(Kind::Dir)
-    } else if md.is_file() {
-        Ok(Kind::File)
-    } else {
-        bail!(
-            "{} is neither a regular file nor a directory",
-            path.display()
-        );
-    }
 }
 
 fn canonical(p: &Path) -> PathBuf {
@@ -1163,23 +1418,12 @@ fn device_name(names: &std::collections::HashMap<String, String>, id8: &str) -> 
         .unwrap_or_else(|| id8.to_string())
 }
 
-/// The real file a staging entry maps to. A single-file root has exactly one
-/// logical entry, `content`, whatever the local file is called.
+/// The real file a staging entry maps to.
 fn live_root_path(repo: &Repo, rel: &Path) -> Result<PathBuf> {
-    match repo.kind {
-        Kind::File => {
-            if rel != Path::new("content") {
-                bail!("file root: unexpected staging entry {}", rel.display());
-            }
-            Ok(repo.root.clone())
-        }
-        Kind::Dir => {
-            if !plain_rel(rel) {
-                bail!("unsafe path {}", rel.display());
-            }
-            Ok(repo.root.join(rel))
-        }
+    if !plain_rel(rel) {
+        bail!("unsafe path {}", rel.display());
     }
+    Ok(repo.root.join(rel))
 }
 
 fn root_state(path: &Path) -> Result<Option<FileState>> {
@@ -1238,6 +1482,59 @@ fn blob_bytes(git: &Git, oid: &str) -> Result<Vec<u8>> {
 
 fn plain_rel(rel: &Path) -> bool {
     !rel.as_os_str().is_empty() && rel.components().all(|c| matches!(c, Component::Normal(_)))
+}
+
+fn trim_rel(rel: &Path) -> PathBuf {
+    PathBuf::from(rel.as_os_str().to_string_lossy().trim_end_matches('/'))
+}
+
+/// Safe, ignore-aware preview of a live path. Over-limit files are excluded
+/// from `bytes` and listed in `skipped_too_large`.
+fn inspect_live(
+    root: &Path,
+    rel: &Path,
+    ignore_text: &str,
+    limits: Limits,
+) -> Result<InspectedEntry> {
+    if !plain_rel(rel) {
+        bail!("unsafe path {}", rel.display());
+    }
+    let trimmed = trim_rel(rel);
+    if trimmed.as_os_str().is_empty() {
+        bail!("unsafe path {}", rel.display());
+    }
+    match mirror::inspect(root, &trimmed)? {
+        Node::Missing => bail!("{} is missing", root.join(&trimmed).display()),
+        Node::Opaque => bail!(
+            "{} is a symlink or not a regular file or directory",
+            root.join(&trimmed).display()
+        ),
+        Node::File { len } => {
+            let over = len > limits.max_file_bytes;
+            let measured = mirror::measure_tree(root, &trimmed, ignore_text, limits)?;
+            Ok(InspectedEntry {
+                kind: EntryKind::File,
+                bytes: if over { 0 } else { measured.bytes },
+                folder_limit: limits.max_seed_folder_bytes,
+                confirmation_required: false,
+                skipped_too_large: if over {
+                    vec![(trimmed, len)]
+                } else {
+                    measured.skipped_too_large
+                },
+            })
+        }
+        Node::Dir => {
+            let measured = mirror::measure_tree(root, &trimmed, ignore_text, limits)?;
+            Ok(InspectedEntry {
+                kind: EntryKind::Directory,
+                bytes: measured.bytes,
+                folder_limit: limits.max_seed_folder_bytes,
+                confirmation_required: measured.bytes > limits.max_seed_folder_bytes,
+                skipped_too_large: measured.skipped_too_large,
+            })
+        }
+    }
 }
 
 /// Every version the resolver showed, still exactly as it was shown. Bytes are
@@ -1312,11 +1609,16 @@ mod tests {
     fn device(provider: &Path, letter: char) -> Dev {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
+        // `default_patterns` is hooked here so seeding tests can override it
+        // on the hand-built Config before `cfg.save`.
         let cfg = Config {
             device_id: letter.to_string().repeat(32),
             device_name: format!("Mac {letter} Pro"),
             provider_dir: Some(provider.to_path_buf()),
             roots: Vec::new(),
+            default_patterns: None,
+            default_ignore: None,
+            ..Default::default()
         };
         cfg.save(home.path()).unwrap();
         let engine = Engine::new(home.path(), home.path(), cfg).unwrap();
@@ -1331,7 +1633,10 @@ mod tests {
 
     fn add(dev: &mut Dev) -> String {
         let path = dev.root.path().to_path_buf();
-        dev.engine.add_root(&path, Some("proj-claude")).unwrap()
+        dev.engine
+            .add_root(&path, Some("proj-claude"))
+            .unwrap()
+            .slug
     }
 
     fn cloud_of(dev: &Dev) -> Cloud {
@@ -1342,6 +1647,10 @@ mod tests {
 
     fn staging(dev: &Dev) -> PathBuf {
         dev.home.path().join("repos/proj-claude")
+    }
+
+    fn rels(files: &[TrackedFile]) -> Vec<String> {
+        files.iter().map(|f| f.rel.clone()).collect()
     }
 
     #[test]
@@ -1370,12 +1679,21 @@ mod tests {
         let cfg = Config::load(a.home.path()).unwrap();
         assert_eq!(cfg.roots.len(), 1);
         assert!(!cfg.roots[0].initializing);
-        assert_eq!(cfg.roots[0].kind, Kind::Dir);
         assert!(staging(&a).join(".dotloreignore").is_file());
         assert!(!a.root.path().join(".dotloreignore").exists());
 
         let cloud = cloud_of(&a);
-        assert_eq!(cloud.read_manifest("proj-claude").unwrap().kind, Kind::Dir);
+        let manifest = cloud.read_manifest("proj-claude").unwrap();
+        assert_eq!(
+            manifest.display_name,
+            a.root
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert!(!manifest.is_agent);
         assert_eq!(cloud.list_bundles("proj-claude").len(), 1);
 
         assert_eq!(
@@ -1396,22 +1714,306 @@ mod tests {
         a.engine.sync_root("proj-claude").unwrap();
 
         let files = a.engine.tracked_files("proj-claude").unwrap();
-        assert_eq!(files, vec!["CLAUDE.md", "docs/a.md", "docs/nested/b.md"]);
-        assert!(!files.iter().any(|f| f.contains(".dotloreignore")));
+        assert_eq!(rels(&files), ["CLAUDE.md", "docs/a.md", "docs/nested/b.md"]);
+        assert!(!files.iter().any(|f| f.rel.contains(".dotloreignore")));
+        assert!(!files.iter().any(|f| f.rel.contains(".dotloreproject")));
+        assert!(files.iter().all(|f| f.state == FileSync::Synced));
     }
 
     #[test]
-    fn tracked_files_maps_a_file_root_to_its_basename() {
+    fn add_root_seeds_the_include_list_from_the_default_patterns() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.cfg.default_patterns = Some(vec!["CLAUDE.md".into(), "docs/".into()]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        write(&a, "README.md", b"nope\n");
+        add(&mut a);
+
+        let file = crate::project::read(&staging(&a)).unwrap();
+        let tracked = file.tracked();
+        assert!(tracked.is_explicit(Path::new("CLAUDE.md")));
+        assert!(tracked.is_explicit(Path::new("docs")));
+        assert!(!tracked.contains_rel(Path::new("README.md")));
+
+        let files = a.engine.tracked_files("proj-claude").unwrap();
+        assert_eq!(rels(&files), ["CLAUDE.md", "docs/a.md"]);
+        assert!(!files.iter().any(|f| f.rel == "README.md"));
+    }
+
+    #[test]
+    fn add_root_writes_the_default_never_list_into_dotloreignore() {
         let provider = TempDir::new().unwrap();
         let mut a = device(provider.path(), 'a');
         write(&a, "CLAUDE.md", b"one\n");
-        let path = a.root.path().join("CLAUDE.md");
-        a.engine.add_root(&path, Some("proj-claude")).unwrap();
+        add(&mut a);
+        let got = fs::read_to_string(staging(&a).join(".dotloreignore")).unwrap();
+        assert_eq!(got, crate::project::DEFAULT_NEVER_IGNORE);
+    }
+
+    #[test]
+    fn tracked_files_lists_only_include_list_entries() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        write(&a, "README.md", b"nope\n");
+        add(&mut a);
         a.engine.sync_root("proj-claude").unwrap();
 
         let files = a.engine.tracked_files("proj-claude").unwrap();
-        assert_eq!(files, vec!["CLAUDE.md"]);
-        assert_ne!(files, vec!["content".to_string()]);
+        assert_eq!(rels(&files), ["CLAUDE.md", "docs/a.md"]);
+        assert!(!files.iter().any(|f| f.rel == "README.md"));
+    }
+
+    #[test]
+    fn tracked_files_reports_a_size_for_every_entry() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"aaaa");
+        add(&mut a);
+        a.engine.sync_root("proj-claude").unwrap();
+
+        assert_eq!(
+            a.engine.tracked_files("proj-claude").unwrap(),
+            vec![
+                TrackedFile {
+                    rel: "CLAUDE.md".into(),
+                    bytes: 4,
+                    state: FileSync::Synced,
+                },
+                TrackedFile {
+                    rel: "docs/a.md".into(),
+                    bytes: 4,
+                    state: FileSync::Synced,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tracked_files_reports_a_staged_path_with_no_live_file_as_pending() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        a.engine.sync_root("proj-claude").unwrap();
+        fs::remove_file(a.root.path().join("CLAUDE.md")).unwrap();
+
+        assert_eq!(
+            a.engine.tracked_files("proj-claude").unwrap(),
+            vec![TrackedFile {
+                rel: "CLAUDE.md".into(),
+                bytes: 0,
+                state: FileSync::Pending,
+            }]
+        );
+    }
+
+    #[test]
+    fn tracked_files_on_a_missing_root_lists_staged_paths_as_pending() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        add(&mut a);
+        a.engine.sync_root("proj-claude").unwrap();
+        fs::remove_dir_all(a.root.path()).unwrap();
+
+        let files = a.engine.tracked_files("proj-claude").unwrap();
+        assert_eq!(
+            files,
+            vec![
+                TrackedFile {
+                    rel: "CLAUDE.md".into(),
+                    bytes: 0,
+                    state: FileSync::Pending,
+                },
+                TrackedFile {
+                    rel: "docs/a.md".into(),
+                    bytes: 0,
+                    state: FileSync::Pending,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tracked_files_reports_an_over_limit_file_as_too_large() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        add(&mut a);
+        a.engine.set_max_file_mb(1).unwrap();
+        write(&a, "docs/huge.bin", &vec![b'x'; 1024 * 1024 + 1]);
+
+        let files = a.engine.tracked_files("proj-claude").unwrap();
+        let huge = files
+            .iter()
+            .find(|f| f.rel == "docs/huge.bin")
+            .expect("over-limit file must be listed");
+        assert_eq!(huge.bytes, 1024 * 1024 + 1);
+        assert_eq!(huge.state, FileSync::TooLarge);
+
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let staged = repo.git.ok(&["ls-files"]).unwrap();
+        assert!(
+            !staged.lines().any(|l| l == "docs/huge.bin"),
+            "too-large file must not be in git ls-files:\n{staged}"
+        );
+    }
+
+    #[test]
+    fn track_entry_publishes_the_entry() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        write(&a, "notes.md", b"notes\n");
+
+        let status = a
+            .engine
+            .track_entry("proj-claude", Path::new("notes.md"), None)
+            .unwrap();
+        assert_eq!(status, TrackOutcome::Done(RootStatus::Synced));
+        assert_eq!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap()),
+            ["CLAUDE.md", "notes.md"]
+        );
+        assert_eq!(cloud_of(&a).list_bundles("proj-claude").len(), 2);
+
+        let listed = a.engine.list_entries("proj-claude").unwrap();
+        assert!(listed
+            .iter()
+            .any(|e| e.key == "notes.md" && e.kind == EntryKind::File));
+        assert!(listed.iter().any(|e| e.key == "CLAUDE.md"));
+    }
+
+    #[test]
+    fn untrack_entry_does_not_commit_a_deletion() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.cfg.default_patterns = Some(vec!["CLAUDE.md".into(), "notes.md".into()]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "notes.md", b"keep me\n");
+        add(&mut a);
+
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let before = repo.git.rev("refs/heads/main").unwrap();
+        let blob_before = repo.git.ok(&["rev-parse", "HEAD:notes.md"]).unwrap();
+
+        assert_eq!(
+            a.engine
+                .untrack_entry("proj-claude", Path::new("notes.md"))
+                .unwrap(),
+            RootStatus::Synced
+        );
+
+        let after = repo.git.rev("refs/heads/main").unwrap();
+        assert_ne!(before, after, "untrack must commit the tombstone");
+        let log = repo.git.ok(&["log", "--format=%s", "-1"]).unwrap();
+        assert!(
+            log.starts_with("local aaaaaaaa"),
+            "a local commit containing the manifest update is required: {log}"
+        );
+
+        let file = crate::project::read(&staging(&a)).unwrap();
+        assert_eq!(
+            file.entries["notes.md"].state,
+            crate::project::State::Removed
+        );
+        let blob_after = repo.git.ok(&["rev-parse", "HEAD:notes.md"]).unwrap();
+        assert_eq!(blob_before, blob_after, "content blob must be unchanged");
+
+        let diff = repo
+            .git
+            .ok(&["diff", "--name-status", &before, &after])
+            .unwrap();
+        assert!(
+            !diff
+                .lines()
+                .any(|l| l.starts_with('D') && l.contains("notes.md")),
+            "untrack committed a deletion:\n{diff}"
+        );
+        assert!(
+            a.root.path().join("notes.md").is_file(),
+            "live file must stay"
+        );
+        assert_eq!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap()),
+            ["CLAUDE.md"]
+        );
+        assert_eq!(cloud_of(&a).list_bundles("proj-claude").len(), 2);
+    }
+
+    #[test]
+    fn untrack_entry_rejects_an_inherited_only_path() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "docs/a.md", b"a\n");
+        add(&mut a);
+
+        let err = a
+            .engine
+            .untrack_entry("proj-claude", Path::new("docs/a.md"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("docs/"), "{err}");
+        assert!(
+            crate::project::read(&staging(&a)).unwrap().entries["docs/"].state
+                == crate::project::State::Tracked
+        );
+    }
+
+    #[test]
+    fn untrack_entry_reports_remaining_coverage_for_overlapping_entries() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "docs/readme.md", b"hi\n");
+        add(&mut a);
+        a.engine
+            .track_entry("proj-claude", Path::new("docs/readme.md"), None)
+            .unwrap();
+
+        let before = a.engine.list_entries("proj-claude").unwrap();
+        let child = before.iter().find(|e| e.key == "docs/readme.md").unwrap();
+        assert!(
+            child.covering.iter().any(|c| c == "docs/"),
+            "child must report the parent cover: {child:?}"
+        );
+
+        a.engine
+            .untrack_entry("proj-claude", Path::new("docs/readme.md"))
+            .unwrap();
+        let after = a.engine.list_entries("proj-claude").unwrap();
+        assert!(!after.iter().any(|e| e.key == "docs/readme.md"));
+        let parent = after.iter().find(|e| e.key == "docs/").unwrap();
+        assert_eq!(parent.kind, EntryKind::Directory);
+        assert!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap())
+                .contains(&"docs/readme.md".into()),
+            "parent still covers the child path"
+        );
+
+        let mut b = device(provider.path(), 'b');
+        let b_root = b.root.path().to_path_buf();
+        b.engine.link_root("proj-claude", &b_root).unwrap();
+        let b_entries = b.engine.list_entries("proj-claude").unwrap();
+        assert!(b_entries.iter().any(|e| e.key == "docs/"));
+        assert!(!b_entries.iter().any(|e| e.key == "docs/readme.md"));
+        assert!(rels(&b.engine.tracked_files("proj-claude").unwrap())
+            .contains(&"docs/readme.md".into()));
     }
 
     /// Two devices adding the same slug must not mint unrelated histories:
@@ -1442,10 +2044,17 @@ mod tests {
         assert_eq!(fs::read(b.root.path().join("CLAUDE.md")).unwrap(), b"one\n");
         assert_eq!(engine.cfg.roots.len(), 1);
         // The creating device's manifest is the only one.
+        let manifest = cloud_of(&a).read_manifest("proj-claude").unwrap();
         assert_eq!(
-            cloud_of(&a).read_manifest("proj-claude").unwrap().kind,
-            Kind::Dir
+            manifest.display_name,
+            a.root
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
         );
+        assert!(!manifest.is_agent);
     }
 
     #[test]
@@ -1614,7 +2223,6 @@ mod tests {
             &b_root,
             "Mac b Pro",
             &"b".repeat(32),
-            Kind::Dir,
         )
         .unwrap()
         .git
@@ -1657,8 +2265,13 @@ mod tests {
             .add_root(provider.path(), Some("the-provider"))
             .is_err());
 
+        // a_file_path_is_refused_as_a_project
+        let file = a.root.path().join("CLAUDE.md");
+        assert!(a.engine.add_root(&file, Some("as-a-file")).is_err());
+
         assert!(Config::load(a.home.path()).unwrap().roots.is_empty());
         assert!(!a.home.path().join("repos/state-home").exists());
+        assert!(!a.home.path().join("repos/as-a-file").exists());
     }
 
     /// The resolver contract end to end, with a sibling planted directly in
@@ -1751,6 +2364,47 @@ mod tests {
             .exists());
     }
 
+    #[test]
+    fn an_ignore_file_conflict_is_not_counted_in_the_badge() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"mine\n");
+        add(&mut a);
+
+        let cloud = cloud_of(&a);
+        cloud
+            .write_device_name_once("proj-claude", &"b".repeat(32), "Mac b Pro")
+            .unwrap();
+        let root = a.engine.root_cfg("proj-claude").unwrap();
+        let repo = a.engine.repo_for(&root).unwrap();
+        let sibling = PathBuf::from(format!(
+            "{}.conflict-bbbbbbbb-abc1234",
+            crate::project::IGNORE_FILE
+        ));
+        fs::write(repo.staging.join(&sibling), b"theirs-ignore\n").unwrap();
+        repo.git.ok(&["add", "-A"]).unwrap();
+        repo.git.ok(&["commit", "-m", "ignore conflict"]).unwrap();
+
+        assert_eq!(root_status(&repo).unwrap(), RootStatus::Synced);
+
+        let views = a.engine.conflicts("proj-claude").unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].live, Path::new(crate::project::IGNORE_FILE));
+        assert_eq!(views[0].sibling, sibling);
+        assert_eq!(views[0].loser_id8, "bbbbbbbb");
+
+        let snap = a
+            .engine
+            .open_resolution("proj-claude", Path::new(crate::project::IGNORE_FILE))
+            .unwrap();
+        let out = a
+            .engine
+            .resolve_conflict("proj-claude", &snap, &[sibling], &snap.live_bytes)
+            .unwrap();
+        assert_eq!(out, ResolveOutcome::Applied(RootStatus::Synced));
+        assert!(a.engine.conflicts("proj-claude").unwrap().is_empty());
+    }
+
     /// I9: the backup is taken and verified first, the registration survives,
     /// and this device's own bundles are imported (a normal fetch skips them).
     #[test]
@@ -1765,7 +2419,6 @@ mod tests {
             a.root.path(),
             "Mac a Pro",
             &"a".repeat(32),
-            Kind::Dir,
         )
         .unwrap()
         .git
@@ -1784,7 +2437,6 @@ mod tests {
             a.root.path(),
             "Mac a Pro",
             &"a".repeat(32),
-            Kind::Dir,
         )
         .unwrap();
         assert!(after.git.is_ancestor(&head, "refs/heads/main"));
@@ -1895,7 +2547,6 @@ mod tests {
                 a.root.path(),
                 "Mac a Pro",
                 &"a".repeat(32),
-                Kind::Dir,
             )
             .unwrap()
             .git
@@ -1911,7 +2562,17 @@ mod tests {
         let dest = Cloud {
             base: second.path().join("dotlore"),
         };
-        assert_eq!(dest.read_manifest("proj-claude").unwrap().kind, Kind::Dir);
+        let dest_manifest = dest.read_manifest("proj-claude").unwrap();
+        assert_eq!(
+            dest_manifest.display_name,
+            a.root
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert!(!dest_manifest.is_agent);
         assert_eq!(dest.list_bundles("proj-claude").len(), 1);
         // The source keeps everything it had.
         let src = Cloud {
@@ -1932,27 +2593,207 @@ mod tests {
     /// user to move aside a path no filesystem action can affect.
     #[test]
     fn a_blocked_path_is_told_the_remedy_that_exists() {
-        let extra = PathBuf::from("evil.md");
-        let unmappable = stall_message("proj-claude", Kind::File, &[extra]).unwrap();
-        assert!(
-            unmappable.contains("`dotlore recover proj-claude`"),
-            "{unmappable}"
-        );
-        assert!(
-            !unmappable.contains("move it aside"),
-            "a peer's extra entry maps nowhere; moving the live file does nothing: {unmappable}"
-        );
-
         // A live path the user owns is the one case that does clear locally,
         // and it still gets the fallback for when the block is the peer's.
         let live = PathBuf::from("CLAUDE.md");
-        let unwritable = stall_message("proj-claude", Kind::Dir, &[live]).unwrap();
+        let unwritable = stall_message("proj-claude", &[live]).unwrap();
         assert!(unwritable.contains("move it aside"), "{unwritable}");
         assert!(
             unwritable.contains("`dotlore recover proj-claude`"),
             "{unwritable}"
         );
 
-        assert_eq!(stall_message("proj-claude", Kind::Dir, &[]), None);
+        assert_eq!(stall_message("proj-claude", &[]), None);
+    }
+
+    const MIB: usize = 1024 * 1024;
+
+    fn fill(dev: &Dev, rel: &str, n: usize) {
+        write(dev, rel, &vec![b'x'; n]);
+    }
+
+    #[test]
+    fn track_entry_refuses_a_file_over_the_limit() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        a.engine.set_max_file_mb(1).unwrap();
+        fill(&a, "huge.bin", MIB + 1);
+
+        let err = a
+            .engine
+            .track_entry("proj-claude", Path::new("huge.bin"), None)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&(MIB as u64 + 1).to_string()),
+            "error must name the size, got {msg}"
+        );
+        assert!(
+            msg.contains(&(MIB as u64).to_string()),
+            "error must name the limit, got {msg}"
+        );
+        assert!(!a
+            .engine
+            .list_entries("proj-claude")
+            .unwrap()
+            .iter()
+            .any(|e| e.key == "huge.bin"));
+    }
+
+    #[test]
+    fn manual_add_of_an_oversized_folder_requires_confirmation() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        a.engine.set_max_file_mb(1).unwrap();
+        a.engine.set_max_seed_folder_mb(1).unwrap();
+        fill(&a, "docs/a.md", 400_000);
+        fill(&a, "docs/b.md", 400_000);
+        fill(&a, "docs/c.md", 400_000);
+
+        let preview = a
+            .engine
+            .inspect_entry("proj-claude", Path::new("docs"))
+            .unwrap();
+        assert_eq!(preview.kind, EntryKind::Directory);
+        assert!(preview.confirmation_required);
+        assert!(preview.bytes > preview.folder_limit);
+        assert_eq!(preview.bytes, 1_200_000);
+
+        let before = a.engine.list_entries("proj-claude").unwrap();
+        match a
+            .engine
+            .track_entry("proj-claude", Path::new("docs"), None)
+            .unwrap()
+        {
+            TrackOutcome::NeedsConfirmation(info) => {
+                assert_eq!(info.bytes, preview.bytes);
+                assert!(info.confirmation_required);
+            }
+            TrackOutcome::Done(s) => panic!("expected confirmation, got {s:?}"),
+        }
+        assert_eq!(a.engine.list_entries("proj-claude").unwrap(), before);
+    }
+
+    #[test]
+    fn confirmed_folder_add_still_skips_oversized_files() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        a.engine.set_max_file_mb(1).unwrap();
+        a.engine.set_max_seed_folder_mb(1).unwrap();
+        fill(&a, "docs/a.md", 400_000);
+        fill(&a, "docs/b.md", 400_000);
+        fill(&a, "docs/c.md", 400_000);
+        fill(&a, "docs/huge.bin", 2 * MIB);
+
+        let preview = a
+            .engine
+            .inspect_entry("proj-claude", Path::new("docs"))
+            .unwrap();
+        assert!(preview.confirmation_required);
+        assert_eq!(preview.bytes, 1_200_000);
+        assert_eq!(
+            preview.skipped_too_large,
+            vec![(PathBuf::from("docs/huge.bin"), 2 * MIB as u64)]
+        );
+
+        match a
+            .engine
+            .track_entry("proj-claude", Path::new("docs"), Some(preview.bytes))
+            .unwrap()
+        {
+            TrackOutcome::Done(RootStatus::Synced) => {}
+            other => panic!("expected Done(Synced), got {other:?}"),
+        }
+
+        let files = a.engine.tracked_files("proj-claude").unwrap();
+        let names = rels(&files);
+        assert!(names.contains(&"docs/a.md".into()));
+        assert!(names.contains(&"docs/b.md".into()));
+        assert!(names.contains(&"docs/c.md".into()));
+        let huge = files
+            .iter()
+            .find(|f| f.rel == "docs/huge.bin")
+            .expect("over-limit file is still listed");
+        assert_eq!(huge.state, FileSync::TooLarge);
+        assert_eq!(huge.bytes, 2 * MIB as u64);
+        assert!(
+            !staging(&a).join("docs/huge.bin").exists(),
+            "per-file limit is not overridden by folder confirmation"
+        );
+    }
+
+    #[test]
+    fn folder_growth_after_preview_requires_new_confirmation() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        a.engine.set_max_file_mb(1).unwrap();
+        a.engine.set_max_seed_folder_mb(1).unwrap();
+        fill(&a, "docs/a.md", 400_000);
+        fill(&a, "docs/b.md", 400_000);
+        fill(&a, "docs/c.md", 400_000);
+
+        let preview = a
+            .engine
+            .inspect_entry("proj-claude", Path::new("docs"))
+            .unwrap();
+        fill(&a, "docs/d.md", 400_000);
+
+        match a
+            .engine
+            .track_entry("proj-claude", Path::new("docs"), Some(preview.bytes))
+            .unwrap()
+        {
+            TrackOutcome::NeedsConfirmation(info) => {
+                assert_eq!(info.bytes, 1_600_000);
+                assert!(info.bytes > preview.bytes);
+            }
+            TrackOutcome::Done(s) => panic!("growth must require a new confirmation, got {s:?}"),
+        }
+        assert!(!a
+            .engine
+            .list_entries("proj-claude")
+            .unwrap()
+            .iter()
+            .any(|e| e.key == "docs/"));
+    }
+
+    #[test]
+    fn cancelled_folder_add_does_not_mutate_state() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        a.engine.set_max_file_mb(1).unwrap();
+        a.engine.set_max_seed_folder_mb(1).unwrap();
+        fill(&a, "docs/a.md", 400_000);
+        fill(&a, "docs/b.md", 400_000);
+        fill(&a, "docs/c.md", 400_000);
+
+        let before_entries = a.engine.list_entries("proj-claude").unwrap();
+        let before_files = a.engine.tracked_files("proj-claude").unwrap();
+        let preview = a
+            .engine
+            .inspect_entry("proj-claude", Path::new("docs"))
+            .unwrap();
+        assert!(preview.confirmation_required);
+        assert_eq!(
+            a.engine.list_entries("proj-claude").unwrap(),
+            before_entries
+        );
+        assert_eq!(a.engine.tracked_files("proj-claude").unwrap(), before_files);
+        assert!(!a
+            .engine
+            .list_entries("proj-claude")
+            .unwrap()
+            .iter()
+            .any(|e| e.key == "docs/"));
     }
 }

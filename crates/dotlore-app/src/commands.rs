@@ -5,20 +5,28 @@
 //! `dotlore://status` payload and send [`Cmd::Reload`]; they do not return
 //! state alongside the result.
 
-use std::path::{Path, PathBuf};
+use std::ffi::{CString, OsStr, OsString};
+use std::fs::File;
+use std::io::{self, ErrorKind};
+use std::os::raw::c_char as libc_c_char;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::path::{Component, Path, PathBuf};
 use std::sync::PoisonError;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use dotlore_core::cloud;
 use dotlore_core::config;
 use dotlore_core::daemon::Cmd;
 use dotlore_core::engine::{
-    self, ConflictView, ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView,
+    self, ConflictView, Engine, EntryKind, EntryView, InspectedEntry, ResolutionSnapshot,
+    ResolveOutcome, RootStatus, SiblingView, TrackOutcome, TrackedFile,
 };
 use dotlore_core::git;
+use dotlore_core::project;
 
 use crate::login_item;
 use crate::state::{load_cfg, AppState, RootRow, StatusPayload};
@@ -73,18 +81,56 @@ pub enum ResolveResultDto {
     Pending,
 }
 
+/// A cloud slug this device does not yet track.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct LinkableRow {
+    pub slug: String,
+    pub display_name: String,
+    pub is_agent: bool,
+}
+
+/// One immediate child of a project folder, for the root-scoped picker.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct PickerRow {
+    pub name: String,
+    pub kind: String,
+    pub rel: String,
+}
+
+/// Preview of a path the user may add.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct InspectedEntryDto {
+    pub kind: EntryKind,
+    pub bytes: u64,
+    pub folder_limit: u64,
+    pub confirmation_required: bool,
+    pub skipped_too_large: Vec<SkippedFileDto>,
+}
+
+/// One file excluded from a folder measurement by the per-file limit.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct SkippedFileDto {
+    pub rel: String,
+    pub bytes: u64,
+}
+
+/// Result of [`track_entry`]. Confirmation does not mutate.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum TrackResultDto {
+    Done,
+    NeedsConfirmation {
+        bytes: u64,
+        folder_limit: u64,
+        confirmation_required: bool,
+        skipped_too_large: Vec<SkippedFileDto>,
+    },
+}
+
 /// Resolve `rel` against a tracked root. Rejects paths (and symlinks) that
-/// escape the root. A `Kind::File` root is the file itself.
+/// escape the root.
 fn resolve_in_root(root: &config::Root, rel: &str) -> Result<PathBuf> {
-    // A Kind::File root IS the file; staging calls its single entry
-    // "content" but the live path is the root itself (repo.rs:748-758).
-    if root.kind == cloud::Kind::File {
-        let want = root.path.file_name().context("file root has no name")?;
-        if rel != want {
-            bail!("unknown entry {rel} for a file root");
-        }
-        return Ok(root.path.clone());
-    }
     let real = std::fs::canonicalize(root.path.join(rel))?; // resolves symlinks
     let base = std::fs::canonicalize(&root.path)?;
     if !real.starts_with(&base) {
@@ -107,7 +153,7 @@ pub fn list_roots(state: State<'_, AppState>) -> Result<Vec<RootRow>, String> {
 pub async fn tracked_files(
     state: State<'_, AppState>,
     slug: String,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<TrackedFile>, String> {
     let engine = state.shared_engine()?;
     tauri::async_runtime::spawn_blocking(move || {
         engine
@@ -287,6 +333,7 @@ pub async fn add_root(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .add_root(Path::new(&path), slug.as_deref())
+            .map(|r| r.slug)
             .map_err(front_err)
     })
     .await
@@ -354,19 +401,228 @@ pub async fn recover_root(
 }
 
 #[tauri::command]
-pub async fn list_linkable(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+pub async fn list_linkable(state: State<'_, AppState>) -> Result<Vec<LinkableRow>, String> {
     let engine = state.shared_engine().map_err(front_msg)?;
     tauri::async_runtime::spawn_blocking(move || {
         let e = engine.lock().unwrap_or_else(PoisonError::into_inner);
-        let tracked: Vec<&str> = e.cfg.roots.iter().map(|r| r.slug.as_str()).collect();
-        Ok(e.cloud
-            .list_slugs()
-            .into_iter()
-            .filter(|s| !tracked.contains(&s.as_str()))
-            .collect::<Vec<_>>())
+        list_linkable_sync(&e)
     })
     .await
     .map_err(front_msg)?
+}
+
+#[tauri::command]
+pub async fn list_entries(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<Vec<EntryView>, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .list_entries(&slug)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+#[tauri::command]
+pub async fn list_entry_children(
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+) -> Result<Vec<PickerRow>, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let e = engine.lock().unwrap_or_else(PoisonError::into_inner);
+        list_entry_children_sync(&e, &slug, &rel)
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+#[tauri::command]
+pub async fn inspect_entry(
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+) -> Result<InspectedEntryDto, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut e = engine.lock().unwrap_or_else(PoisonError::into_inner);
+        inspect_entry_sync(&mut e, &slug, &rel)
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+#[tauri::command]
+pub async fn track_entry(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+    confirmed_folder_bytes: Option<u64>,
+) -> Result<TrackResultDto, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut e = engine.lock().unwrap_or_else(PoisonError::into_inner);
+        track_entry_sync(&mut e, &slug, &rel, confirmed_folder_bytes)
+    })
+    .await
+    .map_err(front_msg)??;
+    if matches!(result, TrackResultDto::Done) {
+        notify(&app, &state)?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn untrack_entry(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+) -> Result<Vec<EntryView>, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    let remaining = tauri::async_runtime::spawn_blocking(move || {
+        let mut e = engine.lock().unwrap_or_else(PoisonError::into_inner);
+        untrack_entry_sync(&mut e, &slug, &rel)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)?;
+    Ok(remaining)
+}
+
+#[tauri::command]
+pub async fn default_patterns(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .default_patterns()
+    })
+    .await
+    .map_err(front_msg)
+}
+
+#[tauri::command]
+pub async fn set_default_patterns(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    patterns: Vec<String>,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_default_patterns(patterns)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
+}
+
+#[tauri::command]
+pub async fn default_ignore(state: State<'_, AppState>) -> Result<String, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .default_ignore()
+    })
+    .await
+    .map_err(front_msg)
+}
+
+#[tauri::command]
+pub async fn set_default_ignore(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ignore: String,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_default_ignore(ignore)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
+}
+
+#[tauri::command]
+pub async fn max_file_mb(state: State<'_, AppState>) -> Result<u64, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .max_file_mb()
+    })
+    .await
+    .map_err(front_msg)
+}
+
+#[tauri::command]
+pub async fn set_max_file_mb(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mb: u64,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_max_file_mb(mb)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
+}
+
+#[tauri::command]
+pub async fn max_seed_folder_mb(state: State<'_, AppState>) -> Result<u64, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .max_seed_folder_mb()
+    })
+    .await
+    .map_err(front_msg)
+}
+
+#[tauri::command]
+pub async fn set_max_seed_folder_mb(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mb: u64,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_max_seed_folder_mb(mb)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
 }
 
 #[tauri::command]
@@ -567,6 +823,340 @@ pub(crate) fn resolution_dto(snap: &ResolutionSnapshot, me: &str) -> ResolutionD
     }
 }
 
+fn require_plain_rel(rel: &str) -> Result<(), String> {
+    let p = Path::new(rel);
+    if rel.is_empty()
+        || p.is_absolute()
+        || !p.components().all(|c| matches!(c, Component::Normal(_)))
+    {
+        return Err(front_msg(format!("unsafe path {rel}")));
+    }
+    Ok(())
+}
+
+fn picker_rel_ok(rel: &str) -> bool {
+    if rel.is_empty() {
+        return true;
+    }
+    let p = Path::new(rel);
+    !p.is_absolute() && p.components().all(|c| matches!(c, Component::Normal(_)))
+}
+
+fn skipped_dto(rows: &[(PathBuf, u64)]) -> Vec<SkippedFileDto> {
+    rows.iter()
+        .map(|(p, n)| SkippedFileDto {
+            rel: p.to_string_lossy().into_owned(),
+            bytes: *n,
+        })
+        .collect()
+}
+
+fn inspected_dto(info: &InspectedEntry) -> InspectedEntryDto {
+    InspectedEntryDto {
+        kind: info.kind,
+        bytes: info.bytes,
+        folder_limit: info.folder_limit,
+        confirmation_required: info.confirmation_required,
+        skipped_too_large: skipped_dto(&info.skipped_too_large),
+    }
+}
+
+fn track_entry_sync(
+    engine: &mut Engine,
+    slug: &str,
+    rel: &str,
+    confirmed_folder_bytes: Option<u64>,
+) -> Result<TrackResultDto, String> {
+    require_plain_rel(rel)?;
+    match engine
+        .track_entry(slug, Path::new(rel), confirmed_folder_bytes)
+        .map_err(front_err)?
+    {
+        TrackOutcome::Done(_) => Ok(TrackResultDto::Done),
+        TrackOutcome::NeedsConfirmation(info) => Ok(TrackResultDto::NeedsConfirmation {
+            bytes: info.bytes,
+            folder_limit: info.folder_limit,
+            confirmation_required: info.confirmation_required,
+            skipped_too_large: skipped_dto(&info.skipped_too_large),
+        }),
+    }
+}
+
+fn inspect_entry_sync(
+    engine: &mut Engine,
+    slug: &str,
+    rel: &str,
+) -> Result<InspectedEntryDto, String> {
+    require_plain_rel(rel)?;
+    engine
+        .inspect_entry(slug, Path::new(rel))
+        .map(|info| inspected_dto(&info))
+        .map_err(front_err)
+}
+
+fn untrack_entry_sync(
+    engine: &mut Engine,
+    slug: &str,
+    rel: &str,
+) -> Result<Vec<EntryView>, String> {
+    require_plain_rel(rel)?;
+    engine
+        .untrack_entry(slug, Path::new(rel))
+        .map_err(front_err)?;
+    engine.list_entries(slug).map_err(front_err)
+}
+
+fn list_linkable_sync(engine: &Engine) -> Result<Vec<LinkableRow>, String> {
+    let tracked: Vec<&str> = engine.cfg.roots.iter().map(|r| r.slug.as_str()).collect();
+    Ok(engine
+        .cloud
+        .list_slugs()
+        .into_iter()
+        .filter(|info| !tracked.contains(&info.slug.as_str()))
+        .map(|info| LinkableRow {
+            slug: info.slug,
+            display_name: info.display_name,
+            is_agent: info.is_agent,
+        })
+        .collect())
+}
+
+fn list_entry_children_sync(
+    engine: &Engine,
+    slug: &str,
+    rel: &str,
+) -> Result<Vec<PickerRow>, String> {
+    let root = engine
+        .cfg
+        .roots
+        .iter()
+        .find(|r| r.slug == slug)
+        .ok_or_else(|| front_msg(format!("unknown root {slug}")))?;
+    list_children_in(&root.path, rel)
+}
+
+fn skip_picker_name(name: &str) -> bool {
+    name == ".DS_Store" || project::staging_private(name)
+}
+
+fn list_children_in(root: &Path, rel: &str) -> Result<Vec<PickerRow>, String> {
+    if !picker_rel_ok(rel) {
+        return Err(front_msg(format!("unsafe path {rel}")));
+    }
+    let rel_path = Path::new(rel);
+    let target = if rel.is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel_path)
+    };
+    listing_replace_hook(&target);
+    let dir = match open_dir_nofollow(root, rel_path) {
+        Ok(d) => d,
+        Err(e) if is_unsafe_open(&e) => return Err(front_msg(format!("unsafe path {rel}"))),
+        Err(e) => return Err(front_msg(e)),
+    };
+    let names = {
+        let clone = dir.try_clone().map_err(front_msg)?;
+        match read_dir_fd(clone) {
+            Ok(n) => n,
+            Err(e) if is_unsafe_open(&e) => {
+                return Err(front_msg(format!("unsafe path {rel}")));
+            }
+            Err(e) => return Err(front_msg(e)),
+        }
+    };
+    let mut out = Vec::new();
+    for name in names {
+        let Some(name_str) = name.to_str().map(str::to_string) else {
+            continue;
+        };
+        if skip_picker_name(&name_str) {
+            continue;
+        }
+        let Some(kind) = child_kind(&dir, &name) else {
+            continue;
+        };
+        let child_rel = if rel.is_empty() {
+            name_str.clone()
+        } else {
+            format!("{rel}/{name_str}")
+        };
+        out.push(PickerRow {
+            name: name_str,
+            kind,
+            rel: child_rel,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+fn child_kind(dir: &File, name: &OsStr) -> Option<String> {
+    let file = openat_child(dir, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW).ok()?;
+    let md = file.metadata().ok()?;
+    if md.is_dir() {
+        Some("directory".into())
+    } else if md.is_file() {
+        Some("file".into())
+    } else {
+        None
+    }
+}
+
+// Darwin / Linux open(2) flags. Same values as mirror.rs — Mac-only product.
+#[cfg(target_os = "macos")]
+const O_NOFOLLOW: i32 = 0x0100;
+#[cfg(target_os = "macos")]
+const O_DIRECTORY: i32 = 0x0010_0000;
+#[cfg(target_os = "macos")]
+const O_CLOEXEC: i32 = 0x0100_0000;
+#[cfg(target_os = "linux")]
+const O_NOFOLLOW: i32 = 0x20000;
+#[cfg(target_os = "linux")]
+const O_DIRECTORY: i32 = 0x10000;
+#[cfg(target_os = "linux")]
+const O_CLOEXEC: i32 = 0o2000000;
+const O_RDONLY: i32 = 0;
+
+#[cfg(target_os = "macos")]
+const ELOOP: i32 = 62;
+#[cfg(target_os = "linux")]
+const ELOOP: i32 = 40;
+const ENOTDIR: i32 = 20;
+
+extern "C" {
+    fn openat(dirfd: i32, pathname: *const libc_c_char, flags: i32) -> i32;
+}
+
+#[cfg(target_os = "macos")]
+enum DIR {}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct Dirent {
+    d_ino: u64,
+    d_seekoff: u64,
+    d_reclen: u16,
+    d_namlen: u16,
+    d_type: u8,
+    d_name: [i8; 1024],
+}
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn close(fd: i32) -> i32;
+    fn fdopendir(fd: i32) -> *mut DIR;
+    fn readdir(dirp: *mut DIR) -> *mut Dirent;
+    fn closedir(dirp: *mut DIR) -> i32;
+}
+
+fn is_unsafe_open(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(ELOOP) | Some(ENOTDIR)) || e.kind() == ErrorKind::InvalidInput
+}
+
+fn open_root_dir(root: &Path) -> io::Result<File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true)
+        .custom_flags(O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    opts.open(root)
+}
+
+fn openat_child(parent: &File, name: &OsStr, flags: i32) -> io::Result<File> {
+    let c_name = CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "path component contains NUL"))?;
+    let fd = unsafe { openat(parent.as_raw_fd(), c_name.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+fn open_chain(root: &Path, rel: &Path) -> io::Result<File> {
+    let mut fd = open_root_dir(root)?;
+    for component in rel.components() {
+        let name = match component {
+            Component::Normal(n) => n,
+            _ => {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidInput,
+                    "path is not a plain relative path",
+                ))
+            }
+        };
+        fd = openat_child(&fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_DIRECTORY)?;
+    }
+    Ok(fd)
+}
+
+fn open_dir_nofollow(root: &Path, rel: &Path) -> io::Result<File> {
+    if rel.as_os_str().is_empty() {
+        open_root_dir(root)
+    } else {
+        open_chain(root, rel)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_dir_fd(dir: File) -> io::Result<Vec<OsString>> {
+    let raw = dir.into_raw_fd();
+    let dirp = unsafe { fdopendir(raw) };
+    if dirp.is_null() {
+        let err = io::Error::last_os_error();
+        unsafe { close(raw) };
+        return Err(err);
+    }
+    let mut names = Vec::new();
+    loop {
+        let ent = unsafe { readdir(dirp) };
+        if ent.is_null() {
+            break;
+        }
+        let namlen = unsafe { (*ent).d_namlen as usize };
+        let bytes =
+            unsafe { std::slice::from_raw_parts((*ent).d_name.as_ptr().cast::<u8>(), namlen) };
+        if bytes == b"." || bytes == b".." {
+            continue;
+        }
+        names.push(OsStr::from_bytes(bytes).to_os_string());
+    }
+    unsafe { closedir(dirp) };
+    Ok(names)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_dir_fd(dir: File) -> io::Result<Vec<OsString>> {
+    let listing = std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))?;
+    let mut names = Vec::new();
+    for entry in listing {
+        names.push(entry?.file_name());
+    }
+    Ok(names)
+}
+
+#[cfg(test)]
+thread_local! {
+    static LISTING_REPLACE_AT: std::cell::RefCell<Option<Box<dyn Fn(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn listing_replace_hook(path: &Path) {
+    #[cfg(test)]
+    LISTING_REPLACE_AT.with(|c| {
+        if let Some(f) = c.borrow().as_ref() {
+            f(path);
+        }
+    });
+    let _ = path;
+}
+
+#[cfg(test)]
+fn with_listing_replace<T>(hook: impl Fn(&Path) + 'static, f: impl FnOnce() -> T) -> T {
+    LISTING_REPLACE_AT.with(|c| *c.borrow_mut() = Some(Box::new(hook)));
+    let out = f();
+    LISTING_REPLACE_AT.with(|c| *c.borrow_mut() = None);
+    out
+}
+
 fn read_tracked_file(home: &Path, slug: &str, rel: &str) -> Result<FileContent, String> {
     let cfg = load_cfg(home)?;
     let root = cfg
@@ -610,24 +1200,63 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
 
+    use dotlore_core::cloud::Manifest;
+    use dotlore_core::config::Config;
+    use dotlore_core::engine::Engine;
     use tempfile::TempDir;
 
     fn dir_root(path: PathBuf) -> config::Root {
         config::Root {
             slug: "test".into(),
             path,
-            kind: cloud::Kind::Dir,
             initializing: false,
         }
     }
 
-    fn file_root(path: PathBuf) -> config::Root {
-        config::Root {
-            slug: "test".into(),
-            path,
-            kind: cloud::Kind::File,
-            initializing: false,
+    struct Fx {
+        _home: TempDir,
+        root: TempDir,
+        _provider: TempDir,
+        engine: Engine,
+        slug: String,
+    }
+
+    fn fixture() -> Fx {
+        let home = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let provider = TempDir::new().unwrap();
+        let cfg = Config {
+            device_id: "a".repeat(32),
+            device_name: "Mac A Pro".into(),
+            provider_dir: Some(provider.path().to_path_buf()),
+            roots: Vec::new(),
+            default_patterns: Some(vec!["CLAUDE.md".into()]),
+            default_ignore: None,
+            ..Default::default()
+        };
+        cfg.save(home.path()).unwrap();
+        let mut engine = Engine::new(home.path(), home.path(), cfg).unwrap();
+        fs::write(root.path().join("CLAUDE.md"), b"one\n").unwrap();
+        let slug = engine.add_root(root.path(), Some("proj")).unwrap().slug;
+        Fx {
+            _home: home,
+            root,
+            _provider: provider,
+            engine,
+            slug,
         }
+    }
+
+    fn write(fx: &Fx, rel: &str, body: &[u8]) {
+        let p = fx.root.path().join(rel);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(p, body).unwrap();
+    }
+
+    fn fill(fx: &Fx, rel: &str, n: usize) {
+        write(fx, rel, &vec![b'x'; n]);
     }
 
     #[test]
@@ -655,20 +1284,206 @@ mod tests {
     }
 
     #[test]
-    fn resolve_in_root_maps_a_file_root_to_itself() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("CLAUDE.md");
-        fs::write(&path, "hi").unwrap();
-        let root = file_root(path.clone());
+    fn track_entry_rejects_a_path_outside_the_project() {
+        let mut fx = fixture();
+        let before = fx.engine.list_entries(&fx.slug).unwrap();
+        assert!(
+            track_entry_sync(&mut fx.engine, &fx.slug, "../secret", None).is_err(),
+            "a relative escape must be rejected"
+        );
+        assert!(
+            track_entry_sync(&mut fx.engine, &fx.slug, "/tmp/secret", None).is_err(),
+            "an absolute path must be rejected"
+        );
+        assert_eq!(
+            fx.engine.list_entries(&fx.slug).unwrap(),
+            before,
+            "a rejected track must not mutate the include-list"
+        );
+    }
 
-        assert_eq!(resolve_in_root(&root, "CLAUDE.md").unwrap(), path);
+    #[test]
+    fn track_entry_rejects_a_file_over_the_max_file_size() {
+        let mut fx = fixture();
+        fx.engine.set_max_file_mb(1).unwrap();
+        fill(&fx, "huge.bin", 1024 * 1024 + 1);
+        let before = fx.engine.list_entries(&fx.slug).unwrap();
+        let err = track_entry_sync(&mut fx.engine, &fx.slug, "huge.bin", None)
+            .expect_err("over-limit file must be rejected");
         assert!(
-            resolve_in_root(&root, "other").is_err(),
-            "a file root only has one live entry"
+            err.contains("bytes") || err.contains("limit") || err.contains("huge.bin"),
+            "error should name the limit: {err}"
+        );
+        assert_eq!(
+            fx.engine.list_entries(&fx.slug).unwrap(),
+            before,
+            "rejecting an over-limit file must not add it"
+        );
+    }
+
+    #[test]
+    fn entry_picker_cannot_list_above_root_or_follow_symlinks() {
+        let fx = fixture();
+        let outside = fx.root.path().parent().unwrap().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "nope").unwrap();
+        write(&fx, "sub/ok.txt", b"ok\n");
+        symlink(&outside, fx.root.path().join("link")).unwrap();
+
+        assert!(
+            list_entry_children_sync(&fx.engine, &fx.slug, "..").is_err(),
+            "`..` must not list above the project root"
         );
         assert!(
-            resolve_in_root(&root, "content").is_err(),
-            "staging's 'content' name is not a live path"
+            list_entry_children_sync(&fx.engine, &fx.slug, "/").is_err(),
+            "an absolute path must be rejected"
         );
+        assert!(
+            list_entry_children_sync(&fx.engine, &fx.slug, "../outside").is_err(),
+            "a traversal must be rejected"
+        );
+        assert!(
+            list_entry_children_sync(&fx.engine, &fx.slug, "link").is_err(),
+            "listing through a symlink must be rejected"
+        );
+
+        let kids = list_entry_children_sync(&fx.engine, &fx.slug, "").unwrap();
+        assert!(
+            !kids
+                .iter()
+                .any(|k| k.name == ".." || k.name == "." || k.rel.contains("..")),
+            "root listing must not return navigable ancestors: {kids:?}"
+        );
+        assert!(
+            !kids.iter().any(|k| k.name == "link"),
+            "a symlink child must not be returned as a candidate: {kids:?}"
+        );
+        assert!(
+            kids.iter()
+                .any(|k| k.name == "sub" && k.kind == "directory" && k.rel == "sub"),
+            "the real subdirectory must be listed: {kids:?}"
+        );
+
+        let listed = with_listing_replace(
+            {
+                let outside = outside.clone();
+                move |p| {
+                    if p.file_name().and_then(|n| n.to_str()) == Some("sub") {
+                        let _ = fs::remove_dir_all(p);
+                        let _ = symlink(&outside, p);
+                    }
+                }
+            },
+            || list_entry_children_sync(&fx.engine, &fx.slug, "sub"),
+        );
+        assert!(
+            listed.is_err(),
+            "a directory replaced by a symlink before read must not be listed: {listed:?}"
+        );
+        if let Ok(rows) = &listed {
+            assert!(
+                !rows.iter().any(|k| k.name == "secret.txt"),
+                "must not leak the planted symlink target: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn untrack_missing_explicit_entry_succeeds() {
+        let mut fx = fixture();
+        write(&fx, "gone.md", b"bye\n");
+        track_entry_sync(&mut fx.engine, &fx.slug, "gone.md", None)
+            .expect("tracking gone.md should succeed");
+        fs::remove_file(fx.root.path().join("gone.md")).unwrap();
+
+        let remaining =
+            untrack_entry_sync(&mut fx.engine, &fx.slug, "gone.md").expect("missing live path");
+        assert!(
+            !remaining.iter().any(|e| e.key == "gone.md"),
+            "tombstoned entry must leave the explicit list: {remaining:?}"
+        );
+
+        let again = untrack_entry_sync(&mut fx.engine, &fx.slug, "gone.md")
+            .expect("untrack of a tombstone is idempotent");
+        assert!(!again.iter().any(|e| e.key == "gone.md"));
+    }
+
+    #[test]
+    fn oversized_folder_confirmation_is_revalidated() {
+        let mut fx = fixture();
+        fx.engine.set_max_file_mb(1).unwrap();
+        fx.engine.set_max_seed_folder_mb(1).unwrap();
+        fill(&fx, "notes/a.md", 400_000);
+        fill(&fx, "notes/b.md", 400_000);
+        fill(&fx, "notes/c.md", 400_000);
+
+        let preview =
+            inspect_entry_sync(&mut fx.engine, &fx.slug, "notes").expect("inspect notes/");
+        assert!(preview.confirmation_required);
+        assert!(preview.bytes > preview.folder_limit);
+
+        fill(&fx, "notes/d.md", 400_000);
+        let before = fx.engine.list_entries(&fx.slug).unwrap();
+        match track_entry_sync(&mut fx.engine, &fx.slug, "notes", Some(preview.bytes))
+            .expect("stale confirmation is not an error")
+        {
+            TrackResultDto::NeedsConfirmation {
+                bytes,
+                confirmation_required,
+                ..
+            } => {
+                assert!(confirmation_required);
+                assert!(
+                    bytes > preview.bytes,
+                    "remeasured size {bytes} must exceed stale confirm {}",
+                    preview.bytes
+                );
+            }
+            TrackResultDto::Done => panic!("stale smaller byte count must not mutate"),
+        }
+        assert_eq!(
+            fx.engine.list_entries(&fx.slug).unwrap(),
+            before,
+            "NeedsConfirmation must not add the folder"
+        );
+    }
+
+    #[test]
+    fn list_linkable_reports_unlinked_projects_with_display_names() {
+        let fx = fixture();
+        fx.engine
+            .cloud
+            .write_manifest_once(&Manifest {
+                slug: "old-mac-notes".into(),
+                display_name: "Notes".into(),
+                is_agent: false,
+            })
+            .unwrap();
+        fx.engine
+            .cloud
+            .write_manifest_once(&Manifest {
+                slug: "claude".into(),
+                display_name: ".claude".into(),
+                is_agent: true,
+            })
+            .unwrap();
+
+        let rows = list_linkable_sync(&fx.engine).expect("list_linkable");
+        assert!(
+            !rows.iter().any(|r| r.slug == fx.slug),
+            "already-tracked slugs must be filtered out: {rows:?}"
+        );
+        let notes = rows
+            .iter()
+            .find(|r| r.slug == "old-mac-notes")
+            .expect("unlinked project must be listed");
+        assert_eq!(notes.display_name, "Notes");
+        assert!(!notes.is_agent);
+        let agent = rows
+            .iter()
+            .find(|r| r.slug == "claude")
+            .expect("unlinked agent must be listed");
+        assert_eq!(agent.display_name, ".claude");
+        assert!(agent.is_agent);
     }
 }

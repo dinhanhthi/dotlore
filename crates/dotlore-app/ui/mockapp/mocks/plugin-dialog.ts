@@ -3,11 +3,16 @@ type OpenOptions = {
   multiple?: boolean;
 };
 
+/** Fixture paths that are files — identity, not basename or extension. */
+export const MOCK_FILE_PATHS: Set<string> = new Set([
+  "/Users/demo/Projects/new-root/CLAUDE.md",
+  "/Users/demo/Projects/Makefile",
+]);
+
 export async function open(
-  options?: OpenOptions,
+  _options?: OpenOptions,
 ): Promise<string | string[] | null> {
-  if (options?.directory) return "/Users/demo/Projects/new-root";
-  return "/Users/demo/Projects/new-root/CLAUDE.md";
+  return "/Users/demo/Projects/new-root";
 }
 
 export async function save(_options?: unknown): Promise<string | null> {

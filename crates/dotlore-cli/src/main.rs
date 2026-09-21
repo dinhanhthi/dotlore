@@ -15,12 +15,15 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context, Result};
+use dotlore_core::cloud::SlugInfo;
 use dotlore_core::config::{self, Config};
 use dotlore_core::daemon;
 use dotlore_core::engine::{
-    self, Engine, ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView,
+    self, Engine, EntryKind, EntryView, FileSync, InspectedEntry, ResolutionSnapshot,
+    ResolveOutcome, RootStatus, SiblingView, TrackOutcome, TrackedFile,
 };
 use dotlore_core::git;
+use dotlore_core::project;
 
 const HELP: &str = "\
 Dotlore — sync your AI config between your own Macs through a cloud folder.
@@ -28,8 +31,8 @@ Dotlore — sync your AI config between your own Macs through a cloud folder.
 Usage: dotlore <command> [arguments]
 
   provider <path>               use <path> as the cloud folder
-  add <path> [--slug <slug>]    start tracking a folder or file
-  link <slug> <path>            adopt a slug the cloud already has onto <path>
+  add <path> [--slug <slug>]    start tracking a project folder
+  link <slug> <path>            adopt a slug the cloud already has onto a folder
   slugs                         list the slugs in the cloud folder
   sync                          one sync cycle for every tracked root
   status [--json]               tracked roots and their status, after a sync
@@ -39,7 +42,12 @@ Usage: dotlore <command> [arguments]
                                 keep one version of <path> and discard its
                                 other conflicting versions
   recover <slug>                rebuild a damaged staging repo
+  track <slug> <rel> [--confirm-folder-bytes <n>]
+                                add <rel> to the project's include list
+  untrack <slug> <rel>          remove an explicit include-list entry
+  entries <slug>                include-list entries and tracked files
   ignore <slug>                 print the root's .dotloreignore path
+  project <slug>                print the root's .dotloreproject path
   daemon                        watch and sync until killed
   help                          this text
 
@@ -105,16 +113,13 @@ fn dispatch(home: &Path, home_dir: &Path, argv: &[&str]) -> Result<ExitCode> {
         ["link", slug, path] => {
             let status = open_git(home, home_dir)?.link_root(slug, Path::new(path))?;
             match status {
-                RootStatus::Pending => println!(
-                    "Pending — cloud has the project but no data yet; \
-                     the daemon will finish linking automatically"
-                ),
+                RootStatus::Pending => println!("{LINK_PENDING}"),
                 st => println!("{slug}\t{}", show_status(&st)),
             }
         }
         ["slugs"] => {
-            for slug in open(home, home_dir)?.cloud.list_slugs() {
-                println!("{slug}");
+            for info in open(home, home_dir)?.cloud.list_slugs() {
+                println!("{}", slug_line(&info));
             }
         }
         ["sync"] => print_rows(&open_git(home, home_dir)?.sync_all()?),
@@ -130,19 +135,20 @@ fn dispatch(home: &Path, home_dir: &Path, argv: &[&str]) -> Result<ExitCode> {
             let st = open_git(home, home_dir)?.recover_root(slug)?;
             println!("{slug}\t{}", show_status(&st));
         }
-        ["ignore", slug] => {
-            let e = open(home, home_dir)?;
-            if !e.cfg.roots.iter().any(|r| r.slug == *slug) {
-                bail!("no tracked root with slug {slug}");
-            }
-            println!(
-                "{}",
-                home.join("repos")
-                    .join(slug)
-                    .join(".dotloreignore")
-                    .display()
+        ["track", slug, rel, opts @ ..] => {
+            return track(
+                &mut open_git(home, home_dir)?,
+                slug,
+                Path::new(rel),
+                parse_track(opts)?,
             );
         }
+        ["untrack", slug, rel] => {
+            untrack(&mut open_git(home, home_dir)?, slug, Path::new(rel))?;
+        }
+        ["entries", slug] => entries(&mut open_git(home, home_dir)?, slug)?,
+        ["ignore", slug] => print_staging_file(home, home_dir, slug, project::IGNORE_FILE)?,
+        ["project", slug] => print_staging_file(home, home_dir, slug, project::PROJECT_FILE)?,
         ["daemon"] => run_daemon(open_git(home, home_dir)?),
 
         _ => {
@@ -331,6 +337,182 @@ fn resolve(e: &mut Engine, slug: &str, live: &Path, opts: &[&str]) -> Result<()>
     Ok(())
 }
 
+/// `--confirm-folder-bytes <n>` after `track <slug> <rel>`.
+///
+/// The count is the measurement the user is confirming. Engine remeasures on
+/// every call, so a folder that grew since the last report needs a new flag.
+fn parse_track(opts: &[&str]) -> Result<Option<u64>> {
+    let mut confirmed: Option<u64> = None;
+    let mut it = opts.iter();
+    while let Some(opt) = it.next() {
+        match *opt {
+            "--confirm-folder-bytes" => {
+                let v = it
+                    .next()
+                    .copied()
+                    .ok_or_else(|| anyhow!("--confirm-folder-bytes needs a value"))?;
+                if confirmed.is_some() {
+                    bail!("--confirm-folder-bytes given twice");
+                }
+                let n: u64 = v
+                    .parse()
+                    .map_err(|_| anyhow!("--confirm-folder-bytes needs a byte count"))?;
+                confirmed = Some(n);
+            }
+            other => bail!("unknown option {other}"),
+        }
+    }
+    Ok(confirmed)
+}
+
+fn track(e: &mut Engine, slug: &str, rel: &Path, confirmed: Option<u64>) -> Result<ExitCode> {
+    match e.track_entry(slug, rel, confirmed)? {
+        TrackOutcome::Done(st) => {
+            println!("{slug}\t{}", show_status(&st));
+            Ok(ExitCode::SUCCESS)
+        }
+        TrackOutcome::NeedsConfirmation(info) => {
+            println!("{}", confirm_line(rel, &info));
+            Ok(ExitCode::from(1))
+        }
+    }
+}
+
+fn confirm_line(rel: &Path, info: &InspectedEntry) -> String {
+    format!(
+        "{} is {} bytes (limit {} bytes); pass --confirm-folder-bytes {} to track",
+        rel.display(),
+        info.bytes,
+        info.folder_limit,
+        info.bytes
+    )
+}
+
+fn untrack(e: &mut Engine, slug: &str, rel: &Path) -> Result<()> {
+    let st = e.untrack_entry(slug, rel)?;
+    println!("{slug}\t{}", show_status(&st));
+    let covering = remaining_coverage(&e.list_entries(slug)?, rel);
+    if !covering.is_empty() {
+        println!(
+            "covered by\t{}",
+            covering
+                .iter()
+                .map(|k| one_line(k))
+                .collect::<Vec<_>>()
+                .join("\t")
+        );
+    }
+    Ok(())
+}
+
+/// Remaining explicit entries that still cover `rel` after an untrack.
+///
+/// After a successful untrack the key is gone from [`Engine::list_entries`].
+/// A parent directory that still tracks the path is what the user needs to
+/// see; if the key itself is still listed (covered by another entry's view),
+/// its `covering` list is the source of truth.
+fn remaining_coverage(entries: &[EntryView], rel: &Path) -> Vec<String> {
+    let want = rel_key(rel);
+    if let Some(ev) = entries.iter().find(|e| same_entry_key(&e.key, &want)) {
+        return ev.covering.clone();
+    }
+    entries
+        .iter()
+        .filter(|e| covers_rel(&e.key, &want))
+        .map(|e| e.key.clone())
+        .collect()
+}
+
+fn rel_key(rel: &Path) -> String {
+    rel.to_string_lossy().trim_end_matches('/').to_string()
+}
+
+fn same_entry_key(entry: &str, rel: &str) -> bool {
+    entry.trim_end_matches('/') == rel
+}
+
+fn covers_rel(entry_key: &str, rel: &str) -> bool {
+    if !entry_key.ends_with('/') {
+        return false;
+    }
+    let prefix = entry_key.trim_end_matches('/');
+    rel == prefix || rel.starts_with(&format!("{prefix}/"))
+}
+
+fn entries(e: &mut Engine, slug: &str) -> Result<()> {
+    write_entries(
+        &mut io::stdout(),
+        &e.list_entries(slug)?,
+        &e.tracked_files(slug)?,
+    )?;
+    Ok(())
+}
+
+fn write_entries(
+    out: &mut impl Write,
+    entries: &[EntryView],
+    files: &[TrackedFile],
+) -> io::Result<()> {
+    for e in entries {
+        write!(
+            out,
+            "entry\t{}\t{}",
+            one_line(&e.key),
+            entry_kind_label(e.kind)
+        )?;
+        if !e.covering.is_empty() {
+            write!(
+                out,
+                "\t{}",
+                e.covering
+                    .iter()
+                    .map(|k| one_line(k))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )?;
+        }
+        writeln!(out)?;
+    }
+    for f in files {
+        writeln!(
+            out,
+            "file\t{}\t{}\t{}",
+            one_line(&f.rel),
+            f.bytes,
+            file_sync_label(f.state)
+        )?;
+    }
+    Ok(())
+}
+
+fn entry_kind_label(kind: EntryKind) -> &'static str {
+    match kind {
+        EntryKind::File => "file",
+        EntryKind::Directory => "directory",
+    }
+}
+
+fn file_sync_label(state: FileSync) -> &'static str {
+    match state {
+        FileSync::Synced => "Synced",
+        FileSync::TooLarge => "TooLarge",
+        FileSync::Pending => "Pending",
+    }
+}
+
+fn print_staging_file(home: &Path, home_dir: &Path, slug: &str, name: &str) -> Result<()> {
+    let e = open(home, home_dir)?;
+    if !e.cfg.roots.iter().any(|r| r.slug == *slug) {
+        bail!("no tracked root with slug {slug}");
+    }
+    println!("{}", staging_file(home, slug, name).display());
+    Ok(())
+}
+
+fn staging_file(home: &Path, slug: &str, name: &str) -> PathBuf {
+    home.join("repos").join(slug).join(name)
+}
+
 fn pick<'a>(snap: &'a ResolutionSnapshot, sibling: Option<&str>) -> Result<&'a SiblingView> {
     match (sibling, snap.siblings.as_slice()) {
         (None, []) => bail!("{} has no conflicting sibling", snap.live.display()),
@@ -373,6 +555,18 @@ fn run_daemon(engine: Engine) {
 
 // --- formatting ------------------------------------------------------------
 
+const LINK_PENDING: &str = "\
+Pending — cloud has the folder but no data yet; \
+the daemon will finish linking automatically";
+
+/// Slug plus its cloud display name, one tab-separated row.
+///
+/// The name is a peer-written string: `one_line` drops control characters so
+/// a `\r` or ANSI sequence cannot hide the slug sitting in the next field.
+fn slug_line(info: &SlugInfo) -> String {
+    format!("{}\t{}", info.slug, one_line(&info.display_name))
+}
+
 /// A name or path that came out of a synced bundle, printed as one field of
 /// one line.
 ///
@@ -380,7 +574,15 @@ fn run_daemon(engine: Engine) {
 /// tab-separated rows, and a `\r` or an ANSI sequence in one could repaint or
 /// hide another row.
 fn one_line(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    s.chars()
+        .filter(|c| !c.is_control() && !is_unicode_line_break(*c))
+        .collect()
+}
+
+/// Line/paragraph separators (Zl/Zp). `char::is_control` is category Cc
+/// only, so a U+2028 in a peer-written label still splits a printed row.
+fn is_unicode_line_break(c: char) -> bool {
+    matches!(c, '\u{2028}' | '\u{2029}')
 }
 
 /// Bundle content, which is attacker-controlled all the way down.
@@ -568,6 +770,233 @@ mod tests {
     #[test]
     fn a_label_from_the_cloud_cannot_repaint_a_row() {
         assert_eq!(one_line("\x1b[31mMac\r\nfake\trow"), "[31mMacfakerow");
+        // U+2028 / U+2029 are Zl/Zp, not Cc — `char::is_control` misses them.
+        assert_eq!(
+            one_line("Notes\u{2028}evil-slug\tLooks Safe"),
+            "Notesevil-slugLooks Safe"
+        );
+        assert_eq!(one_line("Notes\u{2029}next"), "Notesnext");
+    }
+
+    /// Drop 1 is folder-only: `add` no longer offers a file path.
+    #[test]
+    fn help_describes_add_as_tracking_a_project_folder() {
+        assert!(HELP.contains("start tracking a project folder"), "{HELP}");
+        assert!(!HELP.contains("folder or file"), "{HELP}");
+    }
+
+    /// `list_slugs` now yields a peer-written display name; `dotlore slugs`
+    /// prints it on the same line as the slug.
+    #[test]
+    fn slugs_print_the_display_name_as_one_line() {
+        let info = SlugInfo {
+            slug: "notes".into(),
+            display_name: "\x1b[31mMy\r\nNotes".into(),
+            is_agent: false,
+        };
+        assert_eq!(slug_line(&info), "notes\t[31mMyNotes");
+    }
+
+    #[test]
+    fn link_pending_says_folder() {
+        assert!(LINK_PENDING.contains("folder"), "{LINK_PENDING}");
+        assert!(!LINK_PENDING.contains("folder or file"), "{LINK_PENDING}");
+    }
+
+    #[test]
+    fn help_mentions_track_untrack_entries_and_project() {
+        for needle in [
+            "track <slug> <rel>",
+            "--confirm-folder-bytes",
+            "untrack <slug> <rel>",
+            "entries <slug>",
+            "project <slug>",
+            ".dotloreignore",
+            ".dotloreproject",
+        ] {
+            assert!(HELP.contains(needle), "HELP missing {needle:?}:\n{HELP}");
+        }
+    }
+
+    #[test]
+    fn parse_track_reads_the_optional_confirm_flag() {
+        assert_eq!(parse_track(&[]).unwrap(), None);
+        assert_eq!(
+            parse_track(&["--confirm-folder-bytes", "1200000"]).unwrap(),
+            Some(1_200_000)
+        );
+    }
+
+    #[test]
+    fn parse_track_refuses_a_flag_without_a_value_or_a_bad_count() {
+        assert!(err(parse_track(&["--confirm-folder-bytes"])).contains("needs a value"));
+        assert!(err(parse_track(&["--confirm-folder-bytes", "nope"])).contains("byte count"));
+        assert!(err(parse_track(&["--nope"])).contains("unknown option"));
+        assert!(err(parse_track(&[
+            "--confirm-folder-bytes",
+            "1",
+            "--confirm-folder-bytes",
+            "2"
+        ]))
+        .contains("given twice"));
+    }
+
+    #[test]
+    fn staging_file_paths_sit_under_the_slug_repo() {
+        let home = Path::new("/tmp/dotlore-home");
+        assert_eq!(
+            staging_file(home, "notes", project::IGNORE_FILE),
+            Path::new("/tmp/dotlore-home/repos/notes/.dotloreignore")
+        );
+        assert_eq!(
+            staging_file(home, "notes", project::PROJECT_FILE),
+            Path::new("/tmp/dotlore-home/repos/notes/.dotloreproject")
+        );
+    }
+
+    #[test]
+    fn entries_print_explicit_keys_and_file_sizes() {
+        let entries = vec![
+            EntryView {
+                key: "CLAUDE.md".into(),
+                kind: EntryKind::File,
+                covering: vec![],
+            },
+            EntryView {
+                key: "docs/".into(),
+                kind: EntryKind::Directory,
+                covering: vec![],
+            },
+            EntryView {
+                key: "docs/readme.md".into(),
+                kind: EntryKind::File,
+                covering: vec!["docs/".into()],
+            },
+        ];
+        let files = vec![
+            TrackedFile {
+                rel: "CLAUDE.md".into(),
+                bytes: 4,
+                state: FileSync::Synced,
+            },
+            TrackedFile {
+                rel: "docs/huge.bin".into(),
+                bytes: 9,
+                state: FileSync::TooLarge,
+            },
+        ];
+        let mut out = Vec::new();
+        write_entries(&mut out, &entries, &files).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("entry\tCLAUDE.md\tfile\n"), "{text}");
+        assert!(text.contains("entry\tdocs/\tdirectory\n"), "{text}");
+        assert!(
+            text.contains("entry\tdocs/readme.md\tfile\tdocs/\n"),
+            "{text}"
+        );
+        assert!(text.contains("file\tCLAUDE.md\t4\tSynced\n"), "{text}");
+        assert!(
+            text.contains("file\tdocs/huge.bin\t9\tTooLarge\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn untrack_reports_remaining_overlapping_coverage() {
+        let entries = vec![EntryView {
+            key: "docs/".into(),
+            kind: EntryKind::Directory,
+            covering: vec![],
+        }];
+        assert_eq!(
+            remaining_coverage(&entries, Path::new("docs/readme.md")),
+            ["docs/"]
+        );
+        assert!(remaining_coverage(&entries, Path::new("notes.md")).is_empty());
+    }
+
+    #[test]
+    fn confirm_line_names_measured_bytes_and_the_limit() {
+        let info = InspectedEntry {
+            kind: EntryKind::Directory,
+            bytes: 1_200_000,
+            folder_limit: 1_048_576,
+            confirmation_required: true,
+            skipped_too_large: vec![],
+        };
+        let line = confirm_line(Path::new("docs"), &info);
+        assert!(line.contains("1200000"), "{line}");
+        assert!(line.contains("1048576"), "{line}");
+        assert!(line.contains("--confirm-folder-bytes"), "{line}");
+    }
+
+    /// `track` without `--confirm-folder-bytes` must not write the include-list
+    /// when the folder is over the seed limit. Uses a real Engine so the CLI
+    /// path and Engine remeasure stay in lockstep.
+    #[test]
+    fn track_without_confirm_does_not_mutate() {
+        if git::which_git().is_none() {
+            return;
+        }
+        let scratch = Scratch::new();
+        let home = scratch.0.join("home");
+        let root = scratch.0.join("root");
+        let provider = scratch.0.join("provider");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("CLAUDE.md"), b"one\n").unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join("notes/a.md"), b"aaaa\n").unwrap();
+
+        let cfg = Config {
+            device_id: "a".repeat(32),
+            device_name: "Mac A Pro".into(),
+            provider_dir: Some(provider),
+            max_seed_folder_mb: Some(0),
+            ..Default::default()
+        };
+        cfg.save(&home).unwrap();
+        let mut engine = Engine::new(&home, &home, cfg).unwrap();
+        engine.add_root(&root, Some("demo")).unwrap();
+
+        let before = engine.list_entries("demo").unwrap();
+        assert!(!before.iter().any(|e| e.key == "notes/"), "{before:?}");
+
+        let confirmed = parse_track(&[]).unwrap();
+        match engine
+            .track_entry("demo", Path::new("notes"), confirmed)
+            .unwrap()
+        {
+            TrackOutcome::NeedsConfirmation(info) => {
+                let line = confirm_line(Path::new("notes"), &info);
+                assert!(line.contains(&info.bytes.to_string()), "{line}");
+                assert!(line.contains(&info.folder_limit.to_string()), "{line}");
+            }
+            TrackOutcome::Done(st) => panic!("expected confirmation, got {st:?}"),
+        }
+        assert_eq!(engine.list_entries("demo").unwrap(), before);
+    }
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "dotlore-cli-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     /// `RootStatus::Error` carries the paths `stalled()` could not write, and

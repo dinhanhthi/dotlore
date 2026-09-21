@@ -1,12 +1,18 @@
+import type { FileSync, TrackedFile } from "./types";
+
 export type TreeKind = "file" | "folder";
 
 export type FileStatus = "synced" | "conflict" | "pending";
+
+export type NodeWeight = "ok" | "warning" | "danger";
 
 export type TreeNode = {
   name: string;
   path: string;
   kind: TreeKind;
   children: TreeNode[];
+  bytes: number;
+  state: FileSync;
 };
 
 const STATUS_RANK: Record<FileStatus, number> = {
@@ -15,15 +21,39 @@ const STATUS_RANK: Record<FileStatus, number> = {
   conflict: 2,
 };
 
-/** File in `conflicts` → conflict; else synced. Folders take the worst child. */
+const WEIGHT_RANK: Record<NodeWeight, number> = {
+  ok: 0,
+  warning: 1,
+  danger: 2,
+};
+
+function fileStatus(state: FileSync): FileStatus {
+  return state === "Pending" ? "pending" : "synced";
+}
+
+/** File in `conflicts` → conflict; else from `state`. Folders take the worst child. */
 export function nodeStatus(node: TreeNode, conflicts: Set<string>): FileStatus {
   if (node.kind === "file") {
-    return conflicts.has(node.path) ? "conflict" : "synced";
+    return conflicts.has(node.path) ? "conflict" : fileStatus(node.state);
   }
   let worst: FileStatus = "synced";
   for (const child of node.children) {
     const status = nodeStatus(child, conflicts);
     if (STATUS_RANK[status] > STATUS_RANK[worst]) worst = status;
+  }
+  return worst;
+}
+
+export function nodeWeight(node: TreeNode, maxFileBytes: number): NodeWeight {
+  if (node.kind === "file") {
+    if (node.state === "TooLarge" || node.bytes > maxFileBytes) return "danger";
+    if (node.bytes >= maxFileBytes / 2) return "warning";
+    return "ok";
+  }
+  let worst: NodeWeight = "ok";
+  for (const child of node.children) {
+    const weight = nodeWeight(child, maxFileBytes);
+    if (WEIGHT_RANK[weight] > WEIGHT_RANK[worst]) worst = weight;
   }
   return worst;
 }
@@ -38,11 +68,22 @@ function sortTree(nodes: TreeNode[]): void {
   for (const node of nodes) sortTree(node.children);
 }
 
-export function buildTree(paths: string[]): TreeNode[] {
+function rollupBytes(nodes: TreeNode[]): number {
+  let total = 0;
+  for (const node of nodes) {
+    if (node.kind === "folder") {
+      node.bytes = rollupBytes(node.children);
+    }
+    total += node.bytes;
+  }
+  return total;
+}
+
+export function buildTree(files: TrackedFile[]): TreeNode[] {
   const root: TreeNode[] = [];
 
-  for (const raw of paths) {
-    const parts = raw.split("/").filter((part) => part.length > 0);
+  for (const file of files) {
+    const parts = file.rel.split("/").filter((part) => part.length > 0);
     if (parts.length === 0) continue;
 
     let level = root;
@@ -58,9 +99,14 @@ export function buildTree(paths: string[]): TreeNode[] {
           path: prefix,
           kind: isFile ? "file" : "folder",
           children: [],
+          bytes: isFile ? file.bytes : 0,
+          state: isFile ? file.state : "Synced",
         };
         level.push(node);
-      } else if (!isFile) {
+      } else if (isFile) {
+        node.bytes = file.bytes;
+        node.state = file.state;
+      } else {
         node.kind = "folder";
       }
       if (!isFile) level = node.children;
@@ -68,5 +114,6 @@ export function buildTree(paths: string[]): TreeNode[] {
   }
 
   sortTree(root);
+  rollupBytes(root);
   return root;
 }

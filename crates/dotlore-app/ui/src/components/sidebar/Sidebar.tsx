@@ -2,21 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import { LayoutGrid, Plus, Star } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { recoverRoot } from "@/lib/ipc";
+import { linkRoot, recoverRoot } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { useRoots } from "@/lib/roots";
 import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
 
 import { AddRootDialog } from "./AddRootDialog";
-import { LinkRootDialog } from "./LinkRootDialog";
 import { RemoveRootAlert } from "./RemoveRootAlert";
 import { SearchBar } from "./SearchBar";
 import { SidebarItem } from "./SidebarItem";
@@ -63,32 +56,19 @@ function AddSectionButton({
   disabled,
 }: {
   label: string;
-  onPick: (directory: boolean) => void;
+  onPick: () => void;
   disabled?: boolean;
 }) {
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label={label}
-            disabled={disabled}
-          />
-        }
-      >
-        <Plus aria-hidden />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-28">
-        <DropdownMenuItem disabled={disabled} onClick={() => onPick(true)}>
-          Folder…
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled={disabled} onClick={() => onPick(false)}>
-          File…
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onPick}
+    >
+      <Plus aria-hidden />
+    </Button>
   );
 }
 
@@ -113,7 +93,6 @@ export function Sidebar() {
     path: string;
     slug: string;
   } | null>(null);
-  const [linkOpen, setLinkOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<RootRow | null>(null);
 
   const toggleCollapsed = useCallback((id: string) => {
@@ -152,9 +131,9 @@ export function Sidebar() {
   const agents = visible.filter((row) => row.is_agent);
   const projects = visible.filter((row) => !row.is_agent);
 
-  async function startAdd(directory: boolean) {
+  async function startAdd() {
     if (busy) return;
-    const path = await pickLocalPath(directory);
+    const path = await pickLocalPath();
     if (path === null) return;
     setPendingAdd({ path, slug: defaultSlug(path) });
   }
@@ -164,6 +143,19 @@ export function Sidebar() {
     try {
       await recoverRoot(slug);
       await refreshRoots();
+    } catch {
+      // Banner is set by `run()`.
+    }
+  }
+
+  async function handleLink(slug: string) {
+    if (busy) return;
+    const path = await pickLocalPath();
+    if (path === null) return;
+    try {
+      await linkRoot(slug, path);
+      await refreshRoots();
+      selectRoot(slug);
     } catch {
       // Banner is set by `run()`.
     }
@@ -180,11 +172,13 @@ export function Sidebar() {
         statusKind={row.status.kind}
         conflictCount={conflictCount(row)}
         starred={starred.has(row.slug)}
+        linked={row.linked}
         onClick={() => selectRoot(row.slug)}
         onConflictClick={() => {
           openFirstConflict(row.slug);
         }}
         onToggleStar={() => toggleStar(row.slug)}
+        onLink={() => void handleLink(row.slug)}
         onRemove={() => setRemoveTarget(row)}
         writeDisabled={busy}
         onRecover={
@@ -198,15 +192,6 @@ export function Sidebar() {
     <nav aria-label="Roots" className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <SearchBar value={query} onChange={setQuery} />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          onClick={() => setLinkOpen(true)}
-        >
-          Link
-        </Button>
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 px-1.5 pb-2">
@@ -235,7 +220,7 @@ export function Sidebar() {
             <AddSectionButton
               label="Add agent"
               disabled={busy}
-              onPick={(directory) => void startAdd(directory)}
+              onPick={() => void startAdd()}
             />
           }
         >
@@ -250,7 +235,7 @@ export function Sidebar() {
             <AddSectionButton
               label="Add project"
               disabled={busy}
-              onPick={(directory) => void startAdd(directory)}
+              onPick={() => void startAdd()}
             />
           }
         >
@@ -266,7 +251,6 @@ export function Sidebar() {
           if (!open) setPendingAdd(null);
         }}
       />
-      <LinkRootDialog open={linkOpen} onOpenChange={setLinkOpen} />
       <RemoveRootAlert
         slug={removeTarget?.slug ?? null}
         name={removeTarget?.name ?? "this root"}

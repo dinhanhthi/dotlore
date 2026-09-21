@@ -3,6 +3,7 @@
   <h1>Dotlore</h1>
   <p>Sync your AI stuff and keep it away from your main codebase.</p>
   <p>
+    <a href="website/">Website</a> ·
     <a href="https://github.com/dinhanhthi/dotlore">GitHub</a> ·
     <a href="https://github.com/dinhanhthi/dotlore/releases">Releases</a> ·
     <a href="CONTRIBUTING.md">Contributing</a>
@@ -10,14 +11,14 @@
 </div>
 
 > [!NOTE]
-> **macOS** is the only supported target. Windows and Linux are not in scope.
+> **macOS** is the current priority. Windows and Linux are coming soon.
 
-Dotlore tracks the AI-agent config your projects git-ignore and syncs it between your own Macs. Point it at any folder or single file you keep out of git — `.claude/`, `CLAUDE.md`, `.agents/`, your project's `docs/`, your global `~/.claude`, or whatever else you work with. Files stay where they are; nothing is moved, symlinked, or added to your project's git history.
+Dotlore tracks the AI-agent config your projects git-ignore and syncs it between your own Macs. Point it at a folder — `.claude/`, `.agents/`, your project's `docs/`, your global `~/.claude` — and pick the entries to sync. `CLAUDE.md` is an entry inside a project, not a root of its own. Files stay where they are; nothing is moved, symlinked, or added to your project's git history.
 
 ## ✨ Features
 
-- **Files stay put** — tracked roots are never moved, symlinked, or added to project git history.
-- **Any folder or file** — `.claude/`, `CLAUDE.md`, `.agents/`, project `docs/`, `~/.claude`, or any other path you keep out of git.
+- **Files stay put** — projects stay where they are: never moved, never symlinked, never added to git history.
+- **Project folders** — a project is always a folder with a synced include-list. `.claude/`, `CLAUDE.md`, `.agents/`, `docs/`, and `~/.claude` are entries inside it, not roots of their own.
 - **Cloud folder, not a cloud API** — sync through iCloud Drive or Google Drive desktop, a folder path you already have.
 - **Immutable bundles** — each Mac publishes its own git bundle; nothing in the cloud folder is rewritten or deleted.
 - **Conflicts without markers** — the newer commit wins on every device; the loser's bytes stay beside it as a sibling file.
@@ -28,7 +29,7 @@ Dotlore tracks the AI-agent config your projects git-ignore and syncs it between
 
 Transport is a cloud folder you already sync (iCloud Drive or Google Drive desktop) — a folder path, never a cloud API.
 
-Each tracked root gets a private staging git repo under `~/Library/Application Support/dotlore/`. Dotlore mirrors the root into staging, commits, and publishes an **immutable** git bundle to its own device directory in the cloud:
+Each project gets a private staging git repo under `~/Library/Application Support/dotlore/`. Dotlore mirrors the include-list into staging, commits, and publishes an **immutable** git bundle to its own device directory in the cloud:
 
 ```
 <cloud>/dotlore/<slug>/devices/<device-id>/000001.bundle
@@ -92,6 +93,10 @@ To pass a sandbox home into the bundled binary (Finder's `open` does not forward
 ```bash
 DOTLORE_HOME="$HOME/Downloads/dotlore" target/release/bundle/macos/Dotlore.app/Contents/MacOS/dotlore-app
 ```
+
+## 🌐 Website
+
+The landing page is static HTML in [`website/`](website/). Open `website/index.html` in a browser. No build step.
 
 ## 🤝 Contributing
 

@@ -15,7 +15,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { composeLivePath } from "@/lib/path";
 import { useRoots } from "@/lib/roots";
 import { cn } from "@/lib/utils";
 
@@ -26,12 +25,8 @@ export function TitleBarActions() {
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
   const active = view === "root" && root !== null;
   const starred = root !== null && starredSlugs.includes(root.slug);
-  const revealPath =
-    root === null
-      ? null
-      : selectedRel
-        ? composeLivePath(root.path, selectedRel)
-        : root.path;
+  const fileOpen = selectedRel !== null;
+  const revealPath = root === null || fileOpen ? null : root.path;
 
   function reveal() {
     if (!revealPath) return;
@@ -84,26 +79,28 @@ export function TitleBarActions() {
         <TooltipContent>Remove from Dotlore</TooltipContent>
       </Tooltip>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              disabled={!active}
-              aria-label="More actions"
-              className="text-muted-foreground"
-            />
-          }
-        >
-          <MoreHorizontal aria-hidden />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-44">
-          <DropdownMenuItem disabled={!revealPath} onClick={reveal}>
-            Reveal in Finder
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {!fileOpen && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={!active}
+                aria-label="More actions"
+                className="text-muted-foreground"
+              />
+            }
+          >
+            <MoreHorizontal aria-hidden />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-44">
+            <DropdownMenuItem disabled={!revealPath} onClick={reveal}>
+              Reveal in Finder
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
       <RemoveRootAlert
         slug={root?.slug ?? null}

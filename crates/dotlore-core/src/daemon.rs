@@ -48,8 +48,8 @@ use anyhow::Result;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::cloud::Kind;
 use crate::engine::{Engine, RootStatus};
+use crate::project::{EntryList, ProjectFile};
 use crate::repo::Repo;
 
 /// Floor: a cycle runs at least this often even with no watch events.
@@ -62,13 +62,22 @@ pub const CAP: Duration = Duration::from_secs(5);
 /// An engine shared between the daemon thread and a UI.
 pub type SharedEngine = Arc<Mutex<Engine>>;
 
-/// Canonical tracked-root path -> that root's gitignore text.
+/// Canonical tracked-root path -> ignore text plus that root's include-list.
 ///
-/// The *text*, not the built matcher: [`Gitignore`] is not comparable, and the
-/// daemon has to notice an edited `.dotloreignore` the same way it notices a
-/// moved root, or a stale filter would keep swallowing a path the user just
-/// started tracking.
-type Filters = HashMap<PathBuf, String>;
+/// Stored as values, not compiled matchers: [`Gitignore`] is not comparable,
+/// and the daemon has to notice an edited `.dotloreignore` or include-list
+/// the same way it notices a moved root, or a stale filter would keep
+/// swallowing a path the user just started tracking.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct RootFilter {
+    ignore: String,
+    /// `None` is unconstrained (ignore text only). `Some` is the committed
+    /// include-list, even when empty — an empty list still has to rebuild
+    /// and still has to drop siblings.
+    tracked: Option<ProjectFile>,
+}
+
+type Filters = HashMap<PathBuf, RootFilter>;
 
 /// Everything one cycle produces: the per-root statuses, the paths to watch,
 /// and the filters that decide which events under them matter.
@@ -183,7 +192,8 @@ fn cycle(engine: &SharedEngine) -> Cycle {
 /// Keyed by the *canonical* root: FSEvents reports `/private/var/...` where
 /// the config holds `/var/...`, and a prefix that never matches would filter
 /// nothing. Reuses [`Repo::ignore_text`], so the daemon and the mirror cannot
-/// disagree about what a root tracks.
+/// disagree about what a root tracks. The include-list from
+/// [`Repo::project_file`] is stored beside it and is strictly narrower.
 ///
 /// A root is simply absent from the map when anything is unavailable — no
 /// staging repo yet, an unresolvable path — and an absent root is unfiltered.
@@ -197,11 +207,6 @@ fn cycle(engine: &SharedEngine) -> Cycle {
 fn watch_filters(e: &Engine) -> Filters {
     let mut out = Filters::new();
     for r in &e.cfg.roots {
-        // A single-file root is watched as that one file; there is nothing
-        // under it to filter.
-        if r.kind != Kind::Dir {
-            continue;
-        }
         let Ok(canon) = r.path.canonicalize() else {
             continue;
         };
@@ -211,12 +216,20 @@ fn watch_filters(e: &Engine) -> Filters {
             &r.path,
             &e.cfg.device_name,
             &e.cfg.device_id,
-            r.kind,
         );
         let Ok(repo) = opened else {
             continue;
         };
-        out.insert(canon, repo.ignore_text(&e.home_dir));
+        let Ok(file) = repo.project_file() else {
+            continue;
+        };
+        out.insert(
+            canon,
+            RootFilter {
+                ignore: repo.ignore_text(&e.home_dir),
+                tracked: Some(file),
+            },
+        );
     }
     out
 }
@@ -280,16 +293,21 @@ fn rebuild(
 ///
 /// A text the matcher rejects drops that root from the list, which leaves it
 /// unfiltered.
-fn build_matchers(filters: &Filters) -> Vec<(PathBuf, Gitignore)> {
+fn build_matchers(filters: &Filters) -> Vec<(PathBuf, Gitignore, Option<EntryList>)> {
     let mut out = Vec::new();
-    for (root, text) in filters {
+    for (root, filter) in filters {
         let mut b = GitignoreBuilder::new(root);
-        if !text.lines().all(|l| b.add_line(None, l).is_ok()) {
+        if !filter.ignore.lines().all(|l| b.add_line(None, l).is_ok()) {
             continue;
         }
-        if let Ok(gi) = b.build() {
-            out.push((root.clone(), gi));
-        }
+        let Ok(gi) = b.build() else {
+            continue;
+        };
+        out.push((
+            root.clone(),
+            gi,
+            filter.tracked.as_ref().map(ProjectFile::tracked),
+        ));
     }
     out
 }
@@ -299,7 +317,10 @@ fn build_matchers(filters: &Filters) -> Vec<(PathBuf, Gitignore)> {
 /// Every failure mode answers yes: a watcher error, a rescan, an event with no
 /// paths, a path under no tracked root. Only an event whose paths are *all*
 /// ignored by every tracked root that contains them is dropped.
-fn significant(matchers: &[(PathBuf, Gitignore)], res: &notify::Result<notify::Event>) -> bool {
+fn significant(
+    matchers: &[(PathBuf, Gitignore, Option<EntryList>)],
+    res: &notify::Result<notify::Event>,
+) -> bool {
     let Ok(ev) = res else {
         // Errors and overflows are events too: something changed, or the
         // watcher lost track of what did. Either way, cycle.
@@ -318,13 +339,13 @@ fn significant(matchers: &[(PathBuf, Gitignore)], res: &notify::Result<notify::E
 /// path says nothing about whether the other mirrors it. A path no root
 /// contains is not ignored — the transport dir reaches this and must always
 /// count.
-fn ignored(matchers: &[(PathBuf, Gitignore)], p: &Path) -> bool {
+fn ignored(matchers: &[(PathBuf, Gitignore, Option<EntryList>)], p: &Path) -> bool {
     // A deleted path has no type left to read, and the answer can differ by
     // type (`!/agents/` re-includes a directory but not a file), so an unknown
     // type is ignored only when both answers agree.
     let dir = fs::symlink_metadata(p).map(|md| md.is_dir());
     let mut contained = false;
-    for (root, gi) in matchers {
+    for (root, gi, include) in matchers {
         let Ok(rel) = p.strip_prefix(root) else {
             continue;
         };
@@ -332,6 +353,14 @@ fn ignored(matchers: &[(PathBuf, Gitignore)], p: &Path) -> bool {
         // The root itself.
         if rel.as_os_str().is_empty() {
             return false;
+        }
+        // Outside the include-list: this root does not track it. Ancestors of
+        // a nested entry still vote "wake" so creating or deleting the parent
+        // directory of a tracked file is seen.
+        if let Some(include) = include {
+            if !include.contains_rel(rel) && !include.has_tracked_descendant(rel) {
+                continue;
+            }
         }
         // Relative paths only: the matcher panics on an absolute path it
         // cannot strip its own root from.
@@ -352,20 +381,17 @@ fn ignored(matchers: &[(PathBuf, Gitignore)], p: &Path) -> bool {
 
 /// A name the mirror never carries either way, for any root.
 ///
-/// Duplicated from the private `mirror::protected_name` plus the `.DS_Store`
-/// skip in `mirror::walk` — keep the two in step. The ignore text alone does
-/// not cover these: a project root's text is empty, so without this a `git`
-/// operation anywhere in a tracked project directory, and dotlore's own
+/// [`crate::project::staging_private`] plus `.DS_Store`, which the shared
+/// predicate deliberately omits so `delete_stale` can still prune a stray
+/// Finder file from the worktree. The ignore text alone does not cover
+/// these: a project root's text is empty, so without this a `git` operation
+/// anywhere in a tracked project directory, and dotlore's own
 /// `.dotlore-tmp` and `.conflict-` writes, each buy a no-op cycle.
 fn staging_private(rel: &Path) -> bool {
     rel.components().any(|c| {
         matches!(c, std::path::Component::Normal(n) if {
             let n = n.to_string_lossy();
-            n == ".git"
-                || n == ".dotloreignore"
-                || n == ".DS_Store"
-                || n.contains(".conflict-")
-                || n.ends_with(".dotlore-tmp")
+            crate::project::staging_private(&n) || n == ".DS_Store"
         })
     })
 }
@@ -525,7 +551,7 @@ mod tests {
         // Created up front, so the event asserted at the end of the test is
         // the write *inside* it and nothing about the directory itself: it is
         // `RecursiveMode::Recursive` that has to carry it.
-        fs::create_dir_all(root.path().join("sub")).unwrap();
+        fs::create_dir_all(root.path().join("docs")).unwrap();
         let engine = engine_at(home.path(), provider.path());
         let (tx, srx, h) = start(&engine);
 
@@ -572,7 +598,7 @@ mod tests {
         // root is to make the filesystem produce the event. A subdirectory,
         // because `RecursiveMode::Recursive` is what is under test.
         settle(&srx);
-        fs::write(root.path().join("sub/new.md"), b"real\n").unwrap();
+        fs::write(root.path().join("docs/new.md"), b"real\n").unwrap();
         srx.recv_timeout(Duration::from_secs(6))
             .expect("a real filesystem event did not reach the daemon")
             .unwrap();
@@ -601,7 +627,6 @@ mod tests {
                 e.cfg.roots.push(Root {
                     slug: slug.into(),
                     path,
-                    kind: Kind::Dir,
                     initializing: false,
                 });
             }
@@ -647,14 +672,20 @@ mod tests {
         assert_eq!(
             filters
                 .get(&root.path().canonicalize().unwrap())
-                .map(String::as_str),
-            Some(crate::mirror::DEFAULT_PROJECT_IGNORE),
+                .map(|f| f.ignore.as_str()),
+            Some(crate::project::DEFAULT_NEVER_IGNORE),
             "a project root is missing from the filter map: {filters:?}"
         );
     }
 
-    fn matcher(root: &str, text: &str) -> Vec<(PathBuf, Gitignore)> {
-        build_matchers(&Filters::from([(PathBuf::from(root), text.to_string())]))
+    fn matcher(root: &str, text: &str) -> Vec<(PathBuf, Gitignore, Option<EntryList>)> {
+        build_matchers(&Filters::from([(
+            PathBuf::from(root),
+            RootFilter {
+                ignore: text.to_string(),
+                tracked: None,
+            },
+        )]))
     }
 
     /// Nothing refuses a tracked root inside another tracked root — only
@@ -664,8 +695,8 @@ mod tests {
     #[test]
     fn a_nested_root_that_tracks_a_path_outvotes_an_outer_root_that_ignores_it() {
         let churn = Path::new("/r/projects/session.jsonl");
-        let outer = matcher("/r", crate::mirror::DEFAULT_HOME_CLAUDE_IGNORE);
-        let inner = matcher("/r/projects", crate::mirror::DEFAULT_PROJECT_IGNORE);
+        let outer = matcher("/r", crate::project::DEFAULT_NEVER_IGNORE);
+        let inner = matcher("/r/projects", "");
 
         assert!(ignored(&outer, churn), "the outer root does ignore it");
         assert!(!ignored(&inner, churn), "the inner root mirrors it whole");
@@ -701,12 +732,13 @@ mod tests {
     /// otherwise buy a no-op cycle per `CAP`.
     #[test]
     fn dotlore_and_git_private_names_do_not_wake_the_daemon() {
-        let m = matcher("/r", crate::mirror::DEFAULT_PROJECT_IGNORE);
+        let m = matcher("/r", "");
         for p in [
             "/r/.git",
             "/r/.git/index.lock",
             "/r/sub/.git/refs/heads/main",
             "/r/.dotloreignore",
+            "/r/.dotloreproject",
             "/r/.DS_Store",
             "/r/CLAUDE.conflict-1234abcd.md",
             "/r/CLAUDE.md.dotlore-tmp",
@@ -725,8 +757,8 @@ mod tests {
     fn an_ignored_path_does_not_wake_the_daemon_but_a_tracked_one_does() {
         let home = TempDir::new().unwrap();
         // A separate `$HOME`: a tracked root may not sit inside the state
-        // directory, and `<home_dir>/.claude` is what makes `ignore_text`
-        // answer DEFAULT_HOME_CLAUDE_IGNORE.
+        // directory. `add_root` writes `DEFAULT_NEVER_IGNORE`, which
+        // root-anchors `/projects/` and `/history.jsonl`.
         let home_dir = TempDir::new().unwrap();
         let provider = TempDir::new().unwrap();
         let root = home_dir.path().join(".claude");
@@ -765,5 +797,41 @@ mod tests {
             .unwrap();
 
         quit(&tx, h);
+    }
+
+    /// An include-list is a stricter filter than ignore text: a sibling the
+    /// project does not track must not buy a cycle. The matcher is built from
+    /// a real `add_root` so `.dotloreproject` is the source of the keys.
+    #[test]
+    fn an_edit_outside_the_include_list_does_not_wake_the_daemon() {
+        let home = TempDir::new().unwrap();
+        let provider = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("CLAUDE.md"), b"hi\n").unwrap();
+        fs::create_dir_all(root.path().join("other")).unwrap();
+        fs::write(root.path().join("other/notes.md"), b"nope\n").unwrap();
+
+        let engine = engine_at(home.path(), provider.path());
+        {
+            let mut cfg = Config::load(home.path()).unwrap();
+            cfg.default_patterns = Some(vec!["CLAUDE.md".into()]);
+            cfg.save(home.path()).unwrap();
+            let mut cli = Engine::new(home.path(), home.path(), cfg).unwrap();
+            cli.add_root(root.path(), Some("proj")).unwrap();
+        }
+
+        let mut e = engine.lock().unwrap();
+        e.sync_all().unwrap();
+        let filters = watch_filters(&e);
+        let m = build_matchers(&filters);
+        let canon = root.path().canonicalize().unwrap();
+        assert!(
+            ignored(&m, &canon.join("other/notes.md")),
+            "an untracked sibling woke the daemon"
+        );
+        assert!(
+            !ignored(&m, &canon.join("CLAUDE.md")),
+            "a tracked file was filtered out"
+        );
     }
 }

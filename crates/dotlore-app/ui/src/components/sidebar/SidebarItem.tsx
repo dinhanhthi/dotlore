@@ -1,4 +1,4 @@
-import { Star } from "lucide-react";
+import { Star, Unlink } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -35,9 +35,11 @@ type SidebarItemProps = {
   leading?: ReactNode;
   conflictCount?: number;
   starred?: boolean;
+  linked?: boolean;
   onClick: () => void;
   onConflictClick?: () => void;
   onToggleStar?: () => void;
+  onLink?: () => void;
   onRemove?: () => void;
   onRecover?: () => void;
   writeDisabled?: boolean;
@@ -52,9 +54,11 @@ export function SidebarItem({
   leading,
   conflictCount = 0,
   starred = false,
+  linked,
   onClick,
   onConflictClick,
   onToggleStar,
+  onLink,
   onRemove,
   onRecover,
   writeDisabled = false,
@@ -85,6 +89,20 @@ export function SidebarItem({
         )}
         <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
       </button>
+      {linked === false && onLink && (
+        <button
+          type="button"
+          aria-label="Link to a local folder"
+          disabled={writeDisabled}
+          onClick={(event) => {
+            event.stopPropagation();
+            onLink();
+          }}
+          className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+        >
+          <Unlink aria-hidden className="size-3.5" />
+        </button>
+      )}
       {conflictCount > 0 && (
         <button
           type="button"

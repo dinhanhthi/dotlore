@@ -23,9 +23,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::cloud::{Cloud, Kind};
+use crate::cloud::Cloud;
 use crate::git::Git;
 use crate::mirror::{self, FileState, Snapshot, Status};
+use crate::project::{self, EntryList, Limits, ProjectFile};
 
 /// Journal format; a file written by a newer build is refused, not guessed at.
 const JOURNAL_VERSION: u32 = 1;
@@ -113,9 +114,10 @@ pub struct Repo {
     pub staging: PathBuf,
     pub git: Git,
     pub my_id: String,
-    pub kind: Kind,
     home: PathBuf,
     device_name: String,
+    /// Per-sync file/folder ceilings. Engine overwrites from config.
+    pub limits: Limits,
 }
 
 impl Repo {
@@ -128,9 +130,8 @@ impl Repo {
         root: &Path,
         device_name: &str,
         device_id: &str,
-        kind: Kind,
     ) -> Result<Repo> {
-        let r = Repo::at(home, slug, root, device_name, device_id, kind)?;
+        let r = Repo::at(home, slug, root, device_name, device_id)?;
         fs::create_dir_all(&r.staging)?;
         if !r.staging.join(".git").exists() {
             r.git.ok(&["init", "-b", "main"])?;
@@ -186,9 +187,8 @@ impl Repo {
         root: &Path,
         device_name: &str,
         device_id: &str,
-        kind: Kind,
     ) -> Result<Repo> {
-        let r = Repo::at(home, slug, root, device_name, device_id, kind)?;
+        let r = Repo::at(home, slug, root, device_name, device_id)?;
         if !r.staging.join(".git").exists() {
             bail!("no staging repo at {}", r.staging.display());
         }
@@ -202,7 +202,6 @@ impl Repo {
         root: &Path,
         device_name: &str,
         device_id: &str,
-        kind: Kind,
     ) -> Result<Repo> {
         if !valid_slug(slug) {
             bail!("invalid slug {slug:?}");
@@ -217,9 +216,9 @@ impl Repo {
             staging: staging.clone(),
             git: Git::new(staging, device_name, device_id),
             my_id: device_id.to_string(),
-            kind,
             home: home.to_path_buf(),
             device_name: device_name.to_string(),
+            limits: Limits::default(),
         })
     }
 
@@ -232,23 +231,16 @@ impl Repo {
         short8(&self.my_id)
     }
 
-    /// The committed `.dotloreignore`, or the built-in default for this root.
-    pub fn ignore_text(&self, home_dir: &Path) -> String {
-        if let Ok(text) = fs::read_to_string(self.staging.join(".dotloreignore")) {
-            return text;
-        }
-        let home_claude = match (
-            self.root.canonicalize(),
-            home_dir.join(".claude").canonicalize(),
-        ) {
-            (Ok(a), Ok(b)) => a == b,
-            _ => false,
-        };
-        if home_claude {
-            mirror::DEFAULT_HOME_CLAUDE_IGNORE.to_string()
-        } else {
-            mirror::DEFAULT_PROJECT_IGNORE.to_string()
-        }
+    /// The committed `.dotloreproject`, or an empty include-list when absent.
+    pub fn project_file(&self) -> Result<ProjectFile> {
+        project::read(&self.staging)
+    }
+
+    /// The committed `.dotloreignore`, or the default never-list when absent
+    /// (a linked root whose history has not arrived yet).
+    pub fn ignore_text(&self, _home_dir: &Path) -> String {
+        fs::read_to_string(self.staging.join(crate::project::IGNORE_FILE))
+            .unwrap_or_else(|_| project::DEFAULT_NEVER_IGNORE.to_string())
     }
 
     /// Mirror the root into staging and commit whatever changed.
@@ -256,12 +248,18 @@ impl Repo {
     /// Returns whether a commit was made. `allow_empty_first` mints an empty
     /// commit when `main` does not exist yet, so an Add on an empty root still
     /// has a head to publish.
-    pub fn commit_local(&self, allow_empty_first: bool, home_dir: &Path) -> Result<bool> {
-        mirror::root_to_staging(
+    pub fn commit_local(
+        &self,
+        allow_empty_first: bool,
+        home_dir: &Path,
+    ) -> Result<(bool, mirror::MirrorReport)> {
+        let entries = project::read(&self.staging)?.tracked();
+        let report = mirror::root_to_staging(
             &self.root,
             &self.staging,
-            self.kind,
+            &entries,
             &self.ignore_text(home_dir),
+            self.limits,
         )?;
         stage_worktree(&self.git, &self.staging)?;
 
@@ -275,12 +273,12 @@ impl Repo {
             .success();
         if staged {
             self.git.ok(&["commit", "-m", &msg])?;
-            Ok(true)
+            Ok((true, report))
         } else if allow_empty_first && !self.has_main() {
             self.git.ok(&["commit", "--allow-empty", "-m", &msg])?;
-            Ok(true)
+            Ok((true, report))
         } else {
-            Ok(false)
+            Ok((false, report))
         }
     }
 
@@ -505,8 +503,14 @@ impl Repo {
     ///
     /// `pre == None` means there was no local history: every regular file in
     /// `target` is an addition. Staging-private entries are excluded from both
-    /// forms — they must never reach a live root.
-    pub fn changes_since(&self, pre: Option<&str>, target: &str) -> Result<Vec<(Status, PathBuf)>> {
+    /// forms — they must never reach a live root. Paths outside `entries` are
+    /// dropped after that, so an untracked blob never enters a change set.
+    pub fn changes_since(
+        &self,
+        pre: Option<&str>,
+        target: &str,
+        entries: &EntryList,
+    ) -> Result<Vec<(Status, PathBuf)>> {
         let mut out = Vec::new();
         match pre {
             Some(pre) => {
@@ -541,7 +545,9 @@ impl Repo {
                         ),
                     };
                     if let Some(p) = usable_entry(path) {
-                        out.push((status, p));
+                        if entries.contains_rel(&p) {
+                            out.push((status, p));
+                        }
                     }
                 }
             }
@@ -551,7 +557,9 @@ impl Repo {
                     // gitlink is not something we write into a live root.
                     if mode.starts_with("100") {
                         if let Some(p) = usable_entry(path.as_os_str().as_bytes()) {
-                            out.push((Status::Added, p));
+                            if entries.contains_rel(&p) {
+                                out.push((Status::Added, p));
+                            }
                         }
                     }
                 }
@@ -743,18 +751,12 @@ impl Repo {
         self.staging.join(".git").join("dotlore-apply.json")
     }
 
-    /// The live file a staging entry maps to. A single-file root has exactly
-    /// one logical entry, `content`, whatever the local file is called.
+    /// The live file a staging entry maps to.
     fn live_path(&self, rel: &Path) -> Result<PathBuf> {
-        match self.kind {
-            Kind::File => {
-                if rel != Path::new("content") {
-                    bail!("file root: unexpected staging entry {}", rel.display());
-                }
-                Ok(self.root.clone())
-            }
-            Kind::Dir => Ok(self.root.join(rel)),
+        if !plain_rel(rel) {
+            bail!("unsafe path {}", rel.display());
         }
+        Ok(self.root.join(rel))
     }
 
     // --- delivery state ---------------------------------------------------
@@ -848,8 +850,11 @@ impl Transaction {
             .ok_or_else(|| anyhow!("transaction worktree has no HEAD"))?;
         repo.git
             .ok(&["update-ref", &tx_ref(&self.id, "target"), &target])?;
+        // Governing list is the merged TARGET's, not staging's: on a
+        // bootstrap Link staging is empty and the peer's list arrives here.
+        let entries = project::read(&self.worktree)?.tracked();
         self.j.changes = repo
-            .changes_since(self.j.pre.as_deref(), &target)?
+            .changes_since(self.j.pre.as_deref(), &target, &entries)?
             .into_iter()
             .map(|(s, p)| (s.into(), p))
             .collect();
@@ -898,11 +903,9 @@ impl Transaction {
                     continue;
                 };
                 let Ok(live) = repo.live_path(&rel) else {
-                    // The entry maps to no live path at all: a `Kind::File`
-                    // root whose target tree carries something besides
-                    // `content`, which only a peer's commit can produce — git
-                    // merges trees, the single-entry rule is ours. Reported
-                    // per path like every other unwritable one; a hard `Err`
+                    // The entry maps to no live path at all: an unsafe
+                    // relative path (`..`, absolute, empty). Reported per
+                    // path like every other unwritable one; a hard `Err`
                     // here would abandon the journal mid-`Applying` and take
                     // the rest of the root down with the one bad entry.
                     self.blocked.push(rel.clone());
@@ -930,7 +933,6 @@ impl Transaction {
                     let left = mirror::apply_to_root(
                         &self.worktree,
                         &repo.root,
-                        repo.kind,
                         &[(status, rel.clone())],
                         &snap,
                     )?;
@@ -1084,6 +1086,11 @@ impl Transaction {
         self.j.intent = None;
         self.write_journal()?;
 
+        // Worktree still holds the merged target here; reset below would
+        // drop `.dotloreproject`. Staging's list is the old one and would
+        // skip a peer-just-tracked entry (see the named test).
+        let entries = project::read(&self.worktree)?.tracked();
+
         let target = self
             .j
             .target
@@ -1121,8 +1128,9 @@ impl Transaction {
         mirror::root_to_staging(
             &repo.root,
             &self.worktree,
-            repo.kind,
+            &entries,
             &repo.ignore_text(home_dir),
+            repo.limits,
         )?;
         stage_worktree(g, &self.worktree)?;
         g.ok(&[
@@ -1170,7 +1178,7 @@ impl Transaction {
         // expectation the retry must check against, and the applied set starts
         // over from it.
         self.j.changes = repo
-            .changes_since(Some(&local), &new_target)?
+            .changes_since(Some(&local), &new_target, &entries)?
             .into_iter()
             .map(|(s, p)| (s.into(), p))
             .collect();
@@ -1358,6 +1366,11 @@ fn short8(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
+/// A relative path made only of plain names: no `..`, no root, no prefix.
+fn plain_rel(rel: &Path) -> bool {
+    !rel.as_os_str().is_empty() && rel.components().all(|c| matches!(c, Component::Normal(_)))
+}
+
 /// `[a-z0-9]+(-[a-z0-9]+)*` — also the shape that makes a slug safe as a
 /// single path component.
 fn valid_slug(s: &str) -> bool {
@@ -1383,10 +1396,7 @@ fn usable_entry(path: &[u8]) -> Option<PathBuf> {
         return None;
     }
     let private = p.components().any(|c| match c {
-        Component::Normal(n) => {
-            let n = n.to_string_lossy();
-            n == ".dotloreignore" || n.contains(".conflict-")
-        }
+        Component::Normal(n) => crate::project::staging_private(&n.to_string_lossy()),
         _ => true,
     });
     if private {
@@ -1694,15 +1704,7 @@ mod tests {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
         let provider = TempDir::new().unwrap();
-        let repo = Repo::init(
-            home.path(),
-            "proj-claude",
-            root.path(),
-            "Mac A Pro",
-            ID_A,
-            Kind::Dir,
-        )
-        .unwrap();
+        let repo = Repo::init(home.path(), "proj-claude", root.path(), "Mac A Pro", ID_A).unwrap();
         Fx {
             home,
             root,
@@ -1721,9 +1723,23 @@ mod tests {
             let p = self.root.path().join(rel);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(p, body).unwrap();
+            self.track(&[rel]);
+        }
+        fn track(&self, keys: &[&str]) {
+            let mut file = project::read(&self.repo.staging).unwrap();
+            for k in keys {
+                file.entries.insert(
+                    (*k).to_string(),
+                    project::EntryRecord {
+                        gen: 1,
+                        state: project::State::Tracked,
+                    },
+                );
+            }
+            project::write(&self.repo.staging, &file).unwrap();
         }
         fn commit(&self) -> bool {
-            self.repo.commit_local(false, self.home.path()).unwrap()
+            self.repo.commit_local(false, self.home.path()).unwrap().0
         }
     }
 
@@ -1798,16 +1814,21 @@ mod tests {
 
         fs::remove_file(fx.root.path().join("CLAUDE.md")).unwrap();
         assert!(fx.commit());
-        assert_eq!(fx.repo.git.ok(&["ls-files"]).unwrap(), "");
+        let tracked = fx.repo.git.ok(&["ls-files"]).unwrap();
+        assert!(
+            !tracked.lines().any(|l| l == "CLAUDE.md"),
+            "deleted live file must leave the index: {tracked}"
+        );
+        assert_eq!(tracked, ".dotloreproject");
     }
 
     #[test]
     fn allow_empty_first_only_applies_to_a_repo_without_main() {
         let fx = fixture();
         assert!(!fx.repo.has_main());
-        assert!(fx.repo.commit_local(true, fx.home.path()).unwrap());
+        assert!(fx.repo.commit_local(true, fx.home.path()).unwrap().0);
         assert!(fx.repo.has_main());
-        assert!(!fx.repo.commit_local(true, fx.home.path()).unwrap());
+        assert!(!fx.repo.commit_local(true, fx.home.path()).unwrap().0);
     }
 
     // --- changes_since ----------------------------------------------------
@@ -1825,15 +1846,43 @@ mod tests {
         fs::remove_file(fx.root.path().join("gone.md")).unwrap();
         // Staging-private entries: committed here, never applied to a root.
         fs::write(fx.repo.staging.join(".dotloreignore"), "x\n").unwrap();
+        project::write(&fx.repo.staging, &fx.repo.project_file().unwrap()).unwrap();
         fs::write(
             fx.repo.staging.join("CLAUDE.conflict-bbbbbbbb-1234567.md"),
             "loser",
         )
         .unwrap();
+        fs::write(fx.repo.staging.join("a.dotlore-tmp"), "tmp").unwrap();
         fx.commit();
+        // Re-add the project file so `usable_entry` is what drops it.
+        project::write(&fx.repo.staging, &fx.repo.project_file().unwrap()).unwrap();
+        fx.repo
+            .git
+            .ok(&["add", "-f", "--", ":(literal).dotloreproject"])
+            .unwrap();
+        if !fx
+            .repo
+            .git
+            .run(&["diff", "--cached", "--quiet"])
+            .unwrap()
+            .status
+            .success()
+        {
+            fx.repo
+                .git
+                .ok(&["commit", "-m", "private peer paths"])
+                .unwrap();
+        }
         let target = fx.repo.git.rev("HEAD").unwrap();
 
-        let mut got = fx.repo.changes_since(Some(&pre), &target).unwrap();
+        let mut got = fx
+            .repo
+            .changes_since(
+                Some(&pre),
+                &target,
+                &fx.repo.project_file().unwrap().tracked(),
+            )
+            .unwrap();
         got.sort_by(|a, b| a.1.cmp(&b.1));
         assert_eq!(
             got,
@@ -1843,6 +1892,11 @@ mod tests {
                 (Status::Added, PathBuf::from("new file.md")),
             ]
         );
+        // Git refuses to store `.git/x` in a tree, so pin the predicate
+        // `changes_since` uses. `a.dotlore-tmp` is also in the peer tree
+        // above; this names the path the assert_eq would miss if it leaked.
+        assert!(usable_entry(b".git/x").is_none());
+        assert!(usable_entry(b"a.dotlore-tmp").is_none());
     }
 
     #[test]
@@ -1859,8 +1913,83 @@ mod tests {
         fx.repo.git.ok(&["commit", "-m", "link"]).unwrap();
         let target = fx.repo.git.rev("HEAD").unwrap();
 
-        let got = fx.repo.changes_since(None, &target).unwrap();
+        let got = fx
+            .repo
+            .changes_since(None, &target, &fx.repo.project_file().unwrap().tracked())
+            .unwrap();
         assert_eq!(got, vec![(Status::Added, PathBuf::from("CLAUDE.md"))]);
+    }
+
+    fn tracked_list(keys: &[&str]) -> EntryList {
+        let mut file = ProjectFile::default();
+        for k in keys {
+            file.entries.insert(
+                (*k).to_string(),
+                project::EntryRecord {
+                    gen: 1,
+                    state: project::State::Tracked,
+                },
+            );
+        }
+        file.tracked()
+    }
+
+    #[test]
+    fn changes_since_drops_entries_outside_the_include_list() {
+        let fx = fixture();
+        assert!(fx.repo.commit_local(true, fx.home.path()).unwrap().0);
+        let pre = fx.repo.git.rev("HEAD").unwrap();
+
+        fx.write("in.md", b"in");
+        fx.write("out.md", b"out");
+        fx.commit();
+        let target = fx.repo.git.rev("HEAD").unwrap();
+        let only_in = tracked_list(&["in.md"]);
+
+        let mut got = fx
+            .repo
+            .changes_since(Some(&pre), &target, &only_in)
+            .unwrap();
+        got.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(got, vec![(Status::Added, PathBuf::from("in.md"))]);
+
+        let got = fx.repo.changes_since(None, &target, &only_in).unwrap();
+        assert_eq!(got, vec![(Status::Added, PathBuf::from("in.md"))]);
+    }
+
+    #[test]
+    fn a_bootstrap_link_change_set_is_scoped_to_the_target_include_list() {
+        let fx = fixture();
+        fx.write("keep.md", b"keep");
+        fx.write("secret.md", b"secret");
+        fx.commit();
+
+        let mut file = fx.repo.project_file().unwrap();
+        file.untrack(Path::new("secret.md")).unwrap();
+        project::write(&fx.repo.staging, &file).unwrap();
+        fx.repo
+            .git
+            .ok(&["add", "-f", "--", ":(literal).dotloreproject"])
+            .unwrap();
+        fx.repo
+            .git
+            .ok(&["commit", "-m", "tombstone secret.md"])
+            .unwrap();
+
+        let target = fx.repo.git.rev("HEAD").unwrap();
+        let tree = fx.repo.ls_tree(&target).unwrap();
+        assert!(
+            tree.iter().any(|(_, p)| p == Path::new("secret.md")),
+            "tombstoned blob must remain in the tree: {tree:?}"
+        );
+
+        let entries = fx.repo.project_file().unwrap().tracked();
+        let got = fx.repo.changes_since(None, &target, &entries).unwrap();
+        assert!(
+            !got.iter().any(|(_, p)| p == Path::new("secret.md")),
+            "tombstoned blob must not enter a bootstrap change set: {got:?}"
+        );
+        assert_eq!(got, vec![(Status::Added, PathBuf::from("keep.md"))]);
     }
 
     // --- expected_bytes ---------------------------------------------------
@@ -2006,7 +2135,6 @@ mod tests {
             fx.root.path(),
             "Mac B Pro",
             ID_B,
-            Kind::Dir,
         )
         .unwrap();
         (fx, b, b_home)
@@ -2133,15 +2261,7 @@ mod tests {
         let key = provider_key(&cloud);
         // B links the same cloud slug onto its own empty root.
         let b_root = TempDir::new().unwrap();
-        let b = Repo::open(
-            bh.path(),
-            "proj-claude",
-            b_root.path(),
-            "Mac B Pro",
-            ID_B,
-            Kind::Dir,
-        )
-        .unwrap();
+        let b = Repo::open(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
         b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
 
         let mut tx = b
@@ -2185,15 +2305,7 @@ mod tests {
         let cloud = fx.cloud();
         let key = provider_key(&cloud);
         let b_root = TempDir::new().unwrap();
-        let b = Repo::open(
-            bh.path(),
-            "proj-claude",
-            b_root.path(),
-            "Mac B Pro",
-            ID_B,
-            Kind::Dir,
-        )
-        .unwrap();
+        let b = Repo::open(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
         b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
 
         let mut tx = b
@@ -2227,15 +2339,7 @@ mod tests {
 
         let bh = TempDir::new().unwrap();
         let b_root = TempDir::new().unwrap();
-        let b = Repo::init(
-            bh.path(),
-            "proj-claude",
-            b_root.path(),
-            "Mac B Pro",
-            ID_B,
-            Kind::Dir,
-        )
-        .unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
         b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
 
         // The user has symlinked one of the incoming files out to a dotfiles
@@ -2299,82 +2403,87 @@ mod tests {
         );
     }
 
-    /// A `Kind::File` root has exactly one logical entry, `content`, but the
-    /// tree it merges comes from a peer: git's merge machinery knows nothing
-    /// about that rule, so another device can publish a commit carrying a
-    /// second entry under any name it likes. Mapping it is impossible, so the
-    /// write fails closed — but it is reported as one blocked path, the way an
-    /// unwritable live path is, instead of erroring out of `apply` with the
-    /// name in the message and abandoning the journal in `Applying`.
+    /// A peer-chosen path outside this device's include-list must never reach
+    /// the live root, and must not leak into an error message (the name is an
+    /// OSC-52 clipboard write — same payload `dotlore-cli` sanitises).
     #[test]
-    fn an_unmappable_entry_in_a_file_root_is_blocked_not_an_error() {
-        // The name is what a hostile peer would choose: an OSC 52 clipboard
-        // write, which used to reach the terminal through `apply`'s `Err`.
-        const POISON: &str = "\u{1b}]52;c;ZXZpbA==\u{7}evil.md";
+    fn an_out_of_list_entry_from_a_peer_never_reaches_the_live_root() {
+        const POISON: &str = "\u{1b}]52;c;ZXZpbA==\u{7}x";
 
         let fx = fixture();
-        let cloud = fx.cloud();
-        let key = provider_key(&cloud);
-        fx.write("content", b"live one\n");
+        fx.write("CLAUDE.md", b"one\n");
         fx.commit();
-        // Committed straight into staging: this entry is exactly the one a
-        // local mirror pass would never produce.
-        fs::write(fx.repo.staging.join(POISON), b"owned\n").unwrap();
+        fs::write(fx.repo.staging.join(POISON), b"peer secret\n").unwrap();
+        fx.repo.git.ok(&["add", "-A"]).unwrap();
         fx.repo
             .git
-            .ok(&["add", "-f", "--", &format!(":(literal){POISON}")])
+            .ok(&["commit", "-m", "peer planted poison"])
             .unwrap();
-        fx.repo.git.ok(&["commit", "-m", "poison"]).unwrap();
-        fx.repo.publish(&cloud).unwrap();
+        fx.repo.publish(&fx.cloud()).unwrap();
 
         let bh = TempDir::new().unwrap();
-        let b_dir = TempDir::new().unwrap();
-        let b_root = b_dir.path().join("CLAUDE.md");
-        let b = Repo::init(
-            bh.path(),
-            "proj-claude",
-            &b_root,
-            "Mac B Pro",
-            ID_B,
-            Kind::File,
-        )
-        .unwrap();
-        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&fx.cloud(), FetchMode::Normal).unwrap();
 
+        let key = provider_key(&fx.cloud());
         let mut tx = b
             .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
             .unwrap();
         tx.set_target(&b).unwrap();
-        let skipped = tx.apply(&b, bh.path()).unwrap();
 
-        assert_eq!(skipped, vec![PathBuf::from(POISON)]);
-        assert_eq!(
-            tx.blocked(),
-            skipped,
-            "no retry maps it: the target is pinned and the name is in it"
+        let entries = project::read(&tx.worktree).unwrap().tracked();
+        let target = tx.git.rev("HEAD").unwrap();
+        let changes = match b.changes_since(None, &target, &entries) {
+            Ok(c) => c,
+            Err(e) => {
+                let msg = format!("{e:?}");
+                assert!(
+                    !msg.contains(POISON) && !msg.contains("\u{1b}"),
+                    "error carries peer bytes: {msg:?}"
+                );
+                panic!("changes_since failed: {e}");
+            }
+        };
+        assert!(
+            !changes
+                .iter()
+                .any(|(_, p)| p.to_string_lossy().contains(POISON)
+                    || p.as_os_str().to_string_lossy().contains('\u{1b}')),
+            "poison path entered the change set: {changes:?}"
         );
-        assert_eq!(
-            fs::read(&b_root).unwrap(),
-            b"live one\n",
-            "the one entry that does map is still applied"
-        );
-        // Fail closed: the unmappable entry was not written anywhere.
-        let names: Vec<String> = fs::read_dir(b_dir.path())
+        assert_eq!(changes, vec![(Status::Added, PathBuf::from("CLAUDE.md"))]);
+
+        match tx.apply(&b, bh.path()) {
+            Ok(skipped) => {
+                assert!(
+                    skipped.iter().all(|p| {
+                        let s = p.to_string_lossy();
+                        !s.contains(POISON) && !s.contains('\u{1b}')
+                    }),
+                    "blocked paths carry peer bytes: {skipped:?}"
+                );
+            }
+            Err(e) => {
+                let msg = format!("{e:?}");
+                assert!(
+                    !msg.contains(POISON) && !msg.contains("\u{1b}"),
+                    "error carries peer bytes: {msg:?}"
+                );
+                panic!("apply failed: {e}");
+            }
+        }
+        assert!(!b_root.path().join(POISON).exists());
+        assert_eq!(fs::read(b_root.path().join("CLAUDE.md")).unwrap(), b"one\n");
+        let names: Vec<_> = fs::read_dir(b_root.path())
             .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .map(|e| e.unwrap().file_name())
             .collect();
-        assert_eq!(names, vec!["CLAUDE.md".to_string()]);
-        assert!(!b.has_main(), "nothing finalizes while a path is blocked");
-
-        // The state the exploit needed: a journal left in `Applying` that
-        // `resolve_conflict` resumes before it validates anything. It must
-        // answer with a status, not with an error chain naming POISON.
-        drop(tx);
-        let mut tx = b.pending_tx(no_resolver).unwrap().unwrap();
-        assert_eq!(tx.phase(), Phase::Applying);
-        assert_eq!(
-            tx.resume(&b, bh.path()).unwrap(),
-            ResumeOutcome::Pending(vec![PathBuf::from(POISON)])
+        assert!(
+            names
+                .iter()
+                .all(|n| !n.to_string_lossy().contains('\u{1b}')),
+            "poison name written under the live root: {names:?}"
         );
     }
 
@@ -2428,15 +2537,7 @@ mod tests {
         // B adopts A's history onto an empty root, so the two share a base.
         let bh = TempDir::new().unwrap();
         let b_root = TempDir::new().unwrap();
-        let b = Repo::init(
-            bh.path(),
-            "proj-claude",
-            b_root.path(),
-            "Mac B Pro",
-            ID_B,
-            Kind::Dir,
-        )
-        .unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
         b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
         let mut tx = b
             .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
@@ -2475,6 +2576,93 @@ mod tests {
         // The merged remote head stays an ancestor, so A is never re-merged.
         let theirs = b.git.rev(&remote_ref(&key, ID_A)).unwrap();
         assert!(b.git.is_ancestor(&theirs, "refs/heads/main"));
+    }
+
+    /// Reconcile must mirror with the merged target's include-list, not
+    /// staging's. A peer that just tracked `b` would otherwise be missing
+    /// from `local` and show up as `Added` against a live root that already
+    /// has it.
+    #[test]
+    fn reconcile_uses_the_merged_targets_include_list() {
+        let lines = |first: &str, twentieth: &str| -> Vec<u8> {
+            (1..=30)
+                .map(|i| match i {
+                    1 => format!("{first}\n"),
+                    20 => format!("{twentieth}\n"),
+                    n => format!("line {n}\n"),
+                })
+                .collect::<String>()
+                .into_bytes()
+        };
+
+        let fx = fixture();
+        let cloud = fx.cloud();
+        let key = provider_key(&cloud);
+        fx.write("a", &lines("line 1", "line 20"));
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b
+            .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+            .unwrap();
+        tx.set_target(&b).unwrap();
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+
+        fx.write("a", &lines("A EDIT", "line 20"));
+        fx.write("b", b"peer-b\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+
+        fs::write(b_root.path().join("b"), b"peer-b\n").unwrap();
+
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b.begin_tx(&key, "HEAD", no_resolver).unwrap();
+        assert_eq!(
+            b.merge_remote(&tx, ID_A).unwrap(),
+            MergeOutcome::FastForward
+        );
+        tx.set_target(&b).unwrap();
+
+        let staging_list = project::read(&b.staging).unwrap();
+        assert!(
+            staging_list.entries.contains_key("a") && !staging_list.entries.contains_key("b"),
+            "staging list must still be [a]: {:?}",
+            staging_list.entries.keys().collect::<Vec<_>>()
+        );
+        let target_list = project::read(&tx.worktree).unwrap();
+        assert!(
+            target_list.entries.contains_key("b"),
+            "target must track [a, b]: {:?}",
+            target_list.entries.keys().collect::<Vec<_>>()
+        );
+
+        fs::write(b_root.path().join("a"), &lines("line 1", "B EDIT")).unwrap();
+        let skipped = tx.apply(&b, bh.path()).unwrap();
+        assert!(skipped.is_empty(), "nothing blocked: {skipped:?}");
+        assert!(tx.blocked().is_empty());
+        assert!(
+            tx.worktree.join("b").is_file(),
+            "b must be mirrored into the tx worktree"
+        );
+        assert!(
+            !tx.changes()
+                .iter()
+                .any(|(s, p)| *s == Status::Added && p == Path::new("b")),
+            "change set must not carry Added b: {:?}",
+            tx.changes()
+        );
+
+        let local = b.git.rev(&tx_ref(&tx.id, "local")).unwrap();
+        let local_tree = b.ls_tree(&local).unwrap();
+        assert!(
+            local_tree.iter().any(|(_, p)| p == Path::new("b")),
+            "b must be in the mirrored local tree: {local_tree:?}"
+        );
     }
 
     // --- merge_remote -----------------------------------------------------
@@ -2539,18 +2727,29 @@ mod tests {
 
     // --- input boundaries -------------------------------------------------
 
+    /// `engine::live_root_path` already refused `..` / empty / absolute; this
+    /// one used to `join` them. The stricter guard wins.
+    #[test]
+    fn live_path_rejects_a_relative_path_that_is_not_plain() {
+        let fx = fixture();
+        assert!(
+            fx.repo.live_path(Path::new("../escape")).is_err(),
+            "parent component must not map onto a live path"
+        );
+    }
+
     #[test]
     fn unsafe_slugs_and_device_ids_are_refused() {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
         for slug in ["../escape", "", "Proj", "a--b", "-a", "a/b"] {
             assert!(
-                Repo::init(home.path(), slug, root.path(), "n", ID_A, Kind::Dir).is_err(),
+                Repo::init(home.path(), slug, root.path(), "n", ID_A).is_err(),
                 "accepted slug {slug:?}"
             );
         }
-        assert!(Repo::init(home.path(), "ok", root.path(), "n", "../x", Kind::Dir).is_err());
-        assert!(Repo::open(home.path(), "ok", root.path(), "n", ID_A, Kind::Dir).is_err());
+        assert!(Repo::init(home.path(), "ok", root.path(), "n", "../x").is_err());
+        assert!(Repo::open(home.path(), "ok", root.path(), "n", ID_A).is_err());
     }
 
     /// A tracked root's own `.gitattributes` is mirrored into staging and
@@ -2678,15 +2877,7 @@ mod tests {
         let cloud = fx.cloud();
         let key = provider_key(&cloud);
         let b_root = TempDir::new().unwrap();
-        let b = Repo::open(
-            bh.path(),
-            "proj-claude",
-            b_root.path(),
-            "Mac B Pro",
-            ID_B,
-            Kind::Dir,
-        )
-        .unwrap();
+        let b = Repo::open(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
         b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
 
         let mut tx = b
@@ -2722,22 +2913,26 @@ mod tests {
         let fx = fixture();
         assert_eq!(
             fx.repo.ignore_text(fx.home.path()),
-            mirror::DEFAULT_PROJECT_IGNORE
+            project::DEFAULT_NEVER_IGNORE
         );
         fs::write(fx.repo.staging.join(".dotloreignore"), "custom\n").unwrap();
         assert_eq!(fx.repo.ignore_text(fx.home.path()), "custom\n");
     }
 
     #[test]
-    fn home_claude_gets_the_home_default() {
+    fn ignore_text_falls_back_to_the_default_never_list_when_staging_has_none() {
         let home = TempDir::new().unwrap();
         let home_dir = TempDir::new().unwrap();
         let claude = home_dir.path().join(".claude");
         fs::create_dir_all(&claude).unwrap();
-        let repo = Repo::init(home.path(), "home-claude", &claude, "n", ID_A, Kind::Dir).unwrap();
+        let repo = Repo::init(home.path(), "home-claude", &claude, "n", ID_A).unwrap();
+        assert!(
+            !repo.staging.join(project::IGNORE_FILE).exists(),
+            "a freshly inited repo has no committed ignore file"
+        );
         assert_eq!(
             repo.ignore_text(home_dir.path()),
-            mirror::DEFAULT_HOME_CLAUDE_IGNORE
+            project::DEFAULT_NEVER_IGNORE
         );
     }
 }

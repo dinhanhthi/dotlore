@@ -25,6 +25,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::git::Git;
+use crate::project;
 use crate::repo::Transaction;
 
 /// Separator between a live name and the generated conflict suffix.
@@ -163,6 +164,18 @@ fn resolve_one(
 ) -> Result<Option<PathBuf>> {
     let spec = pathspec(path)?;
     match code {
+        // Include-list: union the two blobs. Never consults ours_win, never
+        // writes a sibling. Guarded on the status so AU/UA/UD/DU/DD still
+        // reach the existing one-sided arms — stage_blob bails when only one
+        // side has a blob.
+        "UU" | "AA" if path == Path::new(project::PROJECT_FILE) => {
+            let ours = raw(git, &["cat-file", "blob", &stage_blob(git, path, 2)?])?;
+            let theirs = raw(git, &["cat-file", "blob", &stage_blob(git, path, 3)?])?;
+            let merged = project::merge(&project::parse(&ours)?, &project::parse(&theirs)?);
+            write_regular(&git.repo.join(path), &merged.to_bytes()?)?;
+            git.ok(&["add", "--", &spec])?;
+            Ok(None)
+        }
         // Both sides have a blob: winner lives, loser is preserved beside it.
         "UU" | "AA" => {
             let (win, lose) = if ours_win {
@@ -404,7 +417,6 @@ fn write_regular(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud::Kind;
     use crate::repo::Repo;
     use std::process::Command;
     use tempfile::TempDir;
@@ -577,6 +589,36 @@ mod tests {
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    fn pf_bytes(pairs: &[(&str, u64, crate::project::State)]) -> Vec<u8> {
+        use crate::project::{EntryRecord, ProjectFile};
+        ProjectFile {
+            entries: pairs
+                .iter()
+                .map(|(k, g, s)| ((*k).to_string(), EntryRecord { gen: *g, state: *s }))
+                .collect(),
+        }
+        .to_bytes()
+        .unwrap()
+    }
+
+    fn no_conflict_siblings(dir: &Path) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            let name = entry.file_name();
+            assert!(
+                !name.to_string_lossy().contains(".conflict-"),
+                "sibling written: {}",
+                name.to_string_lossy()
+            );
+            if entry.path().is_dir() {
+                no_conflict_siblings(&entry.path());
+            }
+        }
     }
 
     // --- UU: text ---------------------------------------------------------
@@ -830,6 +872,199 @@ mod tests {
 
     // --- unknown states ---------------------------------------------------
 
+    // --- include-list (.dotloreproject) ------------------------------------
+
+    #[test]
+    fn two_include_lists_merge_to_their_union_without_a_sibling() {
+        use crate::project::{self, State};
+        let a_list = pf_bytes(&[("CLAUDE.md", 1, State::Tracked)]);
+        let b_list = pf_bytes(&[("docs/", 1, State::Tracked)]);
+        let p = pair(&[("notes.md", b"shared\n")]);
+        write(&p.a, project::PROJECT_FILE, &a_list);
+        commit_at(&p.a, "a adds include-list", 2_000_000);
+        write(&p.b, project::PROJECT_FILE, &b_list);
+        commit_at(&p.b, "b adds include-list", 1_000_000);
+
+        let ga = p.ga();
+        let r = p.fetch(&ga, &p.b, ID_B);
+        merge_conflicted(&ga, &r);
+        assert_eq!(unmerged(&ga).unwrap()[0].0, "AA");
+
+        let got = resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        assert_eq!(got, Vec::<PathBuf>::new());
+        no_conflict_siblings(&p.a);
+        assert!(list(&ga).unwrap().is_empty());
+
+        let expected = project::merge(
+            &project::parse(&a_list).unwrap(),
+            &project::parse(&b_list).unwrap(),
+        )
+        .to_bytes()
+        .unwrap();
+        assert_eq!(read(&p.a, project::PROJECT_FILE), expected);
+
+        ga.ok(&["commit", "--no-edit", "-m", "merge"]).unwrap();
+        assert_eq!(ga.ok(&["status", "--porcelain"]).unwrap(), "");
+        assert!(!committed(&ga).iter().any(|n| n.contains(".conflict-")));
+    }
+
+    #[test]
+    fn a_tombstone_outlives_a_peers_older_include_list() {
+        use crate::project::{self, State};
+        let base = pf_bytes(&[("docs/", 1, State::Tracked)]);
+        let tombstone = pf_bytes(&[("docs/", 2, State::Removed)]);
+        let older = pf_bytes(&[
+            ("docs/", 1, State::Tracked),
+            ("CLAUDE.md", 1, State::Tracked),
+        ]);
+        let p = pair(&[(project::PROJECT_FILE, base.as_slice())]);
+        write(&p.a, project::PROJECT_FILE, &tombstone);
+        commit_at(&p.a, "a untracks docs", 2_000_000);
+        write(&p.b, project::PROJECT_FILE, &older);
+        commit_at(&p.b, "b still tracks docs", 1_000_000);
+
+        let ga = p.ga();
+        let r = p.fetch(&ga, &p.b, ID_B);
+        merge_conflicted(&ga, &r);
+        resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+
+        let merged = project::parse(&read(&p.a, project::PROJECT_FILE)).unwrap();
+        assert_eq!(merged.entries["docs/"].gen, 2);
+        assert_eq!(merged.entries["docs/"].state, State::Removed);
+        assert_eq!(merged.entries["CLAUDE.md"].gen, 1);
+        assert_eq!(merged.entries["CLAUDE.md"].state, State::Tracked);
+        no_conflict_siblings(&p.a);
+    }
+
+    #[test]
+    fn both_devices_compute_the_same_merged_include_list() {
+        use crate::project::{self, State};
+        let a_list = pf_bytes(&[("docs/", 1, State::Tracked)]);
+        let b_list = pf_bytes(&[("CLAUDE.md", 1, State::Tracked)]);
+        let expected = project::merge(
+            &project::parse(&a_list).unwrap(),
+            &project::parse(&b_list).unwrap(),
+        )
+        .to_bytes()
+        .unwrap();
+        assert_eq!(
+            expected,
+            project::merge(
+                &project::parse(&b_list).unwrap(),
+                &project::parse(&a_list).unwrap(),
+            )
+            .to_bytes()
+            .unwrap()
+        );
+
+        let p = pair(&[("notes.md", b"shared\n")]);
+        write(&p.a, project::PROJECT_FILE, &a_list);
+        commit_at(&p.a, "a list", 2_000_000);
+        write(&p.b, project::PROJECT_FILE, &b_list);
+        commit_at(&p.b, "b list", 1_000_000);
+
+        let (ga, gb) = (p.ga(), p.gb());
+        let rb = p.fetch(&ga, &p.b, ID_B);
+        let ra = p.fetch(&gb, &p.a, ID_A);
+
+        merge_conflicted(&ga, &rb);
+        resolve_index(&ga, &rb, ID_A, ID_B).unwrap();
+        merge_conflicted(&gb, &ra);
+        resolve_index(&gb, &ra, ID_B, ID_A).unwrap();
+
+        assert_eq!(read(&p.a, project::PROJECT_FILE), expected);
+        assert_eq!(read(&p.b, project::PROJECT_FILE), expected);
+        assert_eq!(
+            read(&p.a, project::PROJECT_FILE),
+            read(&p.b, project::PROJECT_FILE)
+        );
+        no_conflict_siblings(&p.a);
+        no_conflict_siblings(&p.b);
+    }
+
+    #[test]
+    fn a_project_file_conflict_does_not_change_a_user_files_winner() {
+        use crate::project::{self, State};
+        let base_list = pf_bytes(&[("notes.md", 1, State::Tracked)]);
+        let a_list = pf_bytes(&[("docs/", 1, State::Tracked)]);
+        let b_list = pf_bytes(&[("agents/", 1, State::Tracked)]);
+        let p = pair(&[
+            ("CLAUDE.md", BASE),
+            (project::PROJECT_FILE, base_list.as_slice()),
+        ]);
+        write(&p.a, "CLAUDE.md", A_TEXT);
+        write(&p.a, project::PROJECT_FILE, &a_list);
+        commit_at(&p.a, "a1", 2_000_000);
+        write(&p.b, "CLAUDE.md", B_TEXT);
+        write(&p.b, project::PROJECT_FILE, &b_list);
+        commit_at(&p.b, "b1", 1_000_000);
+
+        let ga = p.ga();
+        let r = p.fetch(&ga, &p.b, ID_B);
+        assert!(winner_is_ours(&ga, &r).unwrap());
+        merge_conflicted(&ga, &r);
+
+        let got = resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        assert_eq!(got, vec![PathBuf::from("CLAUDE.md")]);
+
+        let sibling = format!("CLAUDE.conflict-bbbbbbbb-{}.md", p.blob7(B_TEXT));
+        assert_eq!(read(&p.a, "CLAUDE.md"), A_TEXT);
+        assert_eq!(read(&p.a, &sibling), B_TEXT);
+
+        let expected = project::merge(
+            &project::parse(&a_list).unwrap(),
+            &project::parse(&b_list).unwrap(),
+        )
+        .to_bytes()
+        .unwrap();
+        assert_eq!(read(&p.a, project::PROJECT_FILE), expected);
+        assert!(!p.a.read_dir().unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&format!("{}.conflict-", project::PROJECT_FILE))));
+    }
+
+    #[test]
+    fn a_one_sided_project_file_conflict_falls_through_to_the_existing_arms() {
+        use crate::project::{self, State};
+        let body = pf_bytes(&[("docs/", 1, State::Tracked)]);
+        let p = pair(&[("f.md", body.as_slice())]);
+        fs::rename(p.a.join("f.md"), p.a.join(project::PROJECT_FILE)).unwrap();
+        commit_at(&p.a, "a renames to project file", 2_000_000);
+        fs::rename(p.b.join("f.md"), p.b.join("other.md")).unwrap();
+        commit_at(&p.b, "b renames elsewhere", 1_000_000);
+
+        let ga = p.ga();
+        let r = p.fetch(&ga, &p.b, ID_B);
+        merge_conflicted(&ga, &r);
+        let codes: Vec<(String, PathBuf)> = unmerged(&ga).unwrap();
+        assert!(
+            codes
+                .iter()
+                .any(|(c, path)| c == "AU" && path == Path::new(project::PROJECT_FILE)),
+            "expected AU on {}: {codes:?}",
+            project::PROJECT_FILE
+        );
+
+        assert!(resolve_one(
+            &ga,
+            "AU",
+            Path::new(project::PROJECT_FILE),
+            true,
+            "bbbbbbbb",
+        )
+        .unwrap()
+        .is_none());
+        assert_eq!(
+            resolve_index(&ga, &r, ID_A, ID_B).unwrap(),
+            Vec::<PathBuf>::new()
+        );
+        ga.ok(&["commit", "--no-edit", "-m", "merge"]).unwrap();
+        assert_eq!(ga.ok(&["status", "--porcelain"]).unwrap(), "");
+        assert!(p.a.join(project::PROJECT_FILE).is_file());
+    }
+
     /// git cannot produce an eighth unmerged code from a real index — the
     /// seven are exhaustive over the stage subsets — so the arm is reached
     /// directly. Swallowing it would leave the index unmerged forever.
@@ -968,15 +1203,7 @@ mod tests {
     fn resolve_removes_only_the_selected_siblings_of_that_live_path() {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let repo = Repo::init(
-            home.path(),
-            "proj-claude",
-            root.path(),
-            "Mac A Pro",
-            ID_A,
-            Kind::Dir,
-        )
-        .unwrap();
+        let repo = Repo::init(home.path(), "proj-claude", root.path(), "Mac A Pro", ID_A).unwrap();
 
         let selected = "settings.conflict-bbbbbbbb-1111111.json";
         let kept = [
@@ -1042,15 +1269,7 @@ mod tests {
     fn resolve_refuses_to_write_through_a_symlink() {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
-        let repo = Repo::init(
-            home.path(),
-            "proj-claude",
-            root.path(),
-            "Mac A Pro",
-            ID_A,
-            Kind::Dir,
-        )
-        .unwrap();
+        let repo = Repo::init(home.path(), "proj-claude", root.path(), "Mac A Pro", ID_A).unwrap();
         write(&repo.staging, "elsewhere.json", b"untouched");
         std::os::unix::fs::symlink("elsewhere.json", repo.staging.join("settings.json")).unwrap();
         repo.git.ok(&["add", "-A"]).unwrap();

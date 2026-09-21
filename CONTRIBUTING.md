@@ -24,6 +24,10 @@ pnpm mockapp:dev   # http://localhost:38422
 
 Pick a scenario from the right sidebar (or `?scenario=<id>`). **Never change `ui/src` components to make the browser happy** — fix `ui/mockapp/mocks/` instead. Details: [`crates/dotlore-app/ui/mockapp/README.md`](crates/dotlore-app/ui/mockapp/README.md).
 
+## Landing page (`website/`)
+
+`website/` is the public landing page: static HTML + CSS, no build, no tests. Open `website/index.html` in a browser. Do not couple it to `crates/dotlore-app/ui`. Details: [`website/README.md`](website/README.md).
+
 ## Invariants
 
 These are not style rules. The engine's correctness rests on them, and each one exists because breaking it loses or leaks someone's data.
@@ -38,7 +42,7 @@ These are not style rules. The engine's correctness rests on them, and each one 
 
 **The cloud is immutable.** Bundles are published under a temp name and installed with a no-replace operation. Nothing in the cloud folder is ever rewritten or deleted.
 
-**Live files are sacred.** Tracked files stay in place. Conflict markers never reach them, and neither do `.conflict-*` siblings or `.dotloreignore` — those live in staging only. `mirror::apply_to_root` fails closed: a missing snapshot expectation is an error, and a path that drifted from its expectation is skipped and reported, never overwritten.
+**Live files are sacred.** Tracked files stay in place. Conflict markers never reach them, and neither do `.conflict-*` siblings, `.dotloreignore`, or `.dotloreproject` — those live in staging only and never in a live root. `mirror::apply_to_root` fails closed: a missing snapshot expectation is an error, and a path that drifted from its expectation is skipped and reported, never overwritten.
 
 **Symlinks are never followed** in either direction, and a symlinked path is never replaced.
 
@@ -47,7 +51,7 @@ These are not style rules. The engine's correctness rests on them, and each one 
 Two inputs are attacker-controlled and must be treated as such:
 
 1. **The cloud folder.** `manifest.json`, `device.json`, bundle filenames, and device directory names were all written by another device. Anything used to build a filesystem path goes through the single-plain-component guard.
-2. **The change set applied to a live root.** It originates in another device's git bundle. Reject traversal (`..`, absolute, empty), and check the *source* file in staging too — git stores symlinks as mode-120000 blobs, so a checkout can put one there.
+2. **The change set applied to a live root.** It originates in another device's git bundle. Reject traversal (`..`, absolute, empty) and out-of-list paths, and check the *source* file in staging too — git stores symlinks as mode-120000 blobs, so a checkout can put one there.
 
 The files this tool syncs routinely hold API keys. Widening a file's permissions, leaving a temp copy behind, or logging content are security bugs, not cosmetics.
 

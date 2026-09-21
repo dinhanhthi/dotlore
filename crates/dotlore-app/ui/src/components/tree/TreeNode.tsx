@@ -1,8 +1,22 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Minus } from "lucide-react";
 
-import type { FileStatus, TreeNode as TreeNodeData } from "@/lib/tree";
-import { nodeStatus } from "@/lib/tree";
+import type { FileStatus, NodeWeight, TreeNode as TreeNodeData } from "@/lib/tree";
+import { nodeStatus, nodeWeight } from "@/lib/tree";
+import type { EntryView } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+import { coveringEntry, explicitEntry, formatBytes } from "./entries";
+
+function weightClass(weight: NodeWeight): string {
+  switch (weight) {
+    case "ok":
+      return "text-muted-foreground";
+    case "warning":
+      return "text-status-conflict";
+    case "danger":
+      return "text-destructive";
+  }
+}
 
 function statusDotClass(status: FileStatus): string {
   switch (status) {
@@ -23,6 +37,9 @@ type TreeNodeProps = {
   isOpen: (path: string, depth: number) => boolean;
   onToggle: (path: string, depth: number) => void;
   onSelect: (path: string) => void;
+  entries: EntryView[];
+  onUntrack: (entry: EntryView) => void;
+  maxFileBytes: number;
 };
 
 export function TreeNode({
@@ -33,10 +50,20 @@ export function TreeNode({
   isOpen,
   onToggle,
   onSelect,
+  entries,
+  onUntrack,
+  maxFileBytes,
 }: TreeNodeProps) {
   const status = nodeStatus(node, conflictSet);
+  const weight = nodeWeight(node, maxFileBytes);
   const selected = node.kind === "file" && selectedRel === node.path;
   const open = node.kind === "folder" && isOpen(node.path, depth);
+  const explicit = explicitEntry(node.path, entries);
+  const covering = coveringEntry(node.path, entries);
+  const overLimit =
+    node.kind === "file" && weight === "danger"
+      ? "Exceeds the size limit and is not being synced"
+      : undefined;
 
   return (
     <>
@@ -48,6 +75,7 @@ export function TreeNode({
           selected && "bg-muted",
         )}
         style={{ paddingLeft: 10 + depth * 14 }}
+        title={covering ? `Covered by ${covering.key}` : undefined}
       >
         {node.kind === "folder" ? (
           <button
@@ -74,6 +102,33 @@ export function TreeNode({
             <span className="min-w-0 truncate text-sm">{node.name}</span>
           </button>
         )}
+        <span
+          className={cn(
+            "ml-auto shrink-0 text-right tabular-nums text-xs",
+            weightClass(weight),
+          )}
+          title={overLimit}
+        >
+          {formatBytes(node.bytes)}
+        </span>
+        {explicit ? (
+          <button
+            type="button"
+            aria-label="Untrack"
+            onClick={(event) => {
+              event.stopPropagation();
+              onUntrack(explicit);
+            }}
+            className={cn(
+              "shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground",
+              "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
+            )}
+          >
+            <Minus aria-hidden className="size-3.5" />
+          </button>
+        ) : covering ? (
+          <span className="sr-only">Covered by {covering.key}</span>
+        ) : null}
         <StatusMark status={status} />
       </div>
       {open &&
@@ -87,6 +142,9 @@ export function TreeNode({
             isOpen={isOpen}
             onToggle={onToggle}
             onSelect={onSelect}
+            entries={entries}
+            onUntrack={onUntrack}
+            maxFileBytes={maxFileBytes}
           />
         ))}
     </>
@@ -96,7 +154,7 @@ export function TreeNode({
 function StatusMark({ status }: { status: FileStatus }) {
   return (
     <span
-      className="ml-auto flex w-4 shrink-0 items-center justify-center"
+      className="flex w-4 shrink-0 items-center justify-center"
       aria-label={status}
     >
       <span
