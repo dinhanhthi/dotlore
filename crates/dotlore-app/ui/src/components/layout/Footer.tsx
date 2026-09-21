@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 
-import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
 import { SettingsPopover } from "@/components/settings/SettingsPopover";
 import { Button } from "@/components/ui/button";
 import {
@@ -59,14 +58,6 @@ function aggregateStatus(
   return { glyph: "dot", color: "bg-status-synced", text: "Synced" };
 }
 
-/** `~/Library/.../CloudDocs` — keep first dir after home and the last segment. */
-export function shortenProvider(path: string): string {
-  const tilde = path.replace(/^\/Users\/[^/]+/, "~");
-  const parts = tilde.split("/").filter((p) => p.length > 0);
-  if (parts.length <= 3) return tilde;
-  return `${parts[0]}/${parts[1]}/.../${parts[parts.length - 1]}`;
-}
-
 export function Footer() {
   const {
     roots,
@@ -81,8 +72,6 @@ export function Footer() {
   const status = aggregateStatus(providerDir, roots);
   const filesTracked = Object.values(trackedBySlug).reduce((n, c) => n + c, 0);
   const conflicts = roots.reduce((n, r) => n + conflictCount(r.status), 0);
-  const shortProvider =
-    providerDir === null ? "No folder" : shortenProvider(providerDir);
   const selected = roots.find((row) => row.slug === selectedSlug) ?? null;
   const statusKey = selected ? JSON.stringify(selected.status) : "";
 
@@ -204,25 +193,7 @@ export function Footer() {
           conflicts
         </div>
       )}
-      <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
-        <div className="flex min-w-0 items-center gap-1">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  className="min-w-0 truncate text-left font-mono text-xs text-muted-foreground"
-                />
-              }
-            >
-              {shortProvider}
-            </TooltipTrigger>
-            <TooltipContent>
-              {providerDir ?? "No cloud folder set"}
-            </TooltipContent>
-          </Tooltip>
-          <RevealInFinderButton path={providerDir} />
-        </div>
+      <div className="flex min-w-0 flex-1 items-center justify-end">
         <SettingsPopover />
       </div>
     </footer>
