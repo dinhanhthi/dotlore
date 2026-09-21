@@ -41,7 +41,7 @@ import {
   type PatternCatalog,
 } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
-import { readTheme, writeTheme, type Theme } from "@/lib/theme";
+import { useTheme } from "@/lib/theme";
 
 const SETTINGS_TABS = [
   { id: "general", label: "General" },
@@ -302,7 +302,6 @@ export function SettingsNeverList() {
   return (
     <SettingsSeedList
       id="default-ignore"
-      label="Default never-list"
       hint="Applies the next time a project or agent folder is added. One list for projects and agent folders."
       lines={lines}
       disabled={busy}
@@ -321,7 +320,7 @@ function SettingsGeneral({
 }) {
   const { providerDir, busy } = useRoots();
   const [loginOn, setLoginOn] = useState(false);
-  const [theme, setTheme] = useState<Theme>(() => readTheme());
+  const [theme, setTheme] = useTheme();
 
   useEffect(() => {
     void loginItemEnabled()
@@ -395,10 +394,7 @@ function SettingsGeneral({
               variant={theme === "light" ? "secondary" : "ghost"}
               size="xs"
               aria-pressed={theme === "light"}
-              onClick={() => {
-                setTheme("light");
-                writeTheme("light");
-              }}
+              onClick={() => setTheme("light")}
             >
               Light
             </Button>
@@ -407,10 +403,7 @@ function SettingsGeneral({
               variant={theme === "dark" ? "secondary" : "ghost"}
               size="xs"
               aria-pressed={theme === "dark"}
-              onClick={() => {
-                setTheme("dark");
-                writeTheme("dark");
-              }}
+              onClick={() => setTheme("dark")}
             >
               Dark
             </Button>
@@ -476,9 +469,9 @@ export function SettingsPanel({
       </DialogHeader>
       <div
         className={
-          tab === "patterns"
-            ? "flex h-[28rem] min-h-0 flex-col overflow-hidden px-6 pt-5 pb-7"
-            : "h-[28rem] overflow-y-auto px-6 pt-5 pb-7"
+          tab === "general"
+            ? "h-[28rem] overflow-y-auto px-6 pt-5 pb-7"
+            : "flex h-[28rem] min-h-0 flex-col overflow-hidden px-6 pt-5 pb-7"
         }
       >
         {tab === "general" ? (
@@ -503,6 +496,7 @@ export function SettingsPanel({
             role="tabpanel"
             id="settings-panel-never"
             aria-labelledby="settings-tab-never"
+            className="flex min-h-0 flex-1 flex-col"
           >
             <SettingsNeverList />
           </div>

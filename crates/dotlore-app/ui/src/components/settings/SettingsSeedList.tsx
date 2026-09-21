@@ -112,24 +112,14 @@ export function SettingsSeedList({
   );
 
   return (
-    <div
-      className={
-        catalog ? "flex min-h-0 flex-1 flex-col gap-1.5" : "flex flex-col gap-1.5"
-      }
-    >
+    <div className="flex min-h-0 flex-1 flex-col gap-1.5">
       {label ? (
         <label htmlFor={id} className="text-sm">
           {label}
         </label>
       ) : null}
       <p className="text-xs text-muted-foreground">{hint}</p>
-      <div
-        className={
-          catalog
-            ? "mt-4 flex min-h-0 flex-1 flex-col gap-3"
-            : "mt-4 flex flex-col gap-3"
-        }
-      >
+      <div className="mt-4 flex min-h-0 flex-1 flex-col gap-3">
         {catalog ? (
           <div className="flex items-center gap-2">
             {catalog}
@@ -138,13 +128,8 @@ export function SettingsSeedList({
         ) : (
           search
         )}
-        {catalog ? addRow : null}
-        {catalog ? (
-          <div className="min-h-0 flex-1 overflow-y-auto">{list}</div>
-        ) : (
-          list
-        )}
-        {catalog ? null : addRow}
+        {addRow}
+        <div className="min-h-0 flex-1 overflow-y-auto">{list}</div>
       </div>
     </div>
   );

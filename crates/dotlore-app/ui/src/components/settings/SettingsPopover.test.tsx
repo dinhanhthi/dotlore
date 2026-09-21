@@ -100,7 +100,7 @@ describe("SettingsNeverList", () => {
     expect(html).toContain("Search");
     expect(html).toContain("Add an entry");
     expect(html).not.toContain("DropdownMenuRadioGroup");
-    expect(html).toContain("never-list");
+    expect(html).not.toContain("Default never-list");
     expect(html).toContain("agent folders");
   });
 });
