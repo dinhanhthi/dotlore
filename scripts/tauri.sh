@@ -20,5 +20,17 @@ fi
 # cargo build of the app crate needs the sidecar on disk.
 bash "$root/scripts/sidecar.sh"
 
+# macOS Dock names a bare Mach-O after its filename. `pnpm tauri build`
+# already exec'd scripts/build.sh above, so this runner is dev-only.
+if [ "$(uname -s)" = "Darwin" ]; then
+	host="$(rustc -vV | sed -n 's/^host: //p')"
+	if [ -z "$host" ]; then
+		echo "error: could not read rustc host triple" >&2
+		exit 1
+	fi
+	runner_var="CARGO_TARGET_$(printf '%s' "$host" | tr '[:lower:]-' '[:upper:]_')_RUNNER"
+	export "$runner_var=$root/scripts/dev-dock-bundle.sh"
+fi
+
 cd "$root/crates/dotlore-app"
 exec "$tauri" "$@"
