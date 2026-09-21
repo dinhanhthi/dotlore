@@ -25,6 +25,7 @@ import {
   conflicts as fetchConflicts,
   gitMissing as fetchGitMissing,
   getWorkSnapshot,
+  importInstalledAgents,
   listLinkable,
   listRoots,
   listenStatus,
@@ -45,6 +46,18 @@ import {
 } from "@/lib/roots";
 import { readStarred, toggleStarred } from "@/lib/starred";
 import type { ConflictView, RootRow } from "@/lib/types";
+
+/** Import catalog agents when a provider is set. Failures stay on the banner; refresh still runs. */
+async function importAgentsWhenReady(dir: string | null): Promise<void> {
+  if (dir === null) return;
+  try {
+    const report = await importInstalledAgents();
+    const first = report.failed[0];
+    if (first) setBanner(first.message);
+  } catch {
+    // `run` already stored the command error on the banner.
+  }
+}
 
 function overlayStatuses(rows: RootRow[], live: RootRow[]): RootRow[] {
   if (live.length === 0) return rows;
@@ -202,6 +215,8 @@ export function App() {
         providerDir,
         gitMissing,
       }));
+      await importAgentsWhenReady(providerDir);
+      if (cancelled) return;
       await refreshCombined();
       if (!cancelled) setReady(true);
     })();
@@ -313,10 +328,12 @@ export function App() {
       const providerDir = await fetchProviderDir().catch(
         (): string | null => dir,
       );
+      const resolved = providerDir ?? dir;
       setState((current) => ({
         ...current,
-        providerDir: providerDir ?? dir,
+        providerDir: resolved,
       }));
+      await importAgentsWhenReady(resolved);
       await refreshCombined();
     })();
   }, [refreshCombined]);

@@ -6,6 +6,7 @@ import type {
   ConflictView,
   EntryView,
   FileContent,
+  ImportAgentsDto,
   InspectedEntryDto,
   LinkableRow,
   PickerRow,
@@ -134,6 +135,10 @@ export function setProvider(dir: string): Promise<void> {
 
 export function addRoot(path: string, slug?: string): Promise<string> {
   return run(() => invoke("add_root", { path, slug: slug ?? null }));
+}
+
+export function importInstalledAgents(): Promise<ImportAgentsDto> {
+  return run(() => invoke("import_installed_agents"));
 }
 
 export function linkRoot(slug: string, path: string): Promise<void> {

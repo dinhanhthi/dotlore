@@ -150,6 +150,13 @@ impl PartialEq<&str> for AddRootReport {
     }
 }
 
+/// What [`Engine::import_installed_agents`] added, and the homes it could not.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportAgentsReport {
+    pub added: Vec<String>,
+    pub failed: Vec<(PathBuf, String)>,
+}
+
 /// Preview of a path the user may add. `bytes` excludes ignored, unsafe,
 /// and over-file-limit content.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -316,6 +323,35 @@ impl Engine {
         })
     }
 
+    /// Add each installed catalog agent home that is not already tracked or
+    /// dismissed. One failure is recorded and the rest still run.
+    ///
+    /// The home lock is taken only to reload the skip lists. [`add_root`]
+    /// locks again itself, and that lock is not reentrant.
+    pub fn import_installed_agents(&mut self) -> Result<ImportAgentsReport> {
+        let known = {
+            let g = config::lock(&self.home)?;
+            self.reload(&g)?;
+            let mut known: Vec<PathBuf> = self.cfg.roots.iter().map(|r| r.path.clone()).collect();
+            known.extend(self.cfg.dismissed_agents.iter().cloned());
+            drop(g);
+            known
+        };
+
+        let mut added = Vec::new();
+        let mut failed = Vec::new();
+        for path in project::installed_agent_dirs(&self.home_dir) {
+            if known.iter().any(|stored| same_agent_path(stored, &path)) {
+                continue;
+            }
+            match self.add_root(&path, None) {
+                Ok(report) => added.push(report.slug),
+                Err(e) => failed.push((path, e.to_string())),
+            }
+        }
+        Ok(ImportAgentsReport { added, failed })
+    }
+
     /// Adopt an existing cloud slug onto a local path.
     pub fn link_root(&mut self, slug: &str, path: &Path) -> Result<RootStatus> {
         let g = config::lock(&self.home)?;
@@ -348,13 +384,24 @@ impl Engine {
 
     /// Stop tracking a root. The staging repo is kept, so re-linking is cheap
     /// and nothing that was never published is thrown away.
+    ///
+    /// A removed catalog agent home is appended to `dismissed_agents` so a
+    /// later import leaves it out. Other roots are not.
     pub fn remove_root(&mut self, slug: &str) -> Result<()> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
-        let before = self.cfg.roots.len();
-        self.cfg.roots.retain(|r| r.slug != slug);
-        if self.cfg.roots.len() == before {
+        let Some(removed) = self.cfg.roots.iter().find(|r| r.slug == slug).cloned() else {
             bail!("no tracked root with slug {slug}");
+        };
+        self.cfg.roots.retain(|r| r.slug != slug);
+        if is_catalog_agent(&self.home_dir, &removed.path)
+            && !self
+                .cfg
+                .dismissed_agents
+                .iter()
+                .any(|p| same_agent_path(p, &removed.path))
+        {
+            self.cfg.dismissed_agents.push(removed.path);
         }
         self.save(&g)
     }
@@ -1056,6 +1103,11 @@ impl Engine {
         self.cfg
             .roots
             .retain(|r| r.slug != root.slug && r.path != root.path);
+        // Adding the path again is the only way back onto the import list.
+        // Cleared here so the root and the shorter dismissal list share this save.
+        self.cfg
+            .dismissed_agents
+            .retain(|p| !same_agent_path(p, &root.path));
         self.cfg.roots.push(root);
         self.save(g)
     }
@@ -1406,6 +1458,35 @@ fn needs_merge(repo: &Repo, key: &str, device: &str) -> Result<bool> {
         return Ok(false);
     }
     Ok(true)
+}
+
+/// True when `stored` is one of the catalog locations, whether or not that
+/// directory still exists. Comparison uses the canonical form [`add_root`]
+/// stores (`resolve_target`), including a missing final component.
+fn is_catalog_agent(home_dir: &Path, stored: &Path) -> bool {
+    project::agent_catalog(home_dir)
+        .iter()
+        .any(|candidate| same_agent_path(candidate, stored))
+}
+
+/// Path equality after the canonicalization [`add_root`] applies.
+///
+/// The final component is not followed, so a removed directory and a
+/// symlink left in its place still match the path that was stored.
+fn same_agent_path(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (catalog_stored_path(a), catalog_stored_path(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn catalog_stored_path(path: &Path) -> Option<PathBuf> {
+    let name = path.file_name()?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty())?;
+    Some(parent.canonicalize().ok()?.join(name))
 }
 
 fn root_present(path: &Path) -> bool {
@@ -3057,5 +3138,133 @@ mod tests {
             .unwrap()
             .iter()
             .any(|e| e.key == "docs/"));
+    }
+
+    /// `home_dir` is canonical so `default_slug` sees a parent equal to it
+    /// (`~/.claude` → `home-claude`). A TempDir path on macOS is not.
+    fn agent_engine(provider: &Path, user_home: &Path) -> (TempDir, Engine) {
+        let home_dir = user_home.canonicalize().unwrap();
+        let home = TempDir::new().unwrap();
+        let cfg = Config {
+            device_id: "a".repeat(32),
+            device_name: "Mac A Pro".into(),
+            provider_dir: Some(provider.to_path_buf()),
+            ..Default::default()
+        };
+        cfg.save(home.path()).unwrap();
+        let engine = Engine::new(home.path(), &home_dir, cfg).unwrap();
+        (home, engine)
+    }
+
+    #[test]
+    fn import_installed_agents_adds_an_existing_home_and_is_idempotent() {
+        let provider = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        fs::create_dir(user.path().join(".claude")).unwrap();
+        let (state, mut engine) = agent_engine(provider.path(), user.path());
+
+        let first = engine.import_installed_agents().unwrap();
+        assert_eq!(first.added, vec!["home-claude".to_string()]);
+        assert!(first.failed.is_empty(), "{:?}", first.failed);
+
+        let second = engine.import_installed_agents().unwrap();
+        assert!(second.added.is_empty(), "{:?}", second.added);
+        assert!(second.failed.is_empty(), "{:?}", second.failed);
+
+        let cfg = Config::load(state.path()).unwrap();
+        assert_eq!(cfg.roots.len(), 1);
+        assert_eq!(cfg.roots[0].slug, "home-claude");
+    }
+
+    #[test]
+    fn import_installed_agents_skips_a_dismissed_path() {
+        let provider = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        fs::create_dir(user.path().join(".claude")).unwrap();
+        let (state, mut engine) = agent_engine(provider.path(), user.path());
+        engine.add_root(&user.path().join(".claude"), None).unwrap();
+        engine.remove_root("home-claude").unwrap();
+
+        let report = engine.import_installed_agents().unwrap();
+        assert!(report.added.is_empty(), "{:?}", report.added);
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        let cfg = Config::load(state.path()).unwrap();
+        assert!(cfg.roots.is_empty());
+        assert_eq!(cfg.dismissed_agents.len(), 1);
+    }
+
+    #[test]
+    fn remove_root_dismisses_a_catalog_agent() {
+        let provider = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let claude = user.path().join(".claude");
+        fs::create_dir(&claude).unwrap();
+        let (state, mut engine) = agent_engine(provider.path(), user.path());
+        engine.add_root(&claude, None).unwrap();
+        let stored = Config::load(state.path()).unwrap().roots[0].path.clone();
+        fs::remove_dir_all(&claude).unwrap();
+
+        engine.remove_root("home-claude").unwrap();
+        let cfg = Config::load(state.path()).unwrap();
+        assert!(cfg.roots.is_empty());
+        assert_eq!(cfg.dismissed_agents, vec![stored.clone()]);
+
+        let project = TempDir::new().unwrap();
+        fs::write(project.path().join("CLAUDE.md"), b"one\n").unwrap();
+        engine.add_root(project.path(), Some("proj")).unwrap();
+        engine.remove_root("proj").unwrap();
+        let cfg = Config::load(state.path()).unwrap();
+        assert!(cfg.roots.is_empty());
+        assert_eq!(cfg.dismissed_agents, vec![stored]);
+    }
+
+    #[test]
+    fn add_root_clears_a_dismissed_catalog_agent() {
+        let provider = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let claude = user.path().join(".claude");
+        fs::create_dir(&claude).unwrap();
+        let (state, mut engine) = agent_engine(provider.path(), user.path());
+        engine.add_root(&claude, None).unwrap();
+        engine.remove_root("home-claude").unwrap();
+        assert_eq!(
+            Config::load(state.path()).unwrap().dismissed_agents.len(),
+            1
+        );
+
+        engine.add_root(&claude, None).unwrap();
+        let cfg = Config::load(state.path()).unwrap();
+        assert!(cfg.dismissed_agents.is_empty());
+        assert_eq!(cfg.roots.len(), 1);
+        assert_eq!(cfg.roots[0].slug, "home-claude");
+    }
+
+    #[test]
+    fn import_installed_agents_continues_after_one_failure() {
+        let provider = TempDir::new().unwrap();
+        let user = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        fs::create_dir(user.path().join(".claude")).unwrap();
+        fs::create_dir(user.path().join(".codex")).unwrap();
+        let (_state, mut engine) = agent_engine(provider.path(), user.path());
+        engine.add_root(other.path(), Some("home-claude")).unwrap();
+
+        let report = engine.import_installed_agents().unwrap();
+        assert!(
+            report.failed.iter().any(|(path, err)| {
+                path.ends_with(".claude") && err.contains("already tracked")
+            }),
+            "{:?}",
+            report.failed
+        );
+        assert!(
+            !report
+                .failed
+                .iter()
+                .any(|(path, _)| path.ends_with(".codex")),
+            "{:?}",
+            report.failed
+        );
+        assert_eq!(report.added, vec!["home-codex".to_string()]);
     }
 }

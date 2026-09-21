@@ -74,6 +74,7 @@ fn main() {
             commands::sync_now,
             commands::set_provider,
             commands::add_root,
+            commands::import_installed_agents,
             commands::link_root,
             commands::remove_root,
             commands::recover_root,

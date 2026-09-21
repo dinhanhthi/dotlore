@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { LayoutGrid, Plus, Star } from "lucide-react";
+import { LayoutGrid, Plus, RefreshCw, Star } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { linkRoot, recoverRoot } from "@/lib/ipc";
+import { importInstalledAgents, linkRoot, recoverRoot, setBanner } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { useRoots } from "@/lib/roots";
 import { defaultSlug } from "@/lib/slug";
@@ -138,6 +138,19 @@ export function Sidebar() {
     setPendingAdd({ path, slug: defaultSlug(path) });
   }
 
+  async function refreshAgents() {
+    if (busy) return;
+    try {
+      const report = await importInstalledAgents();
+      const first = report.failed[0];
+      if (first) setBanner(first.message);
+    } catch {
+      // Banner is set by `run()`.
+      return;
+    }
+    await refreshRoots();
+  }
+
   async function handleRecover(slug: string) {
     if (busy) return;
     try {
@@ -217,11 +230,22 @@ export function Sidebar() {
           collapsed={collapsed.includes("agents")}
           onToggle={() => toggleCollapsed("agents")}
           action={
-            <AddSectionButton
-              label="Add agent"
-              disabled={busy}
-              onPick={() => void startAdd()}
-            />
+            <div className="flex items-center">
+              <AddSectionButton
+                label="Add agent"
+                disabled={busy}
+                onPick={() => void startAdd()}
+              />
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Refresh agents"
+                disabled={busy}
+                onClick={() => void refreshAgents()}
+              >
+                <RefreshCw aria-hidden />
+              </Button>
+            </div>
           }
         >
           {agents.map((row) => renderRoot(row, `sidebar-root-${row.slug}`))}
