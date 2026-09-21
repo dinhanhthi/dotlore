@@ -136,11 +136,11 @@ export function TreeNode({
           <ContextMenuItem
             onClick={() => {
               void revealItemInDir(composeLivePath(rootPath, node.path)).catch(() => {
-                // Path missing or Finder unavailable.
+                // Path missing or the file manager is unavailable.
               });
             }}
           >
-            Reveal in Finder
+            Go to location
           </ContextMenuItem>
           {target ? (
             <>

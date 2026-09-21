@@ -31,7 +31,7 @@ export function TitleBarActions() {
   function reveal() {
     if (!revealPath) return;
     void revealItemInDir(revealPath).catch(() => {
-      // Path missing or Finder unavailable.
+      // Path missing or the file manager is unavailable.
     });
   }
 
@@ -96,7 +96,7 @@ export function TitleBarActions() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-44">
             <DropdownMenuItem disabled={!revealPath} onClick={reveal}>
-              Reveal in Finder
+              Go to location
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

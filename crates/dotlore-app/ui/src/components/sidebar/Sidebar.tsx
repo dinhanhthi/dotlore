@@ -1,3 +1,4 @@
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
 import { LayoutGrid, Plus, RefreshCw, Star } from "lucide-react";
 
@@ -194,6 +195,15 @@ export function Sidebar() {
         onToggleStar={() => toggleStar(row.slug)}
         onLink={() => void handleLink(row.slug)}
         onRemove={() => setRemoveTarget(row)}
+        onReveal={
+          row.linked && row.path
+            ? () => {
+                void revealItemInDir(row.path).catch(() => {
+                  // Path missing or the file manager is unavailable.
+                });
+              }
+            : undefined
+        }
         writeDisabled={busy || seeding.some((item) => item.slug === row.slug)}
         onRecover={
           row.status.kind === "Error" ? () => void handleRecover(row.slug) : undefined

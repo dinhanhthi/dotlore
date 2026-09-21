@@ -18,11 +18,11 @@ export function RevealInFinderButton({ path }: { path: string | null }) {
             size="icon-xs"
             className="text-muted-foreground"
             disabled={path === null}
-            aria-label="Reveal in Finder"
+            aria-label="Go to location"
             onClick={() => {
               if (!path) return;
               void revealItemInDir(path).catch(() => {
-                // Path missing or Finder unavailable.
+                // Path missing or the file manager is unavailable.
               });
             }}
           />
@@ -30,7 +30,7 @@ export function RevealInFinderButton({ path }: { path: string | null }) {
       >
         <FolderOpen className="size-3.5" aria-hidden />
       </TooltipTrigger>
-      <TooltipContent>Reveal in Finder</TooltipContent>
+      <TooltipContent>Go to location</TooltipContent>
     </Tooltip>
   );
 }
