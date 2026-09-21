@@ -54,17 +54,15 @@ export function AddRootDialog({
         >
           <DialogHeader>
             <DialogTitle>Add to Dotlore</DialogTitle>
-            <DialogDescription>
+            <DialogDescription id="add-root-slug-label">
               Slug for{" "}
               <span className="font-mono break-all text-foreground">{path}</span>
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-1.5 py-2">
-            <label htmlFor="add-root-slug" className="text-label text-muted-foreground">
-              Slug
-            </label>
+          <div className="py-2">
             <Input
               id="add-root-slug"
+              aria-labelledby="add-root-slug-label"
               value={slug}
               onChange={(event) => setSlug(event.target.value)}
               autoComplete="off"
