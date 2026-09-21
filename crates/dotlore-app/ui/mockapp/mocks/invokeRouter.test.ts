@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { demoFiles } from "../fixtures/files";
+import { LINKABLE_ROWS, demoRoots } from "../fixtures/roots";
+import { afterMountFor } from "../scenarios/apply";
+import { scenarios } from "../scenarios/index";
 import { route } from "./invokeRouter";
 import { MOCK_FILE_PATHS } from "./plugin-dialog";
-import { resetStore, store } from "./store";
+import { emptyPopulated, resetStore, store } from "./store";
 
 beforeEach(() => {
   resetStore({ roots: [], files: {}, conflicts: {} });
@@ -40,9 +44,91 @@ describe("add_root", () => {
     await route("add_root", { path: "/Users/demo/Projects/notes" });
     expect(store.roots[0]).toEqual(expect.objectContaining({ linked: true }));
   });
+
+  it("seeds entries from defaultPatterns, matching files or empty keys", async () => {
+    resetStore({
+      roots: [],
+      files: {
+        notes: {
+          "CLAUDE.md": {
+            text: "hi\n",
+            binary: false,
+            too_large: false,
+            bytes: 3,
+            state: "Synced",
+          },
+          "README.md": {
+            text: "nope\n",
+            binary: false,
+            too_large: false,
+            bytes: 5,
+            state: "Synced",
+          },
+        },
+      },
+      conflicts: {},
+      entries: { notes: [] },
+      defaultPatterns: ["CLAUDE.md", "docs/"],
+    });
+    await route("add_root", { path: "/Users/demo/Projects/notes", slug: "notes" });
+    expect(store.entries.notes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "CLAUDE.md", kind: "file" }),
+        expect.objectContaining({ key: "docs/", kind: "directory" }),
+      ]),
+    );
+    expect(store.entries.notes?.some((entry) => entry.key === "README.md")).toBe(
+      false,
+    );
+    expect(store.files.notes?.["CLAUDE.md"]?.text).toBe("hi\n");
+    expect(store.files.notes?.["docs/"]).toBeUndefined();
+  });
+
+  it("creates empty tracked keys for default pattern names when no files match", async () => {
+    await route("add_root", {
+      path: "/Users/demo/Projects/fresh",
+      slug: "fresh",
+    });
+    expect(store.entries.fresh?.length).toBeGreaterThan(0);
+    expect(store.entries.fresh).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "CLAUDE.md", kind: "file" }),
+      ]),
+    );
+    expect(store.files.fresh?.["CLAUDE.md"]).toEqual(
+      expect.objectContaining({ text: "", bytes: 0, state: "Synced" }),
+    );
+  });
 });
 
 describe("tracked_files", () => {
+  it("omits files outside the include-list", async () => {
+    resetStore({
+      files: {
+        demo: {
+          "CLAUDE.md": {
+            text: "hi\n",
+            binary: false,
+            too_large: false,
+            bytes: 3,
+            state: "Synced",
+          },
+          "README.md": {
+            text: "nope\n",
+            binary: false,
+            too_large: false,
+            bytes: 5,
+            state: "Synced",
+          },
+        },
+      },
+      entries: { demo: [{ key: "CLAUDE.md", kind: "file", covering: [] }] },
+    });
+    await expect(route("tracked_files", { slug: "demo" })).resolves.toEqual([
+      { rel: "CLAUDE.md", bytes: 3, state: "Synced" },
+    ]);
+  });
+
   it("returns TrackedFile records, not bare paths", async () => {
     resetStore({
       files: {
@@ -118,7 +204,8 @@ describe("remove_root", () => {
     expect(store.pickerExtra.demo).toBeUndefined();
 
     await route("add_root", { path: "/Users/demo/Projects/demo", slug: "demo" });
-    expect(store.entries.demo).toEqual([]);
+    expect(store.entries.demo?.some((entry) => entry.key === "a.md")).toBe(false);
+    expect(store.entries.demo?.length).toBeGreaterThan(0);
   });
 });
 
@@ -142,6 +229,8 @@ describe("list_entries", () => {
       { key: ".claude/settings.json", kind: "file", covering: [] },
       { key: "CLAUDE.md", kind: "file", covering: [] },
       { key: "docs/architecture.md", kind: "file", covering: [] },
+      { key: "docs/dump.bin", kind: "file", covering: [] },
+      { key: "docs/video.bin", kind: "file", covering: [] },
     ]);
   });
 });
@@ -356,5 +445,137 @@ describe("settings defaults", () => {
     expect(store.maxSeedFolderMb).toBe(200);
     expect(store.defaultPatterns).not.toEqual(["gone"]);
     expect(store.defaultIgnore).not.toBe("gone");
+  });
+});
+
+const MOCK_STATE_KEYS = [
+  "conflicts",
+  "defaultIgnore",
+  "defaultPatterns",
+  "entries",
+  "files",
+  "gitMissing",
+  "linkable",
+  "loginItem",
+  "maxFileMb",
+  "maxSeedFolderMb",
+  "pickerExtra",
+  "providerDir",
+  "roots",
+] as const;
+
+describe("store fixtures", () => {
+  it("emptyPopulated and resetStore enumerate every MockState field", () => {
+    const seed = emptyPopulated();
+    expect(Object.keys(seed).sort()).toEqual([...MOCK_STATE_KEYS]);
+    expect(seed.linkable).toEqual(LINKABLE_ROWS);
+    expect(seed.defaultPatterns.length).toBeGreaterThan(0);
+    expect(seed.defaultIgnore.length).toBeGreaterThan(0);
+    expect(seed.maxFileMb).toBe(50);
+    expect(seed.maxSeedFolderMb).toBe(200);
+
+    resetStore({
+      providerDir: "/tmp/cloud",
+      gitMissing: true,
+      loginItem: false,
+      roots: [],
+      files: {},
+      conflicts: {},
+      linkable: [],
+      entries: {},
+      pickerExtra: {},
+      defaultPatterns: ["only"],
+      defaultIgnore: "x",
+      maxFileMb: 7,
+      maxSeedFolderMb: 8,
+    });
+    expect(Object.keys(store).sort()).toEqual([...MOCK_STATE_KEYS]);
+    expect(store.linkable).toEqual([]);
+    expect(store.defaultPatterns).toEqual(["only"]);
+    expect(store.defaultIgnore).toBe("x");
+    expect(store.maxFileMb).toBe(7);
+    expect(store.maxSeedFolderMb).toBe(8);
+  });
+});
+
+describe("demo fixtures", () => {
+  it("demoRoots has linked rows plus a fifth unlinked cloud row", () => {
+    const roots = demoRoots();
+    expect(roots).toHaveLength(5);
+    const linked = roots.filter((row) => row.linked);
+    const unlinked = roots.filter((row) => !row.linked);
+    expect(linked).toHaveLength(4);
+    expect(unlinked).toHaveLength(1);
+    expect(unlinked[0]).toEqual({
+      slug: LINKABLE_ROWS[0]!.slug,
+      path: "",
+      name: LINKABLE_ROWS[0]!.display_name,
+      is_agent: LINKABLE_ROWS[0]!.is_agent,
+      linked: false,
+      status: { kind: "Pending" },
+    });
+    for (const row of linked) {
+      expect(row.linked).toBe(true);
+      expect(row.path.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("demoFiles carry bytes and state in each weight class", () => {
+    const limit = 50 * 1024 * 1024;
+    const records = Object.values(demoFiles()).flatMap((group) =>
+      Object.values(group),
+    );
+    expect(records.length).toBeGreaterThan(0);
+    for (const record of records) {
+      expect(typeof record.bytes).toBe("number");
+      expect(record.state).toMatch(/^(Synced|TooLarge|Pending)$/);
+    }
+    expect(
+      records.some(
+        (record) => record.state === "Synced" && (record.bytes ?? 0) < limit / 2,
+      ),
+    ).toBe(true);
+    expect(
+      records.some((record) => {
+        const bytes = record.bytes ?? 0;
+        return (
+          record.state !== "TooLarge" &&
+          bytes >= limit * 0.55 &&
+          bytes <= limit * 0.65
+        );
+      }),
+    ).toBe(true);
+    expect(records.some((record) => record.state === "TooLarge")).toBe(true);
+  });
+
+  it("emptyPopulated entries cover every demo file key", () => {
+    const seed = emptyPopulated();
+    for (const [slug, recs] of Object.entries(seed.files)) {
+      const entries = seed.entries[slug] ?? [];
+      for (const rel of Object.keys(recs)) {
+        const covered = entries.some((entry) => {
+          if (entry.kind === "file") return entry.key === rel;
+          const base = entry.key.replace(/\/$/, "");
+          return rel === base || rel.startsWith(`${base}/`);
+        });
+        expect(covered, `${slug}/${rel}`).toBe(true);
+      }
+    }
+  });
+});
+
+describe("mockapp scenarios", () => {
+  it("adds unlinked project, include-list editor, and oversized entry", () => {
+    const ids = scenarios.map((scenario) => scenario.id);
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        "unlinked-project",
+        "include-list-editor",
+        "oversized-entry",
+      ]),
+    );
+    expect(afterMountFor("unlinked-project")).toEqual(expect.any(Function));
+    expect(afterMountFor("include-list-editor")).toEqual(expect.any(Function));
+    expect(afterMountFor("oversized-entry")).toEqual(expect.any(Function));
   });
 });

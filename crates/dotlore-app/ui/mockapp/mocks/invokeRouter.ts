@@ -182,6 +182,37 @@ function listChildren(slug: string, rel: string): PickerRow[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function patternMatchesRel(pattern: string, rel: string): boolean {
+  if (pattern.endsWith("/")) {
+    const base = pattern.replace(/\/$/, "");
+    return rel === base || rel.startsWith(`${base}/`);
+  }
+  return rel === pattern;
+}
+
+function emptyFileRecord(): FileRecord {
+  return { text: "", binary: false, too_large: false, bytes: 0, state: "Synced" };
+}
+
+/** Seed include-list entries from `defaultPatterns` — match fixture files or create empty keys. */
+function seedEntriesFromDefaults(slug: string): EntryView[] {
+  const files = store.files[slug] ?? (store.files[slug] = {});
+  const seeded: EntryView[] = [];
+  for (const pattern of store.defaultPatterns) {
+    const isDir = pattern.endsWith("/");
+    const matches = Object.keys(files).filter((rel) => patternMatchesRel(pattern, rel));
+    if (matches.length === 0 && !isDir) {
+      files[pattern] = files[pattern] ?? emptyFileRecord();
+    }
+    seeded.push({
+      key: pattern,
+      kind: isDir ? "directory" : "file",
+      covering: [],
+    });
+  }
+  return withCovering(seeded);
+}
+
 function confirmedFolderBytes(args: Record<string, unknown>): number | null {
   if (typeof args.confirmedFolderBytes === "number") {
     return args.confirmedFolderBytes;
@@ -267,7 +298,7 @@ const handlers: Record<
       status: { kind: "Synced" },
     });
     store.files[slug] = store.files[slug] ?? {};
-    store.entries[slug] = store.entries[slug] ?? [];
+    store.entries[slug] = seedEntriesFromDefaults(slug);
     emitStatus();
     return slug;
   },

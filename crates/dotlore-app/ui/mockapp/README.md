@@ -20,14 +20,17 @@ pnpm mockapp:dev   # http://localhost:38422
 
 Pick a scenario from the right sidebar (or `?scenario=<id>`).
 
-| ID            | Screen                                      |
-| ------------- | ------------------------------------------- |
-| `setup`       | Provider setup (no cloud folder yet)        |
-| `empty`       | Provider set, no tracked roots              |
-| `populated`   | Default — `dotlore` + `CLAUDE.md`           |
-| `conflicts`   | Conflict resolver on `notes` / `CLAUDE.md`  |
-| `all-projects`| All projects grid                           |
-| `git-missing` | Populated data plus the git-missing banner  |
+| ID                    | Screen                                              |
+| --------------------- | --------------------------------------------------- |
+| `setup`               | Provider setup (no cloud folder yet)                |
+| `empty`               | Provider set, no tracked roots                      |
+| `populated`           | Default — `dotlore` + `CLAUDE.md`                   |
+| `conflicts`           | Conflict resolver on `notes` / `CLAUDE.md`          |
+| `all-projects`        | All projects grid                                   |
+| `git-missing`         | Populated data plus the git-missing banner          |
+| `unlinked-project`    | Cloud project in the sidebar, not yet bound         |
+| `include-list-editor` | Settings default patterns + tree Add to track       |
+| `oversized-entry`     | `dump.bin` selected — red TooLarge weight           |
 
 ## Adding fixtures
 

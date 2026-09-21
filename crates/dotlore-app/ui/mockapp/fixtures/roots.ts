@@ -45,5 +45,13 @@ export function demoRoots(): RootRow[] {
       linked: true,
       status: { kind: "RootMissing" },
     },
+    {
+      slug: LINKABLE_ROWS[0]!.slug,
+      path: "",
+      name: LINKABLE_ROWS[0]!.display_name,
+      is_agent: LINKABLE_ROWS[0]!.is_agent,
+      linked: false,
+      status: { kind: "Pending" },
+    },
   ];
 }

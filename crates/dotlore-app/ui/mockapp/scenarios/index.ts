@@ -7,6 +7,9 @@ export const scenarios: Scenario[] = [
   { id: "conflicts", label: "Conflicts", detail: "Resolver" },
   { id: "all-projects", label: "All projects", detail: "Project grid" },
   { id: "git-missing", label: "Git missing", detail: "Install-git banner" },
+  { id: "unlinked-project", label: "Unlinked project", detail: "Cloud project not yet bound" },
+  { id: "include-list-editor", label: "Include-list editor", detail: "Default patterns and Add to track" },
+  { id: "oversized-entry", label: "Oversized entry", detail: "TooLarge file weight" },
 ];
 
 export const defaultScenarioId = "populated";

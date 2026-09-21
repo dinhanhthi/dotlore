@@ -18,6 +18,15 @@ const seeds: Record<string, ScenarioSeed> = {
   conflicts: {},
   "all-projects": {},
   "git-missing": { gitMissing: true },
+  "unlinked-project": {},
+  "include-list-editor": {
+    pickerExtra: {
+      dotlore: {
+        "": [{ name: "NOTES.md", kind: "file", rel: "NOTES.md" }],
+      },
+    },
+  },
+  "oversized-entry": {},
 };
 
 function clickWhen(find: () => HTMLElement | null, timeoutMs = 2500): void {
@@ -65,6 +74,40 @@ export function afterMountFor(id: string): (() => void) | undefined {
   if (id === "all-projects") {
     return () => {
       clickWhen(() => buttonByText("All projects"));
+    };
+  }
+  if (id === "unlinked-project") {
+    return () => {
+      clickWhen(() =>
+        document.querySelector<HTMLElement>("#sidebar-root-old-mac-notes button"),
+      );
+    };
+  }
+  if (id === "include-list-editor") {
+    return () => {
+      clickWhen(() =>
+        document.querySelector<HTMLElement>("#sidebar-root-dotlore button"),
+      );
+      window.setTimeout(() => {
+        clickWhen(() =>
+          document.querySelector<HTMLElement>('[aria-label="Settings"]'),
+        );
+      }, 80);
+      window.setTimeout(() => {
+        clickWhen(() =>
+          document.querySelector<HTMLElement>('[aria-label="Add to track"]'),
+        );
+      }, 160);
+    };
+  }
+  if (id === "oversized-entry") {
+    return () => {
+      clickWhen(() =>
+        document.querySelector<HTMLElement>("#sidebar-root-dotlore button"),
+      );
+      window.setTimeout(() => {
+        clickWhen(() => buttonByText("dump.bin"));
+      }, 80);
     };
   }
   return undefined;

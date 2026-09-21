@@ -41,57 +41,77 @@ const NOTES_CLAUDE = `# Daily notes
 const NOTES_JOURNAL = `Morning. Styled the sidebar, then the file tree.
 `;
 
+const LIMIT_BYTES = 50 * 1024 * 1024;
+/** ~60 % of the 50 MB file ceiling — warning (yellow) in the tree. */
+const WARNING_BYTES = Math.round(LIMIT_BYTES * 0.6);
+/** Well over the 50 MB ceiling — danger (red) / TooLarge. */
+const TOO_LARGE_BYTES = 80 * 1024 * 1024;
+
+function textFile(text: string): FileRecord {
+  return {
+    text,
+    binary: false,
+    too_large: false,
+    bytes: new TextEncoder().encode(text).length,
+    state: "Synced",
+  };
+}
+
 export function demoFiles(): Record<string, Record<string, FileRecord>> {
   return {
     dotlore: {
-      "CLAUDE.md": { text: DOTLORE_CLAUDE, binary: false, too_large: false },
-      ".claude/settings.json": {
-        text: DOTLORE_SETTINGS,
-        binary: false,
+      "CLAUDE.md": textFile(DOTLORE_CLAUDE),
+      ".claude/settings.json": textFile(DOTLORE_SETTINGS),
+      "docs/architecture.md": textFile(DOTLORE_ARCH),
+      "docs/video.bin": {
+        text: null,
+        binary: true,
         too_large: false,
+        bytes: WARNING_BYTES,
+        state: "Synced",
       },
-      "docs/architecture.md": {
-        text: DOTLORE_ARCH,
-        binary: false,
-        too_large: false,
+      "docs/dump.bin": {
+        text: null,
+        binary: true,
+        too_large: true,
+        bytes: TOO_LARGE_BYTES,
+        state: "TooLarge",
       },
     },
     memlore: {
-      "CLAUDE.md": { text: MEMLORE_CLAUDE, binary: false, too_large: false },
-      "AGENTS.md": {
-        text: "Use the Memlore conventions in this repo.\n",
-        binary: false,
-        too_large: false,
-      },
+      "CLAUDE.md": textFile(MEMLORE_CLAUDE),
+      "AGENTS.md": textFile("Use the Memlore conventions in this repo.\n"),
     },
     notes: {
-      "CLAUDE.md": { text: NOTES_CLAUDE, binary: false, too_large: false },
-      "journal.md": { text: NOTES_JOURNAL, binary: false, too_large: false },
-      "assets/logo.png": { text: null, binary: true, too_large: false },
+      "CLAUDE.md": textFile(NOTES_CLAUDE),
+      "journal.md": textFile(NOTES_JOURNAL),
+      "assets/logo.png": {
+        text: null,
+        binary: true,
+        too_large: false,
+        bytes: 4096,
+        state: "Synced",
+      },
     },
     "missing-proj": {
-      "README.md": {
-        text: "This folder is gone on this Mac.\n",
-        binary: false,
-        too_large: false,
-      },
+      "README.md": textFile("This folder is gone on this Mac.\n"),
     },
   };
 }
 
 export function toFileContent(record: FileRecord): FileContent {
-  const bytes =
-    record.bytes ??
-    (record.text === null
+  const computed =
+    record.text === null
       ? record.binary
         ? 4096
         : 0
-      : new TextEncoder().encode(record.text).length);
+      : new TextEncoder().encode(record.text).length;
+  const bytes = record.bytes ?? (record.too_large ? 2_000_000 : computed);
   return {
     text: record.text,
     binary: record.binary,
     too_large: record.too_large,
-    bytes_len: record.too_large ? 2_000_000 : bytes,
+    bytes_len: bytes,
   };
 }
 
