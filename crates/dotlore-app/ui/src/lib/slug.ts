@@ -13,14 +13,12 @@ function sanitize(s: string): string {
 }
 
 /**
- * `<parent>-<name without leading dots>`, sanitized.
- * Matches core `default_slug` except the `home_dir` parent → `home` special case
- * (the UI does not have `$HOME` / state-dir).
+ * The chosen folder's name, leading dots stripped, then sanitized.
+ * `/Users/x/git/dotlore` → `dotlore`, `/a/myproj/.claude` → `claude`.
  */
 export function defaultSlug(path: string): string {
   const parts = path.split("/").filter((part) => part.length > 0);
   const name = (parts.at(-1) ?? "").replace(/^\.+/, "");
-  const parent = parts.at(-2) ?? "";
-  const slug = sanitize(`${parent}-${name}`);
+  const slug = sanitize(name);
   return slug.length > 0 ? slug : "root";
 }
