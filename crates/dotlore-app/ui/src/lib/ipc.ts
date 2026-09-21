@@ -5,10 +5,12 @@ import { errorMessage } from "./errors";
 import type {
   ConflictView,
   FileContent,
+  LinkableRow,
   ResolutionDto,
   ResolveResultDto,
   RootRow,
   StatusPayload,
+  TrackedFile,
 } from "./types";
 
 export type WorkSnapshot = {
@@ -64,8 +66,9 @@ export function listRoots(): Promise<RootRow[]> {
   return invoke("list_roots");
 }
 
-export function trackedFiles(slug: string): Promise<string[]> {
-  return invoke("tracked_files", { slug });
+export async function trackedFiles(slug: string): Promise<string[]> {
+  const files = await invoke<TrackedFile[]>("tracked_files", { slug });
+  return files.map((file) => file.rel);
 }
 
 export function readFile(slug: string, rel: string): Promise<FileContent> {
@@ -142,8 +145,9 @@ export function recoverRoot(slug: string): Promise<void> {
   return run(() => invoke("recover_root", { slug }));
 }
 
-export function listLinkable(): Promise<string[]> {
-  return invoke("list_linkable");
+export async function listLinkable(): Promise<string[]> {
+  const rows = await invoke<LinkableRow[]>("list_linkable");
+  return rows.map((row) => row.slug);
 }
 
 export function icloudDir(): Promise<string> {

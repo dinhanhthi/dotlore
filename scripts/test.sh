@@ -9,3 +9,4 @@ cd "$root"
 cargo test -p dotlore-core
 cargo test -p dotlore-app
 pnpm --dir crates/dotlore-app/ui exec vitest run
+bash scripts/reset-dev.test.sh

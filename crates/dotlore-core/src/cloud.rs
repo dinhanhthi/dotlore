@@ -16,19 +16,24 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, bail, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-/// What a tracked root is: a directory tree or a single file.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
-#[serde(rename_all = "lowercase")]
-pub enum Kind {
-    Dir,
-    File,
-}
-
 /// Per-slug metadata, written once by the device that creates the slug.
+///
+/// `display_name` and `is_agent` are write-once: the adding device records
+/// the folder name and `Root::is_agent(home_dir)` so an unlinked row can be
+/// grouped under AGENTS before any local path exists.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct Manifest {
     pub slug: String,
-    pub kind: Kind,
+    pub display_name: String,
+    pub is_agent: bool,
+}
+
+/// A slug directory plus the cleaned name and agent flag from its manifest.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SlugInfo {
+    pub slug: String,
+    pub display_name: String,
+    pub is_agent: bool,
 }
 
 /// One published bundle file.
@@ -72,7 +77,13 @@ impl Cloud {
         checked(&self.base, slug)
     }
 
-    /// Subdirectories of `base` that hold a `manifest.json`, sorted.
+    /// Subdirectories of `base` that hold a `manifest.json`, sorted by slug.
+    ///
+    /// Each row carries the directory name, the manifest's `display_name`
+    /// after `clean_name`, and `is_agent`. An unreadable manifest falls back
+    /// to the slug as the display name and `is_agent: false`. Listing reads
+    /// once with no retry: a cold Google Drive mount must not pay ~0.4 s
+    /// per slug.
     ///
     /// A directory name was written by another device, and every caller
     /// prints it: `dotlore slugs` today, the Phase 5 list next. A name with a
@@ -80,7 +91,7 @@ impl Cloud {
     /// print a slug that exists nowhere, and such a slug can never be linked
     /// anyway (`Repo::open` accepts `[a-z0-9-]` only). This sits with the other
     /// things `list_slugs` already skips silently: no manifest, non-UTF-8.
-    pub fn list_slugs(&self) -> Vec<String> {
+    pub fn list_slugs(&self) -> Vec<SlugInfo> {
         let mut out = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.base) {
             for e in entries.flatten() {
@@ -90,13 +101,28 @@ impl Cloud {
                         .to_str()
                         .filter(|n| !n.chars().any(char::is_control))
                     {
-                        out.push(name.to_string());
+                        out.push(self.slug_info(name));
                     }
                 }
             }
         }
-        out.sort();
+        out.sort_by(|a, b| a.slug.cmp(&b.slug));
         out
+    }
+
+    fn slug_info(&self, slug: &str) -> SlugInfo {
+        match self.read_manifest_once(slug) {
+            Some(m) => SlugInfo {
+                slug: slug.to_string(),
+                display_name: clean_name(&m.display_name),
+                is_agent: m.is_agent,
+            },
+            None => SlugInfo {
+                slug: slug.to_string(),
+                display_name: clean_name(slug),
+                is_agent: false,
+            },
+        }
     }
 
     /// A manifest whose `slug` disagrees with the directory it was read from
@@ -104,6 +130,13 @@ impl Cloud {
     pub fn read_manifest(&self, slug: &str) -> Option<Manifest> {
         let path = self.slug_dir(slug).ok()?.join("manifest.json");
         read_json_retry::<Manifest>(&path).filter(|m| m.slug == slug)
+    }
+
+    /// Single attempt. Listing uses this so a cold mount does not sleep
+    /// 2×200 ms per slug; `read_manifest` keeps the retry for fetch paths.
+    fn read_manifest_once(&self, slug: &str) -> Option<Manifest> {
+        let path = self.slug_dir(slug).ok()?.join("manifest.json");
+        read_json_once::<Manifest>(&path).filter(|m| m.slug == slug)
     }
 
     /// No-op when the manifest already exists.
@@ -282,10 +315,10 @@ impl Cloud {
     }
 }
 
-/// A device name comes from another device's `device.json`, so it is as
-/// untrusted as any other cloud byte, and every renderer prints it as one
-/// field of one line. Filtering here rather than in each renderer is why a
-/// control character cannot forge or hide a `conflicts` row.
+/// A device name or a manifest `display_name` comes from another device, so
+/// it is as untrusted as any other cloud byte, and every renderer prints it
+/// as one field of one line. Filtering here rather than in each renderer is
+/// why a control character cannot forge or hide a `conflicts` row.
 fn clean_name(s: &str) -> String {
     s.chars()
         .filter(|c| !c.is_control() && !is_bidi_control(*c))
@@ -351,14 +384,18 @@ fn write_once(path: &Path, bytes: &[u8]) -> Result<()> {
     res
 }
 
+fn read_json_once<T: DeserializeOwned>(path: &Path) -> Option<T> {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
 /// Three attempts 200 ms apart: Google Drive streams files in, so a read can
 /// fail or return a partial (unparseable) file for a moment.
 fn read_json_retry<T: DeserializeOwned>(path: &Path) -> Option<T> {
     for i in 0..3 {
-        if let Ok(bytes) = fs::read(path) {
-            if let Ok(v) = serde_json::from_slice::<T>(&bytes) {
-                return Some(v);
-            }
+        if let Some(v) = read_json_once(path) {
+            return Some(v);
         }
         if i < 2 {
             thread::sleep(Duration::from_millis(200));
@@ -370,6 +407,7 @@ fn read_json_retry<T: DeserializeOwned>(path: &Path) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
     use tempfile::TempDir;
 
     fn cloud(td: &TempDir) -> Cloud {
@@ -494,12 +532,13 @@ mod tests {
         // A manifest that lies about its own slug is not trusted.
         c.write_manifest_once(&Manifest {
             slug: "s".into(),
-            kind: Kind::Dir,
+            display_name: "s".into(),
+            is_agent: false,
         })
         .unwrap();
         fs::write(
             c.slug_dir("s").unwrap().join("manifest.json"),
-            br#"{"slug":"other","kind":"dir"}"#,
+            br#"{"slug":"other","display_name":"other","is_agent":false}"#,
         )
         .unwrap();
         assert_eq!(c.read_manifest("s"), None);
@@ -527,12 +566,14 @@ mod tests {
         let c = cloud(&td);
         let first = Manifest {
             slug: "s".into(),
-            kind: Kind::Dir,
+            display_name: "First".into(),
+            is_agent: false,
         };
         c.write_manifest_once(&first).unwrap();
         c.write_manifest_once(&Manifest {
             slug: "s".into(),
-            kind: Kind::File,
+            display_name: "Second".into(),
+            is_agent: false,
         })
         .unwrap();
 
@@ -545,12 +586,20 @@ mod tests {
         let c = cloud(&td);
         c.write_manifest_once(&Manifest {
             slug: "beta".into(),
-            kind: Kind::Dir,
+            display_name: "Beta".into(),
+            is_agent: false,
         })
         .unwrap();
         fs::create_dir_all(c.slug_dir("alpha").unwrap()).unwrap();
 
-        assert_eq!(c.list_slugs(), vec!["beta".to_string()]);
+        assert_eq!(
+            c.list_slugs(),
+            vec![SlugInfo {
+                slug: "beta".into(),
+                display_name: "Beta".into(),
+                is_agent: false,
+            }]
+        );
     }
 
     /// A slug directory name is another device's bytes, and `dotlore slugs`
@@ -562,7 +611,8 @@ mod tests {
         for slug in ["good", "\u{1b}]0;evil\u{7}", "two\rlines"] {
             c.write_manifest_once(&Manifest {
                 slug: slug.into(),
-                kind: Kind::Dir,
+                display_name: slug.into(),
+                is_agent: false,
             })
             .unwrap();
         }
@@ -570,7 +620,73 @@ mod tests {
         // The directories exist — `plain_name` allows an ESC — so this is the
         // listing dropping them, not the write failing.
         assert_eq!(dir_names(&c.base).len(), 3);
-        assert_eq!(c.list_slugs(), vec!["good".to_string()]);
+        assert_eq!(
+            c.list_slugs(),
+            vec![SlugInfo {
+                slug: "good".into(),
+                display_name: "good".into(),
+                is_agent: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn list_slugs_reports_display_names_and_does_not_retry_an_unreadable_manifest() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        c.write_manifest_once(&Manifest {
+            slug: "notes".into(),
+            display_name: "My Notes".into(),
+            is_agent: true,
+        })
+        .unwrap();
+
+        let broken = c.slug_dir("broken").unwrap();
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("manifest.json"), b"{not json").unwrap();
+
+        let started = Instant::now();
+        let got = c.list_slugs();
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "listing retried on unreadable JSON: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            got,
+            vec![
+                SlugInfo {
+                    slug: "broken".into(),
+                    display_name: "broken".into(),
+                    is_agent: false,
+                },
+                SlugInfo {
+                    slug: "notes".into(),
+                    display_name: "My Notes".into(),
+                    is_agent: true,
+                },
+            ]
+        );
+    }
+
+    /// `list_slugs` drops Cc in the directory name, but bidi (Cf) still
+    /// reaches this fallback. The label the sidebar prints must go through
+    /// `clean_name` even when the manifest is unreadable.
+    #[test]
+    fn list_slugs_cleans_a_fallback_display_name_from_the_directory() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let dirty = format!("notes\u{202e}{}", "X".repeat(80));
+        let dir = c.base.join(&dirty);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("manifest.json"), b"{not json").unwrap();
+
+        let got = c.list_slugs();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].slug, dirty);
+        assert_eq!(got[0].display_name, clean_name(&dirty));
+        assert!(!got[0].display_name.contains('\u{202e}'));
+        assert!(got[0].display_name.chars().count() <= 64);
     }
 
     #[test]
@@ -612,5 +728,36 @@ mod tests {
         assert_eq!(got.chars().count(), 64, "name was not capped: {got:?}");
         assert!(got.starts_with("[31mEvil"), "{got:?}");
         assert_eq!(c.device_names("s").get(id), Some(&got));
+    }
+
+    /// A display name is another device's bytes and the sidebar prints it.
+    /// Same payloads as the device-name guard: OSC/bidi must not survive,
+    /// and an unbounded name must not push the real rows off screen.
+    #[test]
+    fn a_manifest_display_name_is_stripped_of_control_characters_and_capped() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let evil = format!("\u{1b}[31mEvil\u{202e}\r\n{}", "x".repeat(100));
+        c.write_manifest_once(&Manifest {
+            slug: "s".into(),
+            display_name: evil,
+            is_agent: false,
+        })
+        .unwrap();
+
+        let listed = c.list_slugs();
+        assert_eq!(listed.len(), 1);
+        let got = &listed[0].display_name;
+        assert!(
+            !got.chars().any(char::is_control),
+            "control character survived: {got:?}"
+        );
+        assert!(
+            !got.chars().any(is_bidi_control),
+            "bidi override survived: {got:?}"
+        );
+        assert_eq!(got.chars().count(), 64, "name was not capped: {got:?}");
+        assert!(got.starts_with("[31mEvil"), "{got:?}");
+        assert_eq!(listed[0].slug, "s");
     }
 }

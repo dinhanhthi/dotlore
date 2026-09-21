@@ -1,8 +1,9 @@
 import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
 
-import { toFileContent } from "../fixtures/files";
+import { toFileContent, toTrackedFile } from "../fixtures/files";
 import { __emit } from "./event";
+import { MOCK_FILE_PATHS } from "./plugin-dialog";
 import {
   fileRecord,
   gdriveMounts,
@@ -42,7 +43,9 @@ const handlers: Record<
   list_roots: () => store.roots,
   tracked_files: (args) => {
     const slug = argString(args, "slug");
-    return Object.keys(store.files[slug] ?? {});
+    return Object.entries(store.files[slug] ?? {}).map(([rel, record]) =>
+      toTrackedFile(rel, record),
+    );
   },
   read_file: (args) => {
     const slug = argString(args, "slug");
@@ -88,6 +91,9 @@ const handlers: Record<
   },
   add_root: (args) => {
     const path = argString(args, "path");
+    if (MOCK_FILE_PATHS.has(path)) {
+      throw new Error(`${path} is not a directory`);
+    }
     const slug =
       typeof args.slug === "string" && args.slug.length > 0
         ? args.slug
@@ -100,6 +106,7 @@ const handlers: Record<
       path,
       name: nameFromPath(path),
       is_agent: false,
+      linked: true,
       status: { kind: "Synced" },
     });
     store.files[slug] = store.files[slug] ?? {};
@@ -117,6 +124,7 @@ const handlers: Record<
       path,
       name: nameFromPath(path),
       is_agent: false,
+      linked: true,
       status: { kind: "Synced" },
     });
     store.files[slug] = store.files[slug] ?? {
@@ -126,7 +134,7 @@ const handlers: Record<
         too_large: false,
       },
     };
-    store.linkable = store.linkable.filter((item) => item !== slug);
+    store.linkable = store.linkable.filter((item) => item.slug !== slug);
     emitStatus();
   },
   remove_root: (args) => {
@@ -146,7 +154,7 @@ const handlers: Record<
   },
   list_linkable: () =>
     store.linkable.filter(
-      (slug) => !store.roots.some((row) => row.slug === slug),
+      (row) => !store.roots.some((item) => item.slug === row.slug),
     ),
   icloud_dir: () => icloudPath(),
   list_gdrive_mounts: () => gdriveMounts(),

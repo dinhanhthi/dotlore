@@ -78,7 +78,7 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
           disabled={locked}
           onClick={() => {
             void withLock(async () => {
-              const dir = await pickLocalPath(true);
+              const dir = await pickLocalPath();
               if (dir === null) return;
               await apply(dir);
             });

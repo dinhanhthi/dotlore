@@ -19,12 +19,36 @@ use std::time::Duration;
 
 use dotlore_core::cloud::Cloud;
 use dotlore_core::config::Config;
-use dotlore_core::engine::{configure_provider, Engine, ResolveOutcome, RootStatus};
+use dotlore_core::engine::{configure_provider, Engine, FileSync, ResolveOutcome, RootStatus};
 use dotlore_core::git::Git;
+use dotlore_core::project::{self, PROJECT_FILE};
 use dotlore_core::repo::{provider_key, remote_ref, FetchMode, Repo, Transaction};
 use tempfile::TempDir;
 
 const SLUG: &str = "proj-claude";
+
+/// Arbitrary filenames the harness writes. Production defaults would leave
+/// most of these untracked; each test that adds a file after `add_root`
+/// must also `track_entry` it.
+const TEST_PATTERNS: &[&str] = &[
+    "CLAUDE.md",
+    "agents/",
+    "icon.png",
+    "docs/",
+    "from-a.md",
+    "from-b.md",
+    ".gitattributes",
+    "crlf.md",
+    "extra.md",
+    "fresh.md",
+    "sub/",
+    "hooks/",
+    ".gitignore",
+    "unrelated.md",
+    "notes.md",
+    "settings.json",
+    "settings.md",
+];
 
 // --- harness ---------------------------------------------------------------
 
@@ -47,6 +71,8 @@ impl Device {
             device_name: format!("Mac {letter} Pro"),
             provider_dir: Some(provider.path().to_path_buf()),
             roots: Vec::new(),
+            default_patterns: Some(TEST_PATTERNS.iter().map(|s| (*s).to_string()).collect()),
+            ..Default::default()
         };
         // Must hit disk before the Engine exists: every public method reloads
         // config under the home lock, and `Config::load` on a missing file
@@ -653,6 +679,9 @@ fn link_onto_non_empty_root_merges() {
 
     sync_cloud(&[&a, &b, &c]);
     c.engine.link_root(SLUG, c.root.path()).unwrap();
+    c.engine
+        .track_entry(SLUG, Path::new("extra.md"), None)
+        .unwrap();
     dance(&mut [&mut a, &mut b, &mut c]);
 
     for dev in [&a, &b, &c] {
@@ -702,6 +731,413 @@ fn link_onto_empty_root_creates_no_local_commit() {
         ".dotloreignore did not arrive with the history"
     );
     assert_dir_eq(c.root.path(), a.root.path());
+}
+
+fn tracked_rels(dev: &mut Device) -> Vec<String> {
+    dev.engine
+        .tracked_files(SLUG)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.rel)
+        .collect()
+}
+
+fn listed_keys(dev: &mut Device) -> Vec<String> {
+    dev.engine
+        .list_entries(SLUG)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.key)
+        .collect()
+}
+
+/// Blob ids of user files in `HEAD`, excluding staging-private names.
+fn content_blobs(dev: &Device) -> BTreeMap<String, String> {
+    let out = dev.git(SLUG).ok(&["ls-tree", "-r", "HEAD"]).unwrap();
+    let mut map = BTreeMap::new();
+    for line in out.lines() {
+        let Some((meta, path)) = line.split_once('\t') else {
+            continue;
+        };
+        if path == PROJECT_FILE || path == project::IGNORE_FILE {
+            continue;
+        }
+        let Some(hash) = meta.split_whitespace().nth(2) else {
+            continue;
+        };
+        map.insert(path.to_string(), hash.to_string());
+    }
+    map
+}
+
+fn name_status(dev: &Device, before: &str, after: &str) -> String {
+    dev.git(SLUG)
+        .ok(&["diff", "--name-status", before, after])
+        .unwrap()
+}
+
+fn assert_only_project_file_changed(dev: &Device, before: &str, after: &str) {
+    let diff = name_status(dev, before, after);
+    let changed: Vec<&str> = diff.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        changed.len(),
+        1,
+        "untrack must publish only {PROJECT_FILE}, got:\n{diff}"
+    );
+    assert!(
+        changed[0].ends_with(PROJECT_FILE),
+        "untrack changed something besides {PROJECT_FILE}:\n{diff}"
+    );
+    assert!(
+        !diff.lines().any(|l| l.starts_with('D')),
+        "untrack committed a content deletion:\n{diff}"
+    );
+}
+
+fn assert_no_project_in_live(dev: &Device) {
+    let live = collect(dev.root.path());
+    assert!(
+        !live.keys().any(|p| p.as_os_str() == PROJECT_FILE
+            || p.components().any(|c| c.as_os_str() == PROJECT_FILE)),
+        "{PROJECT_FILE} leaked into the live root: {:?}",
+        live.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !live.keys().any(|p| p.as_os_str() == project::IGNORE_FILE
+            || p.components()
+                .any(|c| c.as_os_str() == project::IGNORE_FILE)),
+        ".dotloreignore leaked into the live root: {:?}",
+        live.keys().collect::<Vec<_>>()
+    );
+}
+
+/// The include-list is a committed staging-private file: it arrives with the
+/// history on link, never appears in a live folder, and a later `track_entry`
+/// of a directory that seed missed travels to the peer.
+#[test]
+fn the_include_list_travels_with_the_history() {
+    let (mut a, mut b) = standard_start();
+
+    assert!(
+        b.staging(SLUG).join(PROJECT_FILE).is_file(),
+        "{PROJECT_FILE} did not arrive with the history"
+    );
+    assert_no_project_in_live(&a);
+    assert_no_project_in_live(&b);
+
+    // `docs/` is in TEST_PATTERNS but was not on disk at add/seed time.
+    write(&a, "docs/guide.md", b"guide from A\n");
+    write(&a, "docs/deep/x.md", b"deep from A\n");
+    a.engine.track_entry(SLUG, Path::new("docs"), None).unwrap();
+
+    dance(&mut [&mut a, &mut b]);
+
+    assert_no_project_in_live(&a);
+    assert_no_project_in_live(&b);
+    no_markers(a.root.path());
+    no_markers(b.root.path());
+
+    let files = b.engine.tracked_files(SLUG).unwrap();
+    let rels: Vec<&str> = files.iter().map(|f| f.rel.as_str()).collect();
+    assert!(
+        rels.contains(&"docs/guide.md") && rels.contains(&"docs/deep/x.md"),
+        "B is missing the travelled docs/** paths: {rels:?}"
+    );
+    for f in &files {
+        if f.rel.starts_with("docs/") {
+            assert_eq!(f.state, FileSync::Synced, "{}", f.rel);
+            let bytes = read(&b, &f.rel);
+            assert_eq!(f.bytes, bytes.len() as u64, "{}", f.rel);
+        }
+    }
+    assert_eq!(read(&b, "docs/guide.md"), b"guide from A\n");
+    assert_eq!(read(&b, "docs/deep/x.md"), b"deep from A\n");
+    assert_eq!(read(&a, "docs/guide.md"), read(&b, "docs/guide.md"));
+    assert_eq!(read(&a, "docs/deep/x.md"), read(&b, "docs/deep/x.md"));
+    assert!(listed_keys(&mut b).iter().any(|k| k == "docs/"));
+}
+
+/// A's tombstone wins a race where B commits a cycle that still carries the
+/// older include-list. After `dance` both devices agree `Removed`.
+#[test]
+fn an_untracked_entry_is_not_resurrected_by_a_peer() {
+    let (mut a, mut b) = standard_start();
+    write(&a, "notes/one.md", b"notes from A\n");
+    a.engine
+        .track_entry(SLUG, Path::new("notes"), None)
+        .unwrap();
+    dance(&mut [&mut a, &mut b]);
+    assert!(listed_keys(&mut a).iter().any(|k| k == "notes/"));
+    assert!(listed_keys(&mut b).iter().any(|k| k == "notes/"));
+    assert_eq!(read(&b, "notes/one.md"), b"notes from A\n");
+
+    assert_eq!(
+        a.engine.untrack_entry(SLUG, Path::new("notes")).unwrap(),
+        RootStatus::Synced
+    );
+    assert_eq!(
+        project::read(&a.staging(SLUG)).unwrap().entries["notes/"].state,
+        project::State::Removed
+    );
+
+    // B has not seen A's bundle. A local edit forces B to publish a cycle
+    // whose tree still lists `notes/` as Tracked.
+    append(&b, "CLAUDE.md", "B raced with the old include-list\n");
+    assert_synced(&mut b);
+    assert_eq!(
+        project::read(&b.staging(SLUG)).unwrap().entries["notes/"].state,
+        project::State::Tracked,
+        "B must still be on the pre-tombstone include-list before dance"
+    );
+
+    dance(&mut [&mut a, &mut b]);
+
+    for (label, dev) in [("A", &mut a), ("B", &mut b)] {
+        let file = project::read(&dev.staging(SLUG)).unwrap();
+        assert_eq!(
+            file.entries["notes/"].state,
+            project::State::Removed,
+            "{label} did not converge on Removed"
+        );
+        let keys = listed_keys(dev);
+        assert!(
+            !keys.iter().any(|k| k == "notes/"),
+            "{label} still lists notes/ as tracked: {keys:?}"
+        );
+        let rels = tracked_rels(dev);
+        assert!(
+            !rels
+                .iter()
+                .any(|r| r == "notes/one.md" || r.starts_with("notes/")),
+            "{label} still reports notes/** as tracked: {rels:?}"
+        );
+    }
+    assert_eq!(read(&a, "notes/one.md"), b"notes from A\n");
+    assert_eq!(read(&b, "notes/one.md"), b"notes from A\n");
+    no_markers(a.root.path());
+    no_markers(b.root.path());
+}
+
+/// Untrack commits a tombstone only: live bytes and content blob ids stay put
+/// on both homes. Missing live files and parent/child overlap are separate.
+#[test]
+fn untrack_preserves_bytes_and_publishes_only_manifest_changes() {
+    let (mut a, mut b) = standard_start();
+    write(&a, "notes.md", b"keep these bytes\n");
+    a.engine
+        .track_entry(SLUG, Path::new("notes.md"), None)
+        .unwrap();
+    dance(&mut [&mut a, &mut b]);
+
+    let live_a = read(&a, "notes.md");
+    let live_b = read(&b, "notes.md");
+    let blobs_a = content_blobs(&a);
+    let blobs_b = content_blobs(&b);
+    let notes_blob = a.git(SLUG).ok(&["rev-parse", "HEAD:notes.md"]).unwrap();
+    let before = head(&a, SLUG);
+
+    assert_eq!(
+        a.engine.untrack_entry(SLUG, Path::new("notes.md")).unwrap(),
+        RootStatus::Synced
+    );
+    let after = head(&a, SLUG);
+    assert_ne!(before, after, "untrack must commit the tombstone");
+    assert_only_project_file_changed(&a, &before, &after);
+    assert_eq!(read(&a, "notes.md"), live_a);
+    assert_eq!(
+        a.git(SLUG).ok(&["rev-parse", "HEAD:notes.md"]).unwrap(),
+        notes_blob
+    );
+    assert_eq!(content_blobs(&a), blobs_a);
+
+    dance(&mut [&mut a, &mut b]);
+    assert_eq!(read(&a, "notes.md"), live_a);
+    assert_eq!(read(&b, "notes.md"), live_b);
+    assert_eq!(content_blobs(&a), blobs_a);
+    assert_eq!(content_blobs(&b), blobs_b);
+    assert_eq!(
+        a.git(SLUG).ok(&["rev-parse", "HEAD:notes.md"]).unwrap(),
+        notes_blob
+    );
+    assert_eq!(
+        b.git(SLUG).ok(&["rev-parse", "HEAD:notes.md"]).unwrap(),
+        notes_blob
+    );
+    assert!(!listed_keys(&mut a).iter().any(|k| k == "notes.md"));
+    assert!(!listed_keys(&mut b).iter().any(|k| k == "notes.md"));
+
+    // Missing explicit entry: the live file is already gone; untrack is lexical.
+    write(&a, "gone.md", b"was here\n");
+    a.engine
+        .track_entry(SLUG, Path::new("gone.md"), None)
+        .unwrap();
+    dance(&mut [&mut a, &mut b]);
+    let gone_blob = a.git(SLUG).ok(&["rev-parse", "HEAD:gone.md"]).unwrap();
+    let gone_on_b = read(&b, "gone.md");
+    fs::remove_file(a.root.path().join("gone.md")).unwrap();
+
+    let before = head(&a, SLUG);
+    assert_eq!(
+        a.engine.untrack_entry(SLUG, Path::new("gone.md")).unwrap(),
+        RootStatus::Synced
+    );
+    let after = head(&a, SLUG);
+    assert_only_project_file_changed(&a, &before, &after);
+    assert!(!a.root.path().join("gone.md").exists());
+    assert_eq!(
+        a.git(SLUG).ok(&["rev-parse", "HEAD:gone.md"]).unwrap(),
+        gone_blob
+    );
+
+    dance(&mut [&mut a, &mut b]);
+    assert!(!a.root.path().join("gone.md").exists());
+    assert_eq!(read(&b, "gone.md"), gone_on_b);
+    assert_eq!(
+        a.git(SLUG).ok(&["rev-parse", "HEAD:gone.md"]).unwrap(),
+        gone_blob
+    );
+    assert_eq!(
+        b.git(SLUG).ok(&["rev-parse", "HEAD:gone.md"]).unwrap(),
+        gone_blob
+    );
+    assert!(!listed_keys(&mut a).iter().any(|k| k == "gone.md"));
+    assert!(!listed_keys(&mut b).iter().any(|k| k == "gone.md"));
+
+    // Parent + child: untracking the child leaves parent coverage.
+    write(&a, "notes/readme.md", b"child\n");
+    write(&a, "notes/other.md", b"sibling\n");
+    a.engine
+        .track_entry(SLUG, Path::new("notes"), None)
+        .unwrap();
+    a.engine
+        .track_entry(SLUG, Path::new("notes/readme.md"), None)
+        .unwrap();
+    dance(&mut [&mut a, &mut b]);
+    let readme_live = read(&a, "notes/readme.md");
+    let other_live = read(&a, "notes/other.md");
+    let notes_blobs = content_blobs(&a);
+
+    let before = head(&a, SLUG);
+    a.engine
+        .untrack_entry(SLUG, Path::new("notes/readme.md"))
+        .unwrap();
+    assert_only_project_file_changed(&a, &before, &head(&a, SLUG));
+    assert!(listed_keys(&mut a).iter().any(|k| k == "notes/"));
+    assert!(!listed_keys(&mut a).iter().any(|k| k == "notes/readme.md"));
+    let rels = tracked_rels(&mut a);
+    assert!(
+        rels.iter().any(|r| r == "notes/readme.md"),
+        "parent must still cover the child path: {rels:?}"
+    );
+    assert!(rels.iter().any(|r| r == "notes/other.md"));
+
+    dance(&mut [&mut a, &mut b]);
+    assert_eq!(read(&a, "notes/readme.md"), readme_live);
+    assert_eq!(read(&b, "notes/readme.md"), readme_live);
+    assert_eq!(read(&a, "notes/other.md"), other_live);
+    assert_eq!(read(&b, "notes/other.md"), other_live);
+    assert_eq!(content_blobs(&a), notes_blobs);
+    assert_eq!(content_blobs(&b), notes_blobs);
+    assert!(listed_keys(&mut b).iter().any(|k| k == "notes/"));
+    assert!(!listed_keys(&mut b).iter().any(|k| k == "notes/readme.md"));
+    assert!(tracked_rels(&mut b).iter().any(|r| r == "notes/readme.md"));
+
+    // Untracking the parent leaves the child entry.
+    a.engine
+        .track_entry(SLUG, Path::new("notes/readme.md"), None)
+        .unwrap();
+    dance(&mut [&mut a, &mut b]);
+    let notes_blobs = content_blobs(&a);
+    let before = head(&a, SLUG);
+    a.engine.untrack_entry(SLUG, Path::new("notes")).unwrap();
+    assert_only_project_file_changed(&a, &before, &head(&a, SLUG));
+    assert!(listed_keys(&mut a).iter().any(|k| k == "notes/readme.md"));
+    assert!(!listed_keys(&mut a).iter().any(|k| k == "notes/"));
+    let rels = tracked_rels(&mut a);
+    assert!(rels.iter().any(|r| r == "notes/readme.md"));
+    assert!(
+        !rels.iter().any(|r| r == "notes/other.md"),
+        "untracking the parent must drop sibling coverage: {rels:?}"
+    );
+
+    dance(&mut [&mut a, &mut b]);
+    assert_eq!(read(&a, "notes/readme.md"), readme_live);
+    assert_eq!(read(&b, "notes/readme.md"), readme_live);
+    assert_eq!(read(&a, "notes/other.md"), other_live);
+    assert_eq!(read(&b, "notes/other.md"), other_live);
+    assert_eq!(content_blobs(&a), notes_blobs);
+    assert_eq!(content_blobs(&b), notes_blobs);
+    assert!(listed_keys(&mut b).iter().any(|k| k == "notes/readme.md"));
+    assert!(!listed_keys(&mut b).iter().any(|k| k == "notes/"));
+    assert!(tracked_rels(&mut b).iter().any(|r| r == "notes/readme.md"));
+    assert!(!tracked_rels(&mut b).iter().any(|r| r == "notes/other.md"));
+    no_markers(a.root.path());
+    no_markers(b.root.path());
+}
+
+/// A link writes the include-list and nothing else. Extra local files stay;
+/// out-of-list peer files — including ones still sitting in the peer's tree
+/// after an untrack — must not appear.
+#[test]
+fn a_fresh_link_writes_only_include_list_entries() {
+    let mut a = Device::new('a');
+    let mut b = Device::new('b');
+    seed(&a);
+    write(&a, "secret-on-a.md", b"never tracked\n");
+    write(&a, "leftover.md", b"tracked then untracked\n");
+    assert_eq!(a.engine.add_root(a.root.path(), Some(SLUG)).unwrap(), SLUG);
+    a.engine
+        .track_entry(SLUG, Path::new("leftover.md"), None)
+        .unwrap();
+    a.engine
+        .untrack_entry(SLUG, Path::new("leftover.md"))
+        .unwrap();
+    assert!(
+        a.git(SLUG).rev("HEAD:leftover.md").is_some(),
+        "untracked leftover.md must remain in the tree so a naive link would resurrect it"
+    );
+
+    write(&b, "local-only.md", b"B's extra\n");
+    write(&b, "keep-me/private.md", b"B's private\n");
+    sync_cloud(&[&a, &b]);
+    assert_eq!(
+        b.engine.link_root(SLUG, b.root.path()).unwrap(),
+        RootStatus::Synced
+    );
+
+    dance(&mut [&mut a, &mut b]);
+
+    let a_files = collect(a.root.path());
+    let b_files = collect(b.root.path());
+    let a_keys: Vec<_> = a_files.keys().cloned().collect();
+    let b_keys: Vec<_> = b_files.keys().cloned().collect();
+    assert_ne!(a_keys, b_keys, "roots must differ outside the include-list");
+
+    for rel in ["CLAUDE.md", "agents/x.md", "icon.png"] {
+        assert!(
+            b_files.contains_key(Path::new(rel)),
+            "B is missing include-list path {rel}: {b_keys:?}"
+        );
+        assert_eq!(read(&a, rel), read(&b, rel), "{rel} diverged");
+    }
+
+    assert_eq!(read(&b, "local-only.md"), b"B's extra\n");
+    assert_eq!(read(&b, "keep-me/private.md"), b"B's private\n");
+    assert!(a_files.contains_key(Path::new("secret-on-a.md")));
+    assert!(a_files.contains_key(Path::new("leftover.md")));
+
+    for rel in ["secret-on-a.md", "leftover.md"] {
+        assert!(
+            !b_files.contains_key(Path::new(rel)),
+            "out-of-list peer file {rel} appeared on B: {b_keys:?}"
+        );
+    }
+    assert!(!a_files.contains_key(Path::new("local-only.md")));
+    assert!(!a_files.contains_key(Path::new("keep-me/private.md")));
+    assert_no_project_in_live(&a);
+    assert_no_project_in_live(&b);
+    no_markers(a.root.path());
+    no_markers(b.root.path());
 }
 
 /// A `.gitattributes` in the tracked root is mirrored into staging like any
@@ -783,6 +1219,9 @@ fn a_deleted_info_attributes_is_restored_by_an_ordinary_cycle() {
     // file would round-trip either way and prove nothing. A fresh one is
     // exactly the case a pre-guard staging repo is in.
     write(&b, "fresh.md", b"x\r\ny\r\n");
+    b.engine
+        .track_entry(SLUG, Path::new("fresh.md"), None)
+        .unwrap();
     edit_line(&a, "CLAUDE.md", 1, "line 1 from A");
     dance(&mut [&mut a, &mut b]);
     assert_eq!(
@@ -956,6 +1395,7 @@ fn nested_git_repo_inside_root_is_skipped() {
     let (mut a, mut b) = standard_start();
 
     write(&a, "sub/file.txt", b"nested content\n");
+    a.engine.track_entry(SLUG, Path::new("sub"), None).unwrap();
     Git::new(a.root.path().join("sub"), "t", "t")
         .ok(&["init", "-b", "main"])
         .unwrap();
@@ -975,6 +1415,9 @@ fn executable_bit_and_symlinks() {
     let (mut a, mut b) = standard_start();
 
     write(&a, "hooks/run.sh", b"#!/bin/sh\necho hi\n");
+    a.engine
+        .track_entry(SLUG, Path::new("hooks"), None)
+        .unwrap();
     let script = a.root.path().join("hooks/run.sh");
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     fs::create_dir_all(a.root.path().join("skills")).unwrap();
@@ -1149,6 +1592,7 @@ fn invalid_input_is_rejected_before_any_mutation() {
         device_name: "Mac D Pro".to_string(),
         provider_dir: Some(prov.path().to_path_buf()),
         roots: Vec::new(),
+        ..Default::default()
     };
     cfg.save(&inner_home).unwrap();
     let mut e = Engine::new(&inner_home, &inner_home, Config::load(&inner_home).unwrap()).unwrap();
@@ -1160,16 +1604,28 @@ fn invalid_input_is_rejected_before_any_mutation() {
     assert!(a.engine.add_root(&link, Some("linked")).is_err());
     fs::remove_file(&link).unwrap();
 
-    // Kind mismatch: a Dir slug may not be linked onto a file.
+    // A file path is refused as a project.
+    let file = a.root.path().join("CLAUDE.md");
+    assert!(
+        a.engine.add_root(&file, Some("as-a-file")).is_err(),
+        "a file path was accepted as a project"
+    );
+    assert!(a.engine.cfg.roots.is_empty());
+    assert!(!a.home.path().join("repos").exists(), "staging was created");
+    assert!(!a.cloud_dir().exists(), "the cloud folder was touched");
+
     let mut b = Device::new('b');
     a.engine.add_root(a.root.path(), Some(SLUG)).unwrap();
     sync_cloud(&[&a, &b]);
-    let file = b.root.path().join("CLAUDE.md");
-    fs::write(&file, b"local\n").unwrap();
-    assert!(b.engine.link_root(SLUG, &file).is_err());
+    let b_file = b.root.path().join("CLAUDE.md");
+    fs::write(&b_file, b"local\n").unwrap();
+    assert!(
+        b.engine.link_root(SLUG, &b_file).is_err(),
+        "a file path was accepted as a link target"
+    );
     assert!(b.engine.cfg.roots.is_empty());
     assert!(!b.home.path().join("repos").exists());
-    assert_eq!(fs::read(&file).unwrap(), b"local\n");
+    assert_eq!(fs::read(&b_file).unwrap(), b"local\n");
 }
 
 /// (I6) A copied `.gitignore`, nested ones included, cannot hide a file the
@@ -1179,7 +1635,11 @@ fn gitignore_cannot_exclude_mirror_selected_files() {
     let (mut a, mut b) = standard_start();
 
     write(&a, ".gitignore", b"docs/\n*.png\nagents/\n");
+    a.engine
+        .track_entry(SLUG, Path::new(".gitignore"), None)
+        .unwrap();
     write(&a, "docs/x.md", b"doc x\n");
+    a.engine.track_entry(SLUG, Path::new("docs"), None).unwrap();
     write(&a, "docs/.gitignore", b"*\n");
     write(&a, "docs/deep/y.md", b"deep y\n");
     write(&a, "docs/deep/.gitignore", b"**\n");
@@ -1201,6 +1661,7 @@ fn resolution_is_isolated_per_exact_live_path() {
     let (mut a, mut b) = standard_start();
     for p in paths {
         write(&a, p, b"base\n");
+        a.engine.track_entry(SLUG, Path::new(p), None).unwrap();
     }
     dance(&mut [&mut a, &mut b]);
 
@@ -1296,40 +1757,6 @@ fn a_second_engine_does_not_overwrite_fresh_config() {
     assert_eq!(slugs, vec![SLUG.to_string()]);
 }
 
-/// (I8) A single-file root under a different basename on each device, created
-/// by the Link, and `RootMissing` rather than a deletion when it disappears.
-#[test]
-fn file_roots_roundtrip_across_basenames() {
-    let mut a = Device::new('a');
-    let mut b = Device::new('b');
-    let a_file = a.root.path().join("CLAUDE.md");
-    fs::write(&a_file, b"from A\n").unwrap();
-    let slug = a.engine.add_root(&a_file, Some("file-root")).unwrap();
-    sync_cloud(&[&a, &b]);
-
-    // Different basename, and it does not exist yet: the Link creates it.
-    let b_file = b.root.path().join("NOTES.md");
-    assert_eq!(
-        b.engine.link_root(&slug, &b_file).unwrap(),
-        RootStatus::Synced
-    );
-    assert_eq!(fs::read(&b_file).unwrap(), b"from A\n");
-
-    fs::write(&b_file, b"from B\n").unwrap();
-    dance(&mut [&mut a, &mut b]);
-    assert_eq!(fs::read(&a_file).unwrap(), b"from B\n");
-
-    fs::remove_file(&a_file).unwrap();
-    assert_eq!(a.engine.sync_root(&slug).unwrap(), RootStatus::RootMissing);
-    sync_cloud(&[&a, &b]);
-    b.engine.sync_all().unwrap();
-    assert_eq!(
-        fs::read(&b_file).unwrap(),
-        b"from B\n",
-        "a disappeared root was published as a deletion"
-    );
-}
-
 /// (I7) A live edit between Open and Save is `Stale`, and deletes nothing.
 #[test]
 fn a_local_edit_between_open_and_save_is_stale() {
@@ -1365,7 +1792,9 @@ fn a_head_change_between_open_and_save_is_stale() {
     let selected: Vec<PathBuf> = snapshot.siblings.iter().map(|s| s.path.clone()).collect();
 
     write(&a, "unrelated.md", b"a commit that moves HEAD\n");
-    a.engine.sync_all().unwrap();
+    a.engine
+        .track_entry(SLUG, Path::new("unrelated.md"), None)
+        .unwrap();
     assert_ne!(head(&a, SLUG), snapshot.head);
 
     match a
@@ -1681,7 +2110,6 @@ fn merge_to_target(dev: &Device) -> (Repo, Transaction) {
         &root.path,
         &dev.engine.cfg.device_name,
         &dev.engine.cfg.device_id,
-        root.kind,
     )
     .unwrap();
     let key = provider_key(&dev.engine.cloud);

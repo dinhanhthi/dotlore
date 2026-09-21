@@ -13,7 +13,25 @@ export type RootRow = {
   path: string;
   name: string;
   is_agent: boolean;
+  linked: boolean;
   status: RootStatus;
+};
+
+/** Mirrors `commands::LinkableRow` (snake_case fields, no rename). */
+export type LinkableRow = {
+  slug: string;
+  display_name: string;
+  is_agent: boolean;
+};
+
+/** Mirrors `engine::FileSync` (no rename_all — PascalCase variants). */
+export type FileSync = "Synced" | "TooLarge" | "Pending";
+
+/** Mirrors `engine::TrackedFile` (snake_case fields, no rename). */
+export type TrackedFile = {
+  rel: string;
+  bytes: number;
+  state: FileSync;
 };
 
 /** Mirrors `engine::ConflictView` (`rename_all = "camelCase"`). */

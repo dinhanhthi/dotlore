@@ -6,10 +6,15 @@ import { demoFiles, type FileRecord } from "../fixtures/files";
 import {
   GDRIVE_MOUNTS,
   ICLOUD_PROVIDER,
-  LINKABLE_SLUGS,
+  LINKABLE_ROWS,
   demoRoots,
 } from "../fixtures/roots";
-import type { ConflictView, ResolutionDto, RootRow } from "@/lib/types";
+import type {
+  ConflictView,
+  LinkableRow,
+  ResolutionDto,
+  RootRow,
+} from "@/lib/types";
 
 export type MockState = {
   providerDir: string | null;
@@ -18,7 +23,7 @@ export type MockState = {
   roots: RootRow[];
   files: Record<string, Record<string, FileRecord>>;
   conflicts: Record<string, ConflictView[]>;
-  linkable: string[];
+  linkable: LinkableRow[];
 };
 
 const ICLOUD = ICLOUD_PROVIDER;
@@ -38,7 +43,7 @@ export function emptyPopulated(): MockState {
     roots: demoRoots(),
     files: demoFiles(),
     conflicts: demoConflicts(),
-    linkable: [...LINKABLE_SLUGS],
+    linkable: [...LINKABLE_ROWS],
   };
 }
 

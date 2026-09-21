@@ -2,12 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { LayoutGrid, Plus, Star } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { recoverRoot } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
@@ -63,32 +57,19 @@ function AddSectionButton({
   disabled,
 }: {
   label: string;
-  onPick: (directory: boolean) => void;
+  onPick: () => void;
   disabled?: boolean;
 }) {
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label={label}
-            disabled={disabled}
-          />
-        }
-      >
-        <Plus aria-hidden />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-28">
-        <DropdownMenuItem disabled={disabled} onClick={() => onPick(true)}>
-          Folder…
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled={disabled} onClick={() => onPick(false)}>
-          File…
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <Button
+      variant="ghost"
+      size="icon-xs"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onPick}
+    >
+      <Plus aria-hidden />
+    </Button>
   );
 }
 
@@ -152,9 +133,9 @@ export function Sidebar() {
   const agents = visible.filter((row) => row.is_agent);
   const projects = visible.filter((row) => !row.is_agent);
 
-  async function startAdd(directory: boolean) {
+  async function startAdd() {
     if (busy) return;
-    const path = await pickLocalPath(directory);
+    const path = await pickLocalPath();
     if (path === null) return;
     setPendingAdd({ path, slug: defaultSlug(path) });
   }
@@ -235,7 +216,7 @@ export function Sidebar() {
             <AddSectionButton
               label="Add agent"
               disabled={busy}
-              onPick={(directory) => void startAdd(directory)}
+              onPick={() => void startAdd()}
             />
           }
         >
@@ -250,7 +231,7 @@ export function Sidebar() {
             <AddSectionButton
               label="Add project"
               disabled={busy}
-              onPick={(directory) => void startAdd(directory)}
+              onPick={() => void startAdd()}
             />
           }
         >

@@ -47,9 +47,9 @@ export function LinkRootDialog({ open, onOpenChange }: LinkRootDialogProps) {
     };
   }, [open, setBanner]);
 
-  async function linkTo(slug: string, directory: boolean) {
+  async function linkTo(slug: string) {
     if (busy) return;
-    const path = await pickLocalPath(directory);
+    const path = await pickLocalPath();
     if (path === null) return;
     try {
       await linkRoot(slug, path);
@@ -69,7 +69,7 @@ export function LinkRootDialog({ open, onOpenChange }: LinkRootDialogProps) {
           <DialogDescription>
             {picked === null
               ? "Slugs already in the cloud folder that this Mac is not tracking."
-              : `Choose a local folder or file for ${picked}.`}
+              : `Choose a local folder for ${picked}.`}
           </DialogDescription>
         </DialogHeader>
         {loading ? (
@@ -100,20 +100,10 @@ export function LinkRootDialog({ open, onOpenChange }: LinkRootDialogProps) {
               variant="outline"
               disabled={busy}
               onClick={() => {
-                void linkTo(picked, true);
+                void linkTo(picked);
               }}
             >
               Folder…
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                void linkTo(picked, false);
-              }}
-            >
-              File…
             </Button>
           </div>
         )}

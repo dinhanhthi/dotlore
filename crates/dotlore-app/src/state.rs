@@ -33,6 +33,8 @@ pub struct RootRow {
     pub name: String,
     pub is_agent: bool,
     pub status: RootStatus,
+    /// Configured on this device. Cloud-only rows stay `false`.
+    pub linked: bool,
 }
 
 impl RootRow {
@@ -48,6 +50,7 @@ impl RootRow {
             name,
             is_agent: root.is_agent(home_dir),
             status,
+            linked: true,
         }
     }
 
@@ -60,6 +63,7 @@ impl RootRow {
                 name: String::new(),
                 is_agent: false,
                 status,
+                linked: false,
             },
         }
     }

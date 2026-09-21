@@ -12,7 +12,8 @@
     "test": "bash scripts/test.sh",
     "format": "cargo fmt",
     "format:check": "cargo fmt --check && pnpm --dir crates/dotlore-app/ui exec tsc --noEmit",
-    "cli": "cargo run -q -p dotlore-cli"
+    "cli": "cargo run -q -p dotlore-cli",
+    "reset:dev": "bash scripts/reset-dev.sh"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

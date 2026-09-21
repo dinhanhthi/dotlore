@@ -7,4 +7,5 @@ pub mod daemon;
 pub mod engine;
 pub mod git;
 pub mod mirror;
+pub mod project;
 pub mod repo;

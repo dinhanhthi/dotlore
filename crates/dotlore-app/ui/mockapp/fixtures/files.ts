@@ -1,9 +1,11 @@
-import type { FileContent } from "@/lib/types";
+import type { FileContent, FileSync, TrackedFile } from "@/lib/types";
 
 export type FileRecord = {
   text: string | null;
   binary: boolean;
   too_large: boolean;
+  bytes?: number;
+  state?: FileSync;
 };
 
 const DOTLORE_CLAUDE = `# Dotlore
@@ -79,15 +81,24 @@ export function demoFiles(): Record<string, Record<string, FileRecord>> {
 
 export function toFileContent(record: FileRecord): FileContent {
   const bytes =
-    record.text === null
+    record.bytes ??
+    (record.text === null
       ? record.binary
         ? 4096
         : 0
-      : new TextEncoder().encode(record.text).length;
+      : new TextEncoder().encode(record.text).length);
   return {
     text: record.text,
     binary: record.binary,
     too_large: record.too_large,
     bytes_len: record.too_large ? 2_000_000 : bytes,
+  };
+}
+
+export function toTrackedFile(rel: string, record: FileRecord): TrackedFile {
+  return {
+    rel,
+    bytes: toFileContent(record).bytes_len,
+    state: record.state ?? (record.too_large ? "TooLarge" : "Synced"),
   };
 }

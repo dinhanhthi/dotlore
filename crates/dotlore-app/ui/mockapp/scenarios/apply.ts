@@ -1,3 +1,4 @@
+import { LINKABLE_ROWS } from "../fixtures/roots";
 import { resetStore, type MockState } from "../mocks/store";
 import { defaultScenarioId, getScenario, scenarios } from "./index";
 
@@ -7,7 +8,12 @@ export type ScenarioSeed = Partial<MockState>;
 
 const seeds: Record<string, ScenarioSeed> = {
   setup: { providerDir: null, roots: [], files: {}, conflicts: {} },
-  empty: { roots: [], files: {}, conflicts: {}, linkable: ["old-mac-notes"] },
+  empty: {
+    roots: [],
+    files: {},
+    conflicts: {},
+    linkable: [...LINKABLE_ROWS],
+  },
   populated: {},
   conflicts: {},
   "all-projects": {},

@@ -1,9 +1,9 @@
 import { open } from "@tauri-apps/plugin-dialog";
 
-/** Native folder (`directory: true`) or single-file picker. `null` if cancelled. */
-export async function pickLocalPath(directory: boolean): Promise<string | null> {
+/** Native folder picker. `null` if cancelled. */
+export async function pickLocalPath(): Promise<string | null> {
   const selected = await open({
-    directory,
+    directory: true,
     multiple: false,
   });
   if (selected === null) return null;

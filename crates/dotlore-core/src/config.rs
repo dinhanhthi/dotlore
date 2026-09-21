@@ -18,14 +18,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::cloud::Kind;
-
 /// One tracked root: a real path on this device plus its cloud identity.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct Root {
     pub slug: String,
     pub path: PathBuf,
-    pub kind: Kind,
     /// Set while the first sync is still populating the root.
     #[serde(default)]
     pub initializing: bool,
@@ -56,6 +53,19 @@ pub struct Config {
     pub device_name: String,
     pub provider_dir: Option<PathBuf>,
     pub roots: Vec<Root>,
+    /// Project seed patterns. `None` means use `project::DEFAULT_PATTERNS`.
+    /// Never applied to agent folders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_patterns: Option<Vec<String>>,
+    /// Ignore text written at add time. `None` means use `project::DEFAULT_NEVER_IGNORE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_ignore: Option<String>,
+    /// Per-file hard limit in MiB. `None` means 50. Enforced in T3.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_mb: Option<u64>,
+    /// Seed/add folder-total limit in MiB. `None` means 200. Enforced in T3.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_seed_folder_mb: Option<u64>,
 }
 
 impl Config {
@@ -242,7 +252,6 @@ mod tests {
         cfg.roots.push(Root {
             slug: "myproj-claude".into(),
             path: PathBuf::from("/a/myproj/.claude"),
-            kind: Kind::Dir,
             initializing: false,
         });
         cfg.save(home).unwrap();
@@ -285,13 +294,62 @@ mod tests {
         fs::write(
             home.join("config.json"),
             br#"{"device_id":"ab","device_name":"m","provider_dir":null,
-                 "roots":[{"slug":"s","path":"/a/.claude","kind":"dir"}]}"#,
+                 "roots":[{"slug":"s","path":"/a/.claude"}]}"#,
         )
         .unwrap();
 
         let cfg = Config::load(home).unwrap();
         assert_eq!(cfg.roots.len(), 1);
         assert!(!cfg.roots[0].initializing);
+    }
+
+    #[test]
+    fn a_config_without_default_patterns_still_loads() {
+        let td = TempDir::new().unwrap();
+        let home = td.path();
+        Config::load(home).unwrap();
+        fs::write(
+            home.join("config.json"),
+            br#"{"device_id":"ab","device_name":"m","provider_dir":null,"roots":[]}"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(home).unwrap();
+        assert!(cfg.default_patterns.is_none());
+        assert!(cfg.default_ignore.is_none());
+        assert!(cfg.max_file_mb.is_none());
+        assert!(cfg.max_seed_folder_mb.is_none());
+    }
+
+    #[test]
+    fn a_config_without_size_limits_still_loads() {
+        let td = TempDir::new().unwrap();
+        let home = td.path();
+        Config::load(home).unwrap();
+        fs::write(
+            home.join("config.json"),
+            br#"{"device_id":"ab","device_name":"m","provider_dir":null,"roots":[]}"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(home).unwrap();
+        assert!(
+            cfg.max_file_mb.is_none(),
+            "absent max_file_mb must stay None so Limits uses the 50 MiB default"
+        );
+        assert!(
+            cfg.max_seed_folder_mb.is_none(),
+            "absent max_seed_folder_mb must stay None so Limits uses the 200 MiB default"
+        );
+        let limits = crate::project::Limits::from_config(&cfg);
+        assert_eq!(
+            limits.max_file_bytes,
+            crate::project::Limits::DEFAULT_MAX_FILE_MB * 1024 * 1024
+        );
+        assert_eq!(
+            limits.max_seed_folder_bytes,
+            crate::project::Limits::DEFAULT_MAX_SEED_FOLDER_MB * 1024 * 1024
+        );
     }
 
     /// `<home>` is the whole perimeter: `repos/<slug>` under it is a full copy
@@ -336,7 +394,6 @@ mod tests {
         let root = |path: &str| Root {
             slug: "t".into(),
             path: PathBuf::from(path),
-            kind: Kind::Dir,
             initializing: false,
         };
 

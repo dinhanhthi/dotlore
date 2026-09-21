@@ -1,4 +1,4 @@
-import type { RootRow } from "@/lib/types";
+import type { LinkableRow, RootRow } from "@/lib/types";
 
 export const ICLOUD_PROVIDER =
   "/Users/demo/Library/Mobile Documents/com~apple~CloudDocs/dotlore";
@@ -7,7 +7,9 @@ export const GDRIVE_MOUNTS = [
   "/Users/demo/Library/CloudStorage/GoogleDrive-demo",
 ];
 
-export const LINKABLE_SLUGS = ["old-mac-notes"];
+export const LINKABLE_ROWS: LinkableRow[] = [
+  { slug: "old-mac-notes", display_name: "Old Mac Notes", is_agent: false },
+];
 
 export function demoRoots(): RootRow[] {
   return [
@@ -16,6 +18,7 @@ export function demoRoots(): RootRow[] {
       path: "/Users/demo/git/dotlore",
       name: "dotlore",
       is_agent: true,
+      linked: true,
       status: { kind: "Synced" },
     },
     {
@@ -23,6 +26,7 @@ export function demoRoots(): RootRow[] {
       path: "/Users/demo/git/memlore",
       name: "memlore",
       is_agent: false,
+      linked: true,
       status: { kind: "Synced" },
     },
     {
@@ -30,6 +34,7 @@ export function demoRoots(): RootRow[] {
       path: "/Users/demo/Notes",
       name: "Notes",
       is_agent: false,
+      linked: true,
       status: { kind: "Conflicts", detail: 2 },
     },
     {
@@ -37,6 +42,7 @@ export function demoRoots(): RootRow[] {
       path: "/Users/demo/gone/project",
       name: "missing-proj",
       is_agent: false,
+      linked: true,
       status: { kind: "RootMissing" },
     },
   ];
