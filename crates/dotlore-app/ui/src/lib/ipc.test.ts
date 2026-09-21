@@ -18,27 +18,26 @@ beforeEach(() => {
 });
 
 describe("trackedFiles", () => {
-  it("maps TrackedFile records to rel strings", async () => {
-    invokeMock.mockResolvedValue([
+  it("returns TrackedFile records", async () => {
+    const files = [
       { rel: "CLAUDE.md", bytes: 12, state: "Synced" },
       { rel: "docs/a.md", bytes: 4, state: "Pending" },
-    ]);
-    await expect(trackedFiles("dotlore")).resolves.toEqual([
-      "CLAUDE.md",
-      "docs/a.md",
-    ]);
+    ];
+    invokeMock.mockResolvedValue(files);
+    await expect(trackedFiles("dotlore")).resolves.toEqual(files);
   });
 });
 
 describe("listLinkable", () => {
-  it("maps LinkableRow records to slug strings", async () => {
-    invokeMock.mockResolvedValue([
+  it("returns LinkableRow records", async () => {
+    const rows = [
       {
         slug: "old-mac-notes",
         display_name: "Old Mac Notes",
         is_agent: false,
       },
-    ]);
-    await expect(listLinkable()).resolves.toEqual(["old-mac-notes"]);
+    ];
+    invokeMock.mockResolvedValue(rows);
+    await expect(listLinkable()).resolves.toEqual(rows);
   });
 });

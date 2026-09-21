@@ -1,7 +1,17 @@
 import { defaultSlug } from "@/lib/slug";
-import type { RootRow } from "@/lib/types";
+import type {
+  EntryKind,
+  EntryView,
+  InspectedEntryDto,
+  PickerRow,
+  RootRow,
+} from "@/lib/types";
 
-import { toFileContent, toTrackedFile } from "../fixtures/files";
+import {
+  toFileContent,
+  toTrackedFile,
+  type FileRecord,
+} from "../fixtures/files";
 import { __emit } from "./event";
 import { MOCK_FILE_PATHS } from "./plugin-dialog";
 import {
@@ -12,6 +22,14 @@ import {
   store,
   syncConflictCount,
 } from "./store";
+
+function maxFileBytes(): number {
+  return store.maxFileMb * 1024 * 1024;
+}
+
+function maxSeedFolderBytes(): number {
+  return store.maxSeedFolderMb * 1024 * 1024;
+}
 
 function argString(args: Record<string, unknown>, key: string): string {
   const value = args[key];
@@ -36,6 +54,144 @@ function requireRoot(slug: string): RootRow {
   return row;
 }
 
+function plainRel(rel: string, allowEmpty: boolean): boolean {
+  if (rel === "") return allowEmpty;
+  if (rel.startsWith("/")) return false;
+  return rel.split("/").every((part) => part.length > 0 && part !== "." && part !== "..");
+}
+
+function recordBytes(record: FileRecord): number {
+  if (typeof record.bytes === "number") return record.bytes;
+  return toFileContent(record).bytes_len;
+}
+
+function fileOverLimit(record: FileRecord): boolean {
+  return record.too_large || recordBytes(record) > maxFileBytes();
+}
+
+function keysOverlap(a: string, b: string): boolean {
+  const aBase = a.replace(/\/$/, "");
+  const bBase = b.replace(/\/$/, "");
+  const under = (entry: string, ancestor: string): boolean => {
+    const trimmed = entry.replace(/\/$/, "");
+    return ancestor === "" ? trimmed.length > 0 : trimmed.startsWith(`${ancestor}/`);
+  };
+  return (
+    (a.endsWith("/") && (bBase === aBase || under(b, aBase))) ||
+    (b.endsWith("/") && (aBase === bBase || under(a, bBase)))
+  );
+}
+
+function withCovering(entries: EntryView[]): EntryView[] {
+  return entries
+    .map((entry) => ({
+      ...entry,
+      covering: entries
+        .filter((other) => other.key !== entry.key && keysOverlap(other.key, entry.key))
+        .map((other) => other.key),
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+function coveredBy(rel: string, entries: EntryView[]): boolean {
+  return entries.some((entry) => {
+    if (entry.kind === "file") return entry.key === rel;
+    const base = entry.key.replace(/\/$/, "");
+    return rel === base || rel.startsWith(`${base}/`);
+  });
+}
+
+function coveringKey(entries: EntryView[], rel: string): string | undefined {
+  const explicit = entries.find(
+    (entry) => entry.key === rel || entry.key === `${rel}/`,
+  );
+  if (explicit) return undefined;
+  return entries.find((entry) => {
+    if (entry.kind !== "directory") return false;
+    const base = entry.key.replace(/\/$/, "");
+    return rel === base || rel.startsWith(`${base}/`);
+  })?.key;
+}
+
+function inspectPreview(slug: string, rel: string): InspectedEntryDto {
+  if (!plainRel(rel, false)) throw new Error(`unsafe path ${rel}`);
+  const files = store.files[slug] ?? {};
+  if (files[rel]) {
+    const bytes = recordBytes(files[rel]);
+    const over = fileOverLimit(files[rel]);
+    return {
+      kind: "file",
+      bytes: over ? 0 : bytes,
+      folder_limit: maxSeedFolderBytes(),
+      confirmation_required: false,
+      skipped_too_large: over ? [{ rel, bytes }] : [],
+    };
+  }
+  const prefix = `${rel}/`;
+  let bytes = 0;
+  const skipped: InspectedEntryDto["skipped_too_large"] = [];
+  for (const [path, record] of Object.entries(files)) {
+    if (path !== rel && !path.startsWith(prefix)) continue;
+    const size = recordBytes(record);
+    if (fileOverLimit(record)) skipped.push({ rel: path, bytes: size });
+    else bytes += size;
+  }
+  return {
+    kind: "directory",
+    bytes,
+    folder_limit: maxSeedFolderBytes(),
+    confirmation_required: bytes > maxSeedFolderBytes(),
+    skipped_too_large: skipped,
+  };
+}
+
+function listChildren(slug: string, rel: string): PickerRow[] {
+  if (!plainRel(rel, true)) throw new Error(`unsafe path ${rel}`);
+  const names = new Map<string, string>();
+  const prefix = rel ? `${rel}/` : "";
+  const consider = (path: string, asDir: boolean): void => {
+    if (rel === "") {
+      const [first, ...rest] = path.split("/");
+      if (!first) return;
+      names.set(first, rest.length || asDir ? "directory" : "file");
+      return;
+    }
+    if (!path.startsWith(prefix)) return;
+    const rest = path.slice(prefix.length);
+    if (!rest) return;
+    const [first, ...more] = rest.split("/");
+    if (!first) return;
+    names.set(first, more.length || asDir ? "directory" : "file");
+  };
+  for (const path of Object.keys(store.files[slug] ?? {})) {
+    consider(path, false);
+  }
+  for (const entry of store.entries[slug] ?? []) {
+    consider(entry.key.replace(/\/$/, ""), entry.kind === "directory");
+  }
+  for (const extra of store.pickerExtra[slug]?.[rel] ?? []) {
+    if (extra.kind === "symlink") continue;
+    names.set(extra.name, extra.kind);
+  }
+  return [...names.entries()]
+    .map(([name, kind]) => ({
+      name,
+      kind,
+      rel: rel ? `${rel}/${name}` : name,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function confirmedFolderBytes(args: Record<string, unknown>): number | null {
+  if (typeof args.confirmedFolderBytes === "number") {
+    return args.confirmedFolderBytes;
+  }
+  if (typeof args.confirmed_folder_bytes === "number") {
+    return args.confirmed_folder_bytes;
+  }
+  return null;
+}
+
 const handlers: Record<
   string,
   (args: Record<string, unknown>) => unknown
@@ -43,9 +199,10 @@ const handlers: Record<
   list_roots: () => store.roots,
   tracked_files: (args) => {
     const slug = argString(args, "slug");
-    return Object.entries(store.files[slug] ?? {}).map(([rel, record]) =>
-      toTrackedFile(rel, record),
-    );
+    const entries = store.entries[slug] ?? [];
+    return Object.entries(store.files[slug] ?? {})
+      .filter(([rel]) => coveredBy(rel, entries))
+      .map(([rel, record]) => toTrackedFile(rel, record));
   },
   read_file: (args) => {
     const slug = argString(args, "slug");
@@ -110,6 +267,7 @@ const handlers: Record<
       status: { kind: "Synced" },
     });
     store.files[slug] = store.files[slug] ?? {};
+    store.entries[slug] = store.entries[slug] ?? [];
     emitStatus();
     return slug;
   },
@@ -134,6 +292,9 @@ const handlers: Record<
         too_large: false,
       },
     };
+    store.entries[slug] = store.entries[slug] ?? [
+      { key: "CLAUDE.md", kind: "file", covering: [] },
+    ];
     store.linkable = store.linkable.filter((item) => item.slug !== slug);
     emitStatus();
   },
@@ -142,6 +303,8 @@ const handlers: Record<
     store.roots = store.roots.filter((row) => row.slug !== slug);
     delete store.files[slug];
     delete store.conflicts[slug];
+    delete store.entries[slug];
+    delete store.pickerExtra[slug];
     emitStatus();
   },
   recover_root: (args) => {
@@ -156,11 +319,92 @@ const handlers: Record<
     store.linkable.filter(
       (row) => !store.roots.some((item) => item.slug === row.slug),
     ),
+  list_entries: (args) =>
+    withCovering(store.entries[argString(args, "slug")] ?? []),
+  list_entry_children: (args) =>
+    listChildren(argString(args, "slug"), String(args.rel ?? "")),
+  inspect_entry: (args) =>
+    inspectPreview(argString(args, "slug"), argString(args, "rel")),
+  track_entry: (args) => {
+    const slug = argString(args, "slug");
+    const rel = argString(args, "rel");
+    const preview = inspectPreview(slug, rel);
+    if (preview.kind === "file") {
+      const skipped = preview.skipped_too_large[0];
+      if (skipped) {
+        throw new Error(
+          `${rel} is ${skipped.bytes} bytes (limit ${maxFileBytes()} bytes)`,
+        );
+      }
+    } else if (preview.confirmation_required) {
+      const approved = confirmedFolderBytes(args) ?? 0;
+      if (approved < preview.bytes) {
+        return {
+          outcome: "needs_confirmation",
+          bytes: preview.bytes,
+          folder_limit: preview.folder_limit,
+          confirmation_required: true,
+          skipped_too_large: preview.skipped_too_large,
+        };
+      }
+    }
+    const kind: EntryKind = preview.kind;
+    const key = kind === "directory" ? (rel.endsWith("/") ? rel : `${rel}/`) : rel;
+    const list = store.entries[slug] ?? (store.entries[slug] = []);
+    if (!list.some((entry) => entry.key === key)) {
+      list.push({ key, kind, covering: [] });
+    }
+    store.entries[slug] = withCovering(list);
+    return { outcome: "done" };
+  },
+  untrack_entry: (args) => {
+    const slug = argString(args, "slug");
+    const rel = argString(args, "rel");
+    if (!plainRel(rel, false)) throw new Error(`unsafe path ${rel}`);
+    const list = store.entries[slug] ?? [];
+    const exact = list.find((entry) => entry.key === rel || entry.key === `${rel}/`);
+    if (!exact) {
+      const cover = coveringKey(list, rel);
+      if (cover) {
+        throw new Error(`cannot untrack ${rel}: covered by tracked entry ${cover}`);
+      }
+      throw new Error(`cannot untrack ${rel}: not an explicit include entry`);
+    }
+    store.entries[slug] = withCovering(list.filter((entry) => entry.key !== exact.key));
+    return store.entries[slug];
+  },
   icloud_dir: () => icloudPath(),
   list_gdrive_mounts: () => gdriveMounts(),
   login_item_enabled: () => store.loginItem,
   set_login_item: (args) => {
     store.loginItem = Boolean(args.on);
+  },
+  default_patterns: () => store.defaultPatterns,
+  set_default_patterns: (args) => {
+    if (!Array.isArray(args.patterns)) {
+      throw new Error("mockapp: patterns is required");
+    }
+    store.defaultPatterns = args.patterns.filter(
+      (item): item is string => typeof item === "string",
+    );
+  },
+  default_ignore: () => store.defaultIgnore,
+  set_default_ignore: (args) => {
+    store.defaultIgnore = typeof args.ignore === "string" ? args.ignore : "";
+  },
+  max_file_mb: () => store.maxFileMb,
+  set_max_file_mb: (args) => {
+    if (typeof args.mb !== "number" || !Number.isFinite(args.mb)) {
+      throw new Error("mockapp: mb is required");
+    }
+    store.maxFileMb = args.mb;
+  },
+  max_seed_folder_mb: () => store.maxSeedFolderMb,
+  set_max_seed_folder_mb: (args) => {
+    if (typeof args.mb !== "number" || !Number.isFinite(args.mb)) {
+      throw new Error("mockapp: mb is required");
+    }
+    store.maxSeedFolderMb = args.mb;
   },
 };
 

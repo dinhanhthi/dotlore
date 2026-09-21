@@ -34,6 +34,49 @@ export type TrackedFile = {
   state: FileSync;
 };
 
+/** Mirrors `engine::EntryKind` (`rename_all = "lowercase"`). */
+export type EntryKind = "file" | "directory";
+
+/** Mirrors `engine::EntryView` (`rename_all = "camelCase"`). */
+export type EntryView = {
+  key: string;
+  kind: EntryKind;
+  covering: string[];
+};
+
+/** Mirrors `commands::PickerRow` (no rename). */
+export type PickerRow = {
+  name: string;
+  kind: string;
+  rel: string;
+};
+
+/** Mirrors `commands::SkippedFileDto` (snake_case fields). */
+export type SkippedFileDto = {
+  rel: string;
+  bytes: number;
+};
+
+/** Mirrors `commands::InspectedEntryDto` (snake_case fields). */
+export type InspectedEntryDto = {
+  kind: EntryKind;
+  bytes: number;
+  folder_limit: number;
+  confirmation_required: boolean;
+  skipped_too_large: SkippedFileDto[];
+};
+
+/** Mirrors `commands::TrackResultDto` (`tag = "outcome"`, snake_case). */
+export type TrackResultDto =
+  | { outcome: "done" }
+  | {
+      outcome: "needs_confirmation";
+      bytes: number;
+      folder_limit: number;
+      confirmation_required: boolean;
+      skipped_too_large: SkippedFileDto[];
+    };
+
 /** Mirrors `engine::ConflictView` (`rename_all = "camelCase"`). */
 export type ConflictView = {
   live: string;

@@ -3,14 +3,13 @@ import { LayoutGrid, Plus, Star } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { recoverRoot } from "@/lib/ipc";
+import { linkRoot, recoverRoot } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { useRoots } from "@/lib/roots";
 import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
 
 import { AddRootDialog } from "./AddRootDialog";
-import { LinkRootDialog } from "./LinkRootDialog";
 import { RemoveRootAlert } from "./RemoveRootAlert";
 import { SearchBar } from "./SearchBar";
 import { SidebarItem } from "./SidebarItem";
@@ -94,7 +93,6 @@ export function Sidebar() {
     path: string;
     slug: string;
   } | null>(null);
-  const [linkOpen, setLinkOpen] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<RootRow | null>(null);
 
   const toggleCollapsed = useCallback((id: string) => {
@@ -150,6 +148,19 @@ export function Sidebar() {
     }
   }
 
+  async function handleLink(slug: string) {
+    if (busy) return;
+    const path = await pickLocalPath();
+    if (path === null) return;
+    try {
+      await linkRoot(slug, path);
+      await refreshRoots();
+      selectRoot(slug);
+    } catch {
+      // Banner is set by `run()`.
+    }
+  }
+
   function renderRoot(row: RootRow, id?: string) {
     return (
       <SidebarItem
@@ -161,11 +172,13 @@ export function Sidebar() {
         statusKind={row.status.kind}
         conflictCount={conflictCount(row)}
         starred={starred.has(row.slug)}
+        linked={row.linked}
         onClick={() => selectRoot(row.slug)}
         onConflictClick={() => {
           openFirstConflict(row.slug);
         }}
         onToggleStar={() => toggleStar(row.slug)}
+        onLink={() => void handleLink(row.slug)}
         onRemove={() => setRemoveTarget(row)}
         writeDisabled={busy}
         onRecover={
@@ -179,15 +192,6 @@ export function Sidebar() {
     <nav aria-label="Roots" className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <SearchBar value={query} onChange={setQuery} />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={busy}
-          onClick={() => setLinkOpen(true)}
-        >
-          Link
-        </Button>
       </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 px-1.5 pb-2">
@@ -247,7 +251,6 @@ export function Sidebar() {
           if (!open) setPendingAdd(null);
         }}
       />
-      <LinkRootDialog open={linkOpen} onOpenChange={setLinkOpen} />
       <RemoveRootAlert
         slug={removeTarget?.slug ?? null}
         name={removeTarget?.name ?? "this root"}

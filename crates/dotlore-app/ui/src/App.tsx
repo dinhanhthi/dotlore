@@ -20,10 +20,12 @@ import { FileTree } from "@/components/tree/FileTree";
 import { ErrorBanner } from "@/components/ui/ErrorBanner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { uniqueConflictRels } from "@/lib/conflicts";
+import { errorMessage } from "@/lib/errors";
 import {
   conflicts as fetchConflicts,
   gitMissing as fetchGitMissing,
   getWorkSnapshot,
+  listLinkable,
   listRoots,
   listenStatus,
   providerDir as fetchProviderDir,
@@ -32,9 +34,12 @@ import {
   trackedFiles,
 } from "@/lib/ipc";
 import {
+  applyRootDiscovery,
   emptyRootsState,
   RootsContext,
   useRoots,
+  type CloudDiscovery,
+  type LocalDiscovery,
   type RootsState,
   type SelectRootOptions,
 } from "@/lib/roots";
@@ -43,7 +48,6 @@ import type { ConflictView, RootRow } from "@/lib/types";
 
 function overlayStatuses(rows: RootRow[], live: RootRow[]): RootRow[] {
   if (live.length === 0) return rows;
-  if (rows.length === 0) return live;
   const bySlug = new Map(live.map((row) => [row.slug, row.status]));
   return rows.map((row) => {
     const status = bySlug.get(row.slug);
@@ -51,11 +55,17 @@ function overlayStatuses(rows: RootRow[], live: RootRow[]): RootRow[] {
   });
 }
 
+function isLinked(roots: RootRow[], slug: string | null): boolean {
+  if (!slug) return false;
+  return roots.find((row) => row.slug === slug)?.linked === true;
+}
+
 async function loadTrackedCounts(
   roots: RootRow[],
 ): Promise<Record<string, number>> {
   const entries = await Promise.all(
     roots.map(async (row) => {
+      if (!row.linked) return [row.slug, 0] as const;
       try {
         const files = await trackedFiles(row.slug);
         return [row.slug, files.length] as const;
@@ -107,40 +117,100 @@ export function App() {
   }));
   const [ready, setReady] = useState(false);
   const liveRef = useRef<RootRow[]>([]);
+  const discoveryGen = useRef(0);
+  const discoveryErrorRef = useRef<string | null>(null);
+  const rootsRef = useRef(state.roots);
+  rootsRef.current = state.roots;
   const work = useSyncExternalStore(
     subscribeWork,
     getWorkSnapshot,
     getWorkSnapshot,
   );
 
+  const refreshCombined = useCallback(async () => {
+    const generation = ++discoveryGen.current;
+    const [local, cloud] = await Promise.all([
+      listRoots().then(
+        (rows): LocalDiscovery => ({ ok: true, rows }),
+        (err): LocalDiscovery => ({
+          ok: false,
+          message: errorMessage(err, "Could not list configured projects"),
+        }),
+      ),
+      listLinkable().then(
+        (rows): CloudDiscovery => ({ ok: true, rows }),
+        (err): CloudDiscovery => ({
+          ok: false,
+          message: errorMessage(err, "Could not list cloud projects"),
+        }),
+      ),
+    ]);
+    if (generation !== discoveryGen.current) return;
+
+    let discovered: RootRow[] | null = null;
+    setState((current) => {
+      const applied = applyRootDiscovery({
+        generation,
+        latestGeneration: discoveryGen.current,
+        local,
+        cloud,
+        previous: current.roots,
+      });
+      if (!applied) return current;
+      discovered = applied.roots;
+      const selected = applied.roots.find(
+        (row) => row.slug === current.selectedSlug,
+      );
+      const stillSelected = selected !== undefined;
+      const keepLive = selected?.linked === true;
+      let error = current.error;
+      if (applied.discoveryError !== null) {
+        discoveryErrorRef.current = applied.discoveryError;
+        error = applied.discoveryError;
+      } else if (current.error === discoveryErrorRef.current) {
+        error = null;
+        discoveryErrorRef.current = null;
+      } else {
+        discoveryErrorRef.current = null;
+      }
+      return {
+        ...current,
+        roots: overlayStatuses(applied.roots, liveRef.current),
+        error,
+        selectedSlug: stillSelected ? current.selectedSlug : null,
+        selectedRel: keepLive ? current.selectedRel : null,
+        resolvingRel: keepLive ? current.resolvingRel : null,
+      };
+    });
+    if (!discovered) return;
+    const trackedBySlug = await loadTrackedCounts(discovered);
+    if (generation !== discoveryGen.current) return;
+    setState((current) => ({ ...current, trackedBySlug }));
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
     void (async () => {
-      const [roots, providerDir, gitMissing] = await Promise.all([
-        listRoots().catch((): RootRow[] => []),
+      const [providerDir, gitMissing] = await Promise.all([
         fetchProviderDir().catch((): null => null),
         fetchGitMissing().catch((): boolean => false),
       ]);
       if (cancelled) return;
       setState((current) => ({
         ...current,
-        roots: overlayStatuses(roots, liveRef.current),
         providerDir,
         gitMissing,
       }));
-      setReady(true);
-      const trackedBySlug = await loadTrackedCounts(roots);
-      if (!cancelled) {
-        setState((current) => ({ ...current, trackedBySlug }));
-      }
+      await refreshCombined();
+      if (!cancelled) setReady(true);
     })();
 
     const unlisten = listenStatus((payload) => {
       liveRef.current = payload.roots;
       setState((current) => ({
         ...current,
-        error: payload.error,
+        error: payload.error ?? discoveryErrorRef.current,
         roots: overlayStatuses(current.roots, payload.roots),
       }));
     });
@@ -149,7 +219,7 @@ export function App() {
       cancelled = true;
       void unlisten.then((stop) => stop());
     };
-  }, []);
+  }, [refreshCombined]);
 
   const selectRoot = useCallback((slug: string, options?: SelectRootOptions) => {
     setState((current) => ({
@@ -165,24 +235,34 @@ export function App() {
   }, []);
 
   const selectFile = useCallback((rel: string) => {
-    setState((current) => ({
-      ...current,
-      selectedRel: rel,
-      resolvingRel: null,
-    }));
+    setState((current) => {
+      if (!isLinked(current.roots, current.selectedSlug)) return current;
+      return {
+        ...current,
+        selectedRel: rel,
+        resolvingRel: null,
+      };
+    });
   }, []);
 
   const openResolver = useCallback((slug: string, rel: string) => {
-    setState((current) => ({
-      ...current,
-      view: "root",
-      selectedSlug: slug,
-      selectedRel: rel,
-      resolvingRel: rel,
-    }));
+    setState((current) => {
+      if (!isLinked(current.roots, slug)) return current;
+      return {
+        ...current,
+        view: "root",
+        selectedSlug: slug,
+        selectedRel: rel,
+        resolvingRel: rel,
+      };
+    });
   }, []);
 
   const openFirstConflict = useCallback((slug: string) => {
+    if (!isLinked(rootsRef.current, slug)) {
+      selectRoot(slug);
+      return;
+    }
     void (async () => {
       try {
         const views = await fetchConflicts(slug).catch((): ConflictView[] => []);
@@ -227,39 +307,21 @@ export function App() {
   }, []);
 
   const applyProvider = useCallback((dir: string) => {
+    discoveryErrorRef.current = null;
     setState((current) => ({ ...current, providerDir: dir, error: null }));
     void (async () => {
-      const [roots, providerDir] = await Promise.all([
-        listRoots().catch((): RootRow[] => []),
-        fetchProviderDir().catch((): string | null => dir),
-      ]);
+      const providerDir = await fetchProviderDir().catch(
+        (): string | null => dir,
+      );
       setState((current) => ({
         ...current,
-        roots: overlayStatuses(roots, liveRef.current),
         providerDir: providerDir ?? dir,
       }));
-      const trackedBySlug = await loadTrackedCounts(roots);
-      setState((current) => ({ ...current, trackedBySlug }));
+      await refreshCombined();
     })();
-  }, []);
+  }, [refreshCombined]);
 
-  const refreshRoots = useCallback(async () => {
-    const roots = await listRoots().catch((): RootRow[] => []);
-    setState((current) => {
-      const stillSelected =
-        current.selectedSlug !== null &&
-        roots.some((row) => row.slug === current.selectedSlug);
-      return {
-        ...current,
-        roots: overlayStatuses(roots, liveRef.current),
-        selectedSlug: stillSelected ? current.selectedSlug : null,
-        selectedRel: stillSelected ? current.selectedRel : null,
-        resolvingRel: stillSelected ? current.resolvingRel : null,
-      };
-    });
-    const trackedBySlug = await loadTrackedCounts(roots);
-    setState((current) => ({ ...current, trackedBySlug }));
-  }, []);
+  const refreshRoots = refreshCombined;
 
   const value = useMemo(
     () => ({
