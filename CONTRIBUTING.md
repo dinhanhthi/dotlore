@@ -24,6 +24,10 @@ pnpm mockapp:dev   # http://localhost:38422
 
 Pick a scenario from the right sidebar (or `?scenario=<id>`). **Never change `ui/src` components to make the browser happy** — fix `ui/mockapp/mocks/` instead. Details: [`crates/dotlore-app/ui/mockapp/README.md`](crates/dotlore-app/ui/mockapp/README.md).
 
+## Landing page (`website/`)
+
+`website/` is the public landing page: static HTML + CSS, no build, no tests. Open `website/index.html` in a browser. Do not couple it to `crates/dotlore-app/ui`. Details: [`website/README.md`](website/README.md).
+
 ## Invariants
 
 These are not style rules. The engine's correctness rests on them, and each one exists because breaking it loses or leaks someone's data.

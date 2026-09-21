@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Dotlore syncs git-ignored AI-agent config between your Macs through a cloud folder you already use."
+    />
+    <title>Dotlore</title>
+    <link rel="icon" href="logo.png" type="image/png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="site-header">
+        <a class="brand" href="./">
+          <img src="logo.png" alt="Dotlore" width="32" height="32" />
+          <span class="wordmark">Dotlore</span>
+        </a>
+      </header>
+
+      <section class="hero">
+        <h1>Sync your AI stuff and keep it away from your main codebase.</h1>
+        <p>
+          Dotlore tracks git-ignored AI-agent config —
+          <code>.claude/</code>, <code>CLAUDE.md</code>, <code>.agents/</code>,
+          project <code>docs/</code>, and <code>~/.claude</code> — as a synced
+          include-list inside a project folder. It syncs that list between your
+          own Macs through a cloud folder you already use (iCloud Drive or
+          Google Drive desktop). Not a cloud API. Files stay where they are.
+        </p>
+        <div class="actions">
+          <a
+            class="btn btn-primary"
+            href="https://github.com/dinhanhthi/dotlore/releases"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Download</a
+          >
+          <a
+            class="btn btn-outline"
+            href="https://github.com/dinhanhthi/dotlore"
+            target="_blank"
+            rel="noopener noreferrer"
+            >GitHub</a
+          >
+          <a
+            class="btn btn-ghost"
+            href="https://dinhanhthi.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Anh-Thi Dinh</a
+          >
+        </div>
+      </section>
+
+      <section>
+        <h2>What it does</h2>
+        <ul class="what">
+          <li>
+            Files stay put: not moved, not symlinked, not added to the project's
+            git history.
+          </li>
+          <li>
+            A project is a folder with a synced include-list.
+            <code>.claude/</code>, <code>CLAUDE.md</code>, <code>.agents/</code>,
+            <code>docs/</code>, and <code>~/.claude</code> are entries inside it.
+          </li>
+          <li>Sync through a local cloud folder path, not a cloud API.</li>
+          <li>
+            Each Mac publishes an immutable git bundle. Nothing in the cloud
+            folder is rewritten or deleted.
+          </li>
+          <li>
+            Conflicts: the newer commit wins on every device; the loser's bytes
+            stay beside it as a sibling file.
+          </li>
+          <li>
+            Desktop app, menu bar status item, and a CLI
+            (<code>add</code>, <code>sync</code>, <code>status</code>,
+            <code>daemon</code>).
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>How it works</h2>
+        <ol class="steps">
+          <li>Add a project folder and pick the entries to sync.</li>
+          <li>
+            Dotlore copies the include-list into a private staging git repo
+            under <code>~/Library/Application Support/dotlore/</code>.
+          </li>
+          <li>
+            It publishes an immutable bundle to
+            <code>&lt;cloud&gt;/dotlore/&lt;slug&gt;/devices/&lt;device-id&gt;/</code>.
+          </li>
+          <li>Other Macs fetch and merge with the system git.</li>
+        </ol>
+      </section>
+
+      <p class="note">macOS only. Windows and Linux are not supported yet.</p>
+
+      <footer class="site-footer">
+        MIT License ·
+        <a href="https://dinhanhthi.com" target="_blank" rel="noopener noreferrer"
+          >Anh-Thi Dinh</a
+        >
+      </footer>
+    </div>
+  </body>
+</html>

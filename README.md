@@ -3,6 +3,7 @@
   <h1>Dotlore</h1>
   <p>Sync your AI stuff and keep it away from your main codebase.</p>
   <p>
+    <a href="website/">Website</a> ·
     <a href="https://github.com/dinhanhthi/dotlore">GitHub</a> ·
     <a href="https://github.com/dinhanhthi/dotlore/releases">Releases</a> ·
     <a href="CONTRIBUTING.md">Contributing</a>
@@ -92,6 +93,10 @@ To pass a sandbox home into the bundled binary (Finder's `open` does not forward
 ```bash
 DOTLORE_HOME="$HOME/Downloads/dotlore" target/release/bundle/macos/Dotlore.app/Contents/MacOS/dotlore-app
 ```
+
+## 🌐 Website
+
+The landing page is static HTML in [`website/`](website/). Open `website/index.html` in a browser. No build step.
 
 ## 🤝 Contributing
 
