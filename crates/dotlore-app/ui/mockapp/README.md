@@ -29,7 +29,7 @@ Pick a scenario from the right sidebar (or `?scenario=<id>`).
 | `all-projects`        | All projects grid                                   |
 | `git-missing`         | Populated data plus the git-missing banner          |
 | `unlinked-project`    | Cloud project in the sidebar, not yet bound         |
-| `include-list-editor` | Settings default patterns + tree Add to track       |
+| `include-list-editor` | Settings dialog open on the Patterns tab            |
 | `oversized-entry`     | `dump.bin` selected — red TooLarge weight           |
 
 ## Adding fixtures

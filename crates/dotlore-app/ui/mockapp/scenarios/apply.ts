@@ -94,9 +94,7 @@ export function afterMountFor(id: string): (() => void) | undefined {
         );
       }, 80);
       window.setTimeout(() => {
-        clickWhen(() =>
-          document.querySelector<HTMLElement>('[aria-label="Add to track"]'),
-        );
+        clickWhen(() => buttonByText("Patterns"));
       }, 160);
     };
   }
