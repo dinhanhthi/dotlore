@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/tooltip";
 import { uniqueConflictRels } from "@/lib/conflicts";
 import { conflicts as fetchConflicts, syncNow } from "@/lib/ipc";
-import { useRoots, type SeedingRoot } from "@/lib/roots";
+import { useRoots, useSyncing, type SeedingRoot } from "@/lib/roots";
 import type { RootRow, RootStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -76,6 +76,7 @@ export function Footer() {
     resolvingRel,
     openResolver,
   } = useRoots();
+  const syncing = useSyncing();
   const status = aggregateStatus(providerDir, roots);
   const filesTracked = Object.values(trackedBySlug).reduce((n, c) => n + c, 0);
   const conflicts = roots.reduce((n, r) => n + conflictCount(r.status), 0);
@@ -157,7 +158,8 @@ export function Footer() {
                 variant="ghost"
                 size="icon-xs"
                 className="text-muted-foreground"
-                disabled={busy || providerDir === null}
+                disabled={busy || syncing || providerDir === null}
+                aria-busy={syncing || undefined}
                 aria-label="Sync now"
                 onClick={() => {
                   void syncNow().catch(() => {
@@ -167,7 +169,10 @@ export function Footer() {
               />
             }
           >
-            <RefreshCw className="size-3.5" aria-hidden />
+            <RefreshCw
+              className={cn("size-3.5", syncing && "animate-spin")}
+              aria-hidden
+            />
           </TooltipTrigger>
           <TooltipContent>Sync now</TooltipContent>
         </Tooltip>

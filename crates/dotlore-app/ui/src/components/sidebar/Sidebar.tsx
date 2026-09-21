@@ -12,9 +12,9 @@ import {
 import { importInstalledAgents, linkRoot, recoverRoot, setBanner } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { useRoots } from "@/lib/roots";
-import { cn } from "@/lib/utils";
 import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 import { AddRootDialog } from "./AddRootDialog";
 import { RemoveRootAlert } from "./RemoveRootAlert";
@@ -103,6 +103,7 @@ export function Sidebar() {
     seeding,
   } = useRoots();
   const [query, setQuery] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   const [collapsed, setCollapsed] = useState<string[]>(() => readCollapsed());
   const [pendingAdd, setPendingAdd] = useState<{
     path: string;
@@ -154,16 +155,21 @@ export function Sidebar() {
   }
 
   async function refreshAgents() {
-    if (busy) return;
+    if (busy || refreshing) return;
+    setRefreshing(true);
     try {
-      const report = await importInstalledAgents();
-      const first = report.failed[0];
-      if (first) setBanner(first.message);
-    } catch {
-      // Banner is set by `run()`.
-      return;
+      try {
+        const report = await importInstalledAgents();
+        const first = report.failed[0];
+        if (first) setBanner(first.message);
+      } catch {
+        // Banner is set by `run()`.
+        return;
+      }
+      await refreshRoots();
+    } finally {
+      setRefreshing(false);
     }
-    await refreshRoots();
   }
 
   async function handleRecover(slug: string) {
@@ -267,12 +273,16 @@ export function Sidebar() {
                       variant="ghost"
                       size="icon-xs"
                       aria-label="Refresh agents"
-                      disabled={busy}
+                      aria-busy={refreshing || undefined}
+                      disabled={busy || refreshing}
                       onClick={() => void refreshAgents()}
                     />
                   }
                 >
-                  <RefreshCw aria-hidden />
+                  <RefreshCw
+                    aria-hidden
+                    className={cn(refreshing && "animate-spin")}
+                  />
                 </TooltipTrigger>
                 <TooltipContent>Refresh agents</TooltipContent>
               </Tooltip>

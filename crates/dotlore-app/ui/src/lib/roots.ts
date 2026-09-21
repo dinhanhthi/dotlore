@@ -1,4 +1,6 @@
-import { createContext, useContext } from "react";
+import { createContext, useContext, useSyncExternalStore } from "react";
+
+import { getWorkSnapshot, subscribeWork } from "./ipc";
 
 import type { LinkableRow, RootRow } from "./types";
 
@@ -197,4 +199,14 @@ export function useRoots(): RootsContextValue {
     throw new Error("useRoots must be used within RootsContext");
   }
   return value;
+}
+
+/** True while a user-started `syncNow` is still running. */
+export function useSyncing(): boolean {
+  const count = useSyncExternalStore(
+    subscribeWork,
+    () => getWorkSnapshot().syncing,
+    () => getWorkSnapshot().syncing,
+  );
+  return count > 0;
 }

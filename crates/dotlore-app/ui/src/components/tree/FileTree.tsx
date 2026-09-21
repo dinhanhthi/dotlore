@@ -28,9 +28,10 @@ import {
   syncNow,
   trackedFiles,
 } from "@/lib/ipc";
-import { useRoots } from "@/lib/roots";
+import { useRoots, useSyncing } from "@/lib/roots";
 import { buildTree, filterTree } from "@/lib/tree";
 import type { ConflictView, EntryView, TrackedFile } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024;
 
@@ -118,6 +119,7 @@ function TreeSeeding({ name }: { name: string }) {
 export function FileTree() {
   const { roots, selectedSlug, selectedRel, selectFile, openResolver, busy, seeding } =
     useRoots();
+  const syncing = useSyncing();
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
   const seedingItem = seeding.find((item) => item.slug === selectedSlug) ?? null;
 
@@ -270,7 +272,8 @@ export function FileTree() {
                     variant="ghost"
                     size="icon-xs"
                     className="text-muted-foreground"
-                    disabled={busy || !root.linked}
+                    disabled={busy || syncing || !root.linked}
+                    aria-busy={syncing || undefined}
                     aria-label="Sync now"
                     onClick={() => {
                       void syncNow().catch(() => {
@@ -280,7 +283,10 @@ export function FileTree() {
                   />
                 }
               >
-                <RefreshCw aria-hidden />
+                <RefreshCw
+                  aria-hidden
+                  className={cn(syncing && "animate-spin")}
+                />
               </TooltipTrigger>
               <TooltipContent>Sync now</TooltipContent>
             </Tooltip>

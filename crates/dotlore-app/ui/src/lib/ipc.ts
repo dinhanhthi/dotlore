@@ -20,16 +20,18 @@ import type {
 
 export type WorkSnapshot = {
   inflight: number;
+  syncing: number;
   banner: string | null;
 };
 
 let inflight = 0;
+let syncing = 0;
 let banner: string | null = null;
-let snapshot: WorkSnapshot = { inflight: 0, banner: null };
+let snapshot: WorkSnapshot = { inflight: 0, syncing: 0, banner: null };
 const listeners = new Set<() => void>();
 
 function emit(): void {
-  snapshot = { inflight, banner };
+  snapshot = { inflight, syncing, banner };
   for (const listener of listeners) listener();
 }
 
@@ -126,7 +128,12 @@ export function gitMissing(): Promise<boolean> {
 }
 
 export function syncNow(): Promise<void> {
-  return run(() => invoke("sync_now"));
+  syncing += 1;
+  emit();
+  return run(() => invoke("sync_now")).finally(() => {
+    syncing = Math.max(0, syncing - 1);
+    emit();
+  });
 }
 
 export function setProvider(dir: string): Promise<void> {
