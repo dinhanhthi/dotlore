@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState } from "react";
 import { LayoutGrid, Plus, RefreshCw, Star } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
   TooltipContent,
@@ -240,7 +239,7 @@ export function Sidebar() {
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <SearchBar value={query} onChange={setQuery} />
       </div>
-      <ScrollArea className="min-h-0 flex-1">
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         <div className="flex flex-col gap-0.5 px-1.5 pb-2">
         <SidebarItem
           label="All projects"
@@ -311,7 +310,7 @@ export function Sidebar() {
           {projects.map((row) => renderRoot(row, `sidebar-root-${row.slug}`))}
         </SidebarSection>
         </div>
-      </ScrollArea>
+      </div>
       <AddRootDialog
         path={pendingAdd?.path ?? ""}
         defaultSlug={pendingAdd?.slug ?? ""}
