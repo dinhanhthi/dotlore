@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { importInstalledAgents, linkRoot, recoverRoot, setBanner } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
+import { compareRoots } from "@/lib/order";
 import { useRoots } from "@/lib/roots";
 import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
@@ -144,8 +145,8 @@ export function Sidebar() {
 
   const starred = new Set(starredSlugs);
   const visible = roots.filter((row) => matchesQuery(row, query));
-  const agents = visible.filter((row) => row.is_agent);
-  const projects = visible.filter((row) => !row.is_agent);
+  const agents = visible.filter((row) => row.is_agent).sort(compareRoots);
+  const projects = visible.filter((row) => !row.is_agent).sort(compareRoots);
 
   async function startAdd() {
     if (busy) return;

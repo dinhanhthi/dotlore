@@ -1,5 +1,6 @@
 import { RootCard } from "@/components/main/RootCard";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { compareRoots } from "@/lib/order";
 import { useRoots } from "@/lib/roots";
 import type { RootRow } from "@/lib/types";
 
@@ -19,8 +20,8 @@ export function AllProjects({ starredOnly = false }: { starredOnly?: boolean }) 
   const source = starredOnly
     ? roots.filter((row) => starred.has(row.slug))
     : roots;
-  const agents = source.filter((row) => row.is_agent);
-  const projects = source.filter((row) => !row.is_agent);
+  const agents = source.filter((row) => row.is_agent).sort(compareRoots);
+  const projects = source.filter((row) => !row.is_agent).sort(compareRoots);
 
   if (source.length === 0) {
     return (

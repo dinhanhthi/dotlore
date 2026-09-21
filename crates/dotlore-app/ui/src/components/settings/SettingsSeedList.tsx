@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { compareAlpha } from "@/lib/order";
 
 export function SettingsSeedList({
   id,
@@ -25,9 +26,9 @@ export function SettingsSeedList({
 }) {
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
-  const visible = lines.filter((line) =>
-    line.toLowerCase().includes(query.toLowerCase()),
-  );
+  const visible = lines
+    .filter((line) => line.toLowerCase().includes(query.toLowerCase()))
+    .sort(compareAlpha);
 
   function removeLine(line: string) {
     if (disabled) return;
