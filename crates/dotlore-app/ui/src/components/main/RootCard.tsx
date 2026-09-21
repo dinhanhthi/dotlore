@@ -65,11 +65,13 @@ export function RootCard({ row }: RootCardProps) {
     openFirstConflict,
     toggleStar,
     busy,
+    seeding,
   } = useRoots();
   const starred = starredSlugs.includes(row.slug);
   const fileCount = trackedBySlug[row.slug] ?? 0;
   const [removeOpen, setRemoveOpen] = useState(false);
   const conflicts = row.status.kind === "Conflicts" ? row.status.detail : 0;
+  const seedingThis = seeding.some((item) => item.slug === row.slug);
 
   return (
     <div
@@ -161,7 +163,7 @@ export function RootCard({ row }: RootCardProps) {
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  disabled={busy}
+                  disabled={busy || seedingThis}
                   aria-label="Remove from Dotlore"
                   onClick={() => setRemoveOpen(true)}
                   className="text-muted-foreground hover:text-destructive"

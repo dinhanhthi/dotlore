@@ -22,8 +22,9 @@ use tauri::{AppHandle, Emitter, State};
 use dotlore_core::config;
 use dotlore_core::daemon::{Cmd, SharedEngine};
 use dotlore_core::engine::{
-    self, AddRootStart, ConflictView, Engine, EntryKind, EntryView, ImportAgentsReport, InspectedEntry,
-    ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView, TrackOutcome, TrackedFile,
+    self, AddRootStart, ConflictView, Engine, EntryKind, EntryView, ImportAgentsReport,
+    InspectedEntry, ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView, TrackOutcome,
+    TrackedFile,
 };
 use dotlore_core::git;
 use dotlore_core::project;
@@ -365,16 +366,29 @@ pub async fn add_root(
     let slug = match started {
         AddRootStart::Done(report) => report.slug,
         AddRootStart::Seed(seed) => {
-            // Pattern walk and the first copy stay off the engine mutex so
-            // listing another project does not wait on this folder.
+            // Pattern walk and the first copy stay off the engine mutex, on a
+            // utility-priority thread, so the window can keep using other
+            // projects while this folder is copied.
             let slug_for_cancel = seed.slug.clone();
-            let seeded = tauri::async_runtime::spawn_blocking(move || {
-                let materialized = seed.materialize().map_err(front_err);
-                (seed, materialized)
-            })
-            .await;
+            let (tx, rx) = std::sync::mpsc::channel();
+            if let Err(err) = std::thread::Builder::new()
+                .name("dotlore-seed".into())
+                .spawn(move || {
+                    background_disk();
+                    let materialized = seed.materialize().map_err(front_err);
+                    let _ = tx.send((seed, materialized));
+                })
+            {
+                cancel_add(&engine, &slug_for_cancel).await;
+                return Err(front_msg(err));
+            }
+            let seeded = tauri::async_runtime::spawn_blocking(move || rx.recv()).await;
             let (seed, materialized) = match seeded {
-                Ok(pair) => pair,
+                Ok(Ok(pair)) => pair,
+                Ok(Err(err)) => {
+                    cancel_add(&engine, &slug_for_cancel).await;
+                    return Err(front_msg(err));
+                }
                 Err(err) => {
                     cancel_add(&engine, &slug_for_cancel).await;
                     return Err(front_msg(err));
@@ -937,6 +951,31 @@ fn import_agents_dto(report: ImportAgentsReport) -> ImportAgentsDto {
 
 fn front_msg(e: impl std::fmt::Display) -> String {
     one_line(&e.to_string())
+}
+
+/// Drop this thread below the window so a pattern-file copy does not stall it.
+///
+/// Utility QoS is what `git` children spawned here inherit. The disk policy
+/// applies to this thread's own reads and writes. Failures are ignored: the
+/// copy still runs, only without the throttle.
+fn background_disk() {
+    #[cfg(target_os = "macos")]
+    {
+        const QOS_CLASS_UTILITY: u32 = 0x11;
+        const IOPOL_TYPE_DISK: i32 = 0;
+        const IOPOL_SCOPE_THREAD: i32 = 1;
+        const IOPOL_UTILITY: i32 = 4;
+        extern "C" {
+            fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+            fn setiopolicy_np(typ: i32, scope: i32, policy: i32) -> i32;
+        }
+        // SAFETY: both symbols live in libSystem. 0x11 is QOS_CLASS_UTILITY
+        // and (0, 1, 4) is disk / this thread / utility, from the macOS SDK.
+        unsafe {
+            let _ = pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+            let _ = setiopolicy_np(IOPOL_TYPE_DISK, IOPOL_SCOPE_THREAD, IOPOL_UTILITY);
+        }
+    }
 }
 
 /// Valid UTF-8 on every side, or the whole resolution is binary.

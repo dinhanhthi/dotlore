@@ -19,13 +19,23 @@ import { useRoots } from "@/lib/roots";
 import { cn } from "@/lib/utils";
 
 export function TitleBarActions() {
-  const { roots, selectedSlug, selectedRel, view, starredSlugs, toggleStar, busy } =
-    useRoots();
+  const {
+    roots,
+    selectedSlug,
+    selectedRel,
+    view,
+    starredSlugs,
+    toggleStar,
+    busy,
+    seeding,
+  } = useRoots();
   const [removeOpen, setRemoveOpen] = useState(false);
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
   const active = view === "root" && root !== null;
   const starred = root !== null && starredSlugs.includes(root.slug);
   const fileOpen = selectedRel !== null;
+  const seedingThis =
+    selectedSlug !== null && seeding.some((item) => item.slug === selectedSlug);
   const revealPath = root === null || fileOpen ? null : root.path;
 
   function reveal() {
@@ -67,7 +77,7 @@ export function TitleBarActions() {
             <Button
               variant="ghost"
               size="icon-sm"
-              disabled={!active || busy}
+              disabled={!active || busy || seedingThis}
               aria-label="Remove from Dotlore"
               onClick={() => setRemoveOpen(true)}
               className="text-muted-foreground hover:text-destructive"

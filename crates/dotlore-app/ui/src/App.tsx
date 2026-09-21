@@ -332,23 +332,10 @@ export function App() {
   const addProject = useCallback(
     async (path: string, slug: string) => {
       const name = folderName(path, slug);
-      if (seedingSlugs.current.has(slug)) {
-        setState((current) => ({
-          ...current,
-          view: "root",
-          selectedSlug: slug,
-          selectedRel: null,
-          resolvingRel: null,
-        }));
-        return;
-      }
+      if (seedingSlugs.current.has(slug)) return;
       seedingSlugs.current.add(slug);
       setState((current) => ({
         ...current,
-        view: "root",
-        selectedSlug: slug,
-        selectedRel: null,
-        resolvingRel: null,
         seeding: current.seeding.some((item) => item.slug === slug)
           ? current.seeding
           : [...current.seeding, { slug, path, name }],
