@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 
+import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
 import { SettingsPopover } from "@/components/settings/SettingsPopover";
 import { Button } from "@/components/ui/button";
 import {
@@ -204,12 +205,24 @@ export function Footer() {
         </div>
       )}
       <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
-        <span
-          className="min-w-0 truncate font-mono text-xs"
-          title={providerDir ?? "No cloud folder set"}
-        >
-          {shortProvider}
-        </span>
+        <div className="flex min-w-0 items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  className="min-w-0 truncate text-left font-mono text-xs text-muted-foreground"
+                />
+              }
+            >
+              {shortProvider}
+            </TooltipTrigger>
+            <TooltipContent>
+              {providerDir ?? "No cloud folder set"}
+            </TooltipContent>
+          </Tooltip>
+          <RevealInFinderButton path={providerDir} />
+        </div>
         <SettingsPopover />
       </div>
     </footer>

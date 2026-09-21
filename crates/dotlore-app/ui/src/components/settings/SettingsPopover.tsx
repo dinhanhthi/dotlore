@@ -1,7 +1,9 @@
 import { Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { ProviderChooser } from "@/components/setup/ProviderChooser";
+import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
+import { ChangeCloudFolderDialog } from "@/components/settings/ChangeCloudFolderDialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -57,9 +59,23 @@ function tildePath(path: string): string {
   return path.replace(/^\/Users\/[^/]+/, "~");
 }
 
+/** Short service label from the connected folder path. */
+function providerServiceLabel(path: string): string {
+  const gdrive = /\/CloudStorage\/GoogleDrive-([^/]+)/.exec(path);
+  if (gdrive?.[1]) {
+    const account = gdrive[1].includes("@")
+      ? gdrive[1].slice(0, gdrive[1].indexOf("@"))
+      : gdrive[1];
+    return `GDrive ${account}`;
+  }
+  if (path.includes("/Mobile Documents/com~apple~CloudDocs")) return "iCloud";
+  return "Other";
+}
+
 export function SettingsPopover() {
   const { providerDir, busy } = useRoots();
-  const [changing, setChanging] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [changeOpen, setChangeOpen] = useState(false);
   const [loginOn, setLoginOn] = useState(false);
   const [theme, setTheme] = useState<Theme>(() => readTheme());
 
@@ -85,11 +101,8 @@ export function SettingsPopover() {
   const folder = providerDir === null ? "No folder" : tildePath(providerDir);
 
   return (
-    <Popover
-      onOpenChange={(open) => {
-        if (!open) setChanging(false);
-      }}
-    >
+    <>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         render={
           <Button
@@ -107,7 +120,17 @@ export function SettingsPopover() {
           <PopoverTitle>Settings</PopoverTitle>
         </PopoverHeader>
         <div className="flex flex-col gap-2">
-          <span className="text-sm">Cloud folder</span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm">Cloud folder</span>
+            {providerDir !== null && (
+              <Badge
+                variant="secondary"
+                className="max-w-32 truncate font-normal"
+              >
+                {providerServiceLabel(providerDir)}
+              </Badge>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <Tooltip>
               <TooltipTrigger
@@ -124,18 +147,19 @@ export function SettingsPopover() {
                 {providerDir ?? "No cloud folder set"}
               </TooltipContent>
             </Tooltip>
+            <RevealInFinderButton path={providerDir} />
             <Button
               variant="secondary"
               size="xs"
-              onClick={() => setChanging((open) => !open)}
+              onClick={() => {
+                setOpen(false);
+                setChangeOpen(true);
+              }}
             >
               Change…
             </Button>
           </div>
         </div>
-        {changing ? (
-          <ProviderChooser compact onApplied={() => setChanging(false)} />
-        ) : null}
         <div className="flex items-center justify-between gap-3">
           <span className="text-sm">Appearance</span>
           <div className="flex rounded-4xl border border-border p-0.5">
@@ -180,5 +204,7 @@ export function SettingsPopover() {
         </div>
       </PopoverContent>
     </Popover>
+    <ChangeCloudFolderDialog open={changeOpen} onOpenChange={setChangeOpen} />
+    </>
   );
 }

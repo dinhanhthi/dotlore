@@ -17,14 +17,9 @@ function mountName(path: string): string {
 type ProviderChooserProps = {
   /** Called after `set_provider` succeeds and local state is updated. */
   onApplied?: () => void;
-  /** Smaller outline buttons for the settings popover. */
-  compact?: boolean;
 };
 
-export function ProviderChooser({
-  onApplied,
-  compact = false,
-}: ProviderChooserProps) {
+export function ProviderChooser({ onApplied }: ProviderChooserProps) {
   const { applyProvider, busy, setBanner } = useRoots();
   const [mounts, setMounts] = useState<string[] | null>(null);
   const [localBusy, setLocalBusy] = useState(false);
@@ -48,14 +43,11 @@ export function ProviderChooser({
     }
   }
 
-  const buttonSize = compact ? "sm" : "default";
-
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-col gap-2">
         <Button
           variant="outline"
-          size={buttonSize}
           className="w-full"
           disabled={locked}
           onClick={() => {
@@ -68,7 +60,6 @@ export function ProviderChooser({
         </Button>
         <Button
           variant="outline"
-          size={buttonSize}
           className="w-full"
           disabled={locked}
           onClick={() => {
@@ -83,7 +74,6 @@ export function ProviderChooser({
         </Button>
         <Button
           variant="outline"
-          size={buttonSize}
           className="w-full"
           disabled={locked}
           onClick={() => {
