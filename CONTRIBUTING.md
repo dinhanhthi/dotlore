@@ -26,7 +26,7 @@ Pick a scenario from the right sidebar (or `?scenario=<id>`). **Never change `ui
 
 ## Landing page (`website/`)
 
-`website/` is the public landing page: static HTML + CSS, no build, no tests. Open `website/index.html` in a browser. Do not couple it to `crates/dotlore-app/ui`. Details: [`website/README.md`](website/README.md).
+`website/` is the public landing page: static HTML + CSS, no build, no tests. Open `website/index.html` in a browser. A push to `main` that touches `website/` deploys to GitHub Pages (`dotlore.dinhanhthi.com`). Do not couple it to `crates/dotlore-app/ui`. Details: [`website/README.md`](website/README.md).
 
 ## Invariants
 

@@ -1,6 +1,8 @@
 # Landing page
 
-Static HTML for [dotlore](https://github.com/dinhanhthi/dotlore). No build step. No tests.
+Static HTML for [Dotlore](https://dotlore.dinhanhthi.com). No build step. No tests.
+
+A push to `main` that touches this folder deploys to GitHub Pages via [`.github/workflows/pages.yml`](../.github/workflows/pages.yml). Live site: <https://dotlore.dinhanhthi.com>.
 
 ## Preview
 
@@ -19,5 +21,7 @@ Or serve the folder with any static server.
 | `index.html` | Page |
 | `styles.css` | shadcn-like tokens and layout |
 | `logo.png` | Copy of `../assets/logo_256.png` |
+| `CNAME` | Custom domain (`dotlore.dinhanhthi.com`) |
+| `.nojekyll` | Skip Jekyll on GitHub Pages |
 
 Do not couple this folder to `crates/dotlore-app/ui`.

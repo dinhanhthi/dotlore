@@ -3,7 +3,7 @@
   <h1>Dotlore</h1>
   <p>Sync your AI stuff and keep it away from your main codebase.</p>
   <p>
-    <a href="website/">Website</a> ·
+    <a href="https://dotlore.dinhanhthi.com">Website</a> ·
     <a href="https://github.com/dinhanhthi/dotlore">GitHub</a> ·
     <a href="https://github.com/dinhanhthi/dotlore/releases">Releases</a> ·
     <a href="CONTRIBUTING.md">Contributing</a>
@@ -96,7 +96,7 @@ DOTLORE_HOME="$HOME/Downloads/dotlore" target/release/bundle/macos/Dotlore.app/C
 
 ## 🌐 Website
 
-The landing page is static HTML in [`website/`](website/). Open `website/index.html` in a browser. No build step.
+The landing page is at [dotlore.dinhanhthi.com](https://dotlore.dinhanhthi.com). Source is static HTML in [`website/`](website/). A push to `main` deploys it. Open `website/index.html` in a browser to preview. No build step.
 
 ## 🤝 Contributing
 
