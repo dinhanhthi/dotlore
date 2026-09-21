@@ -4,7 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import { Dialog } from "@/components/ui/dialog";
 import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roots";
 
-import { SettingsDefaults, SettingsPanel } from "./SettingsPopover";
+import {
+  SettingsNeverList,
+  SettingsPanel,
+  SettingsPatterns,
+} from "./SettingsPopover";
 
 vi.mock("@/lib/ipc", () => ({
   defaultPatterns: () => Promise.resolve(["CLAUDE.md", "docs/"]),
@@ -44,7 +48,7 @@ function wrap(node: React.ReactNode): string {
 }
 
 describe("SettingsPanel", () => {
-  it("has General and Patterns tabs, not a popover", () => {
+  it("has General, Patterns, and Never-list tabs, not a popover", () => {
     const html = wrap(
       <Dialog open>
         <SettingsPanel />
@@ -54,6 +58,7 @@ describe("SettingsPanel", () => {
     expect(html).toContain('role="tablist"');
     expect(html).toMatch(/role="tab"[^>]*>General</);
     expect(html).toMatch(/role="tab"[^>]*>Patterns</);
+    expect(html).toMatch(/role="tab"[^>]*>Never-list</);
     expect(html).not.toContain('data-slot="popover-content"');
   });
 
@@ -73,14 +78,26 @@ describe("SettingsPanel", () => {
   });
 });
 
-describe("SettingsDefaults", () => {
-  it("explains new-project scope, agent folders, and the never-list", () => {
-    const html = wrap(<SettingsDefaults />);
+describe("SettingsPatterns", () => {
+  it("explains new-project scope and agent folders", () => {
+    const html = wrap(<SettingsPatterns />);
     expect(html).toMatch(/textarea/i);
-    expect(html.match(/<textarea/gi)?.length).toBe(2);
+    expect(html.match(/<textarea/gi)?.length).toBe(1);
     expect(html).toContain("projects added from now on");
     expect(html).toContain("~/.claude");
     expect(html).toContain("~/.cursor");
+    expect(html).not.toContain("never-list");
+  });
+});
+
+describe("SettingsNeverList", () => {
+  it("explains new-project scope for the never-list", () => {
+    const html = wrap(<SettingsNeverList />);
+    expect(html).toMatch(/textarea/i);
+    expect(html.match(/<textarea/gi)?.length).toBe(1);
     expect(html).toContain("never-list");
+    expect(html).toContain("projects added from now on");
+    expect(html).toContain("agent folders");
+    expect(html).not.toContain("~/.claude");
   });
 });

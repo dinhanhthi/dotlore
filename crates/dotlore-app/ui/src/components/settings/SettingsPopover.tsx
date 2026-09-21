@@ -37,7 +37,13 @@ import { readTheme, writeTheme, type Theme } from "@/lib/theme";
 const fieldClass =
   "w-full min-w-0 resize-y rounded-2xl border border-input bg-input/30 px-3 py-2 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50";
 
-type SettingsTab = "general" | "patterns";
+const SETTINGS_TABS = [
+  { id: "general", label: "General" },
+  { id: "patterns", label: "Patterns" },
+  { id: "never", label: "Never-list" },
+] as const;
+
+type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
 
 function linesToPatterns(text: string): string[] {
   return text
@@ -156,20 +162,53 @@ function SettingsLimits() {
   );
 }
 
-/** Global seed patterns and never-list. */
-export function SettingsDefaults() {
+function SettingsField({
+  id,
+  label,
+  value,
+  disabled,
+  hint,
+  onChange,
+  onBlur,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  disabled: boolean;
+  hint: string;
+  onChange: (value: string) => void;
+  onBlur: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor={id} className="text-sm">
+        {label}
+      </label>
+      <textarea
+        id={id}
+        rows={12}
+        spellCheck={false}
+        className={fieldClass}
+        value={value}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.value)}
+        onBlur={onBlur}
+      />
+      <p className="text-xs text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+/** Global seed include-list for new projects. */
+export function SettingsPatterns() {
   const { busy } = useRoots();
   const [patternsText, setPatternsText] = useState("");
-  const [ignoreText, setIgnoreText] = useState("");
 
   useEffect(() => {
-    void Promise.all([defaultPatterns(), defaultIgnore()])
-      .then(([patterns, ignore]) => {
-        setPatternsText(patterns.join("\n"));
-        setIgnoreText(ignore);
-      })
+    void defaultPatterns()
+      .then((patterns) => setPatternsText(patterns.join("\n")))
       .catch(() => {
-        // getters failed; leave the fields empty
+        // getter failed; leave the field empty
       });
   }, []);
 
@@ -184,6 +223,34 @@ export function SettingsDefaults() {
     }
   }
 
+  return (
+    <SettingsField
+      id="default-patterns"
+      label="Default patterns"
+      value={patternsText}
+      disabled={busy}
+      hint="Applies to projects added from now on, not existing ones. Does not affect agent folders (~/.claude, ~/.cursor, …), which always seed from the built-in per-agent lists."
+      onChange={setPatternsText}
+      onBlur={() => {
+        void commitPatterns();
+      }}
+    />
+  );
+}
+
+/** Global seed never-list for new projects and agent folders. */
+export function SettingsNeverList() {
+  const { busy } = useRoots();
+  const [ignoreText, setIgnoreText] = useState("");
+
+  useEffect(() => {
+    void defaultIgnore()
+      .then(setIgnoreText)
+      .catch(() => {
+        // getter failed; leave the field empty
+      });
+  }, []);
+
   async function commitIgnore() {
     if (busy) return;
     try {
@@ -196,51 +263,17 @@ export function SettingsDefaults() {
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="default-patterns" className="text-sm">
-          Default patterns
-        </label>
-        <textarea
-          id="default-patterns"
-          rows={6}
-          spellCheck={false}
-          className={fieldClass}
-          value={patternsText}
-          disabled={busy}
-          onChange={(event) => setPatternsText(event.target.value)}
-          onBlur={() => {
-            void commitPatterns();
-          }}
-        />
-        <p className="text-xs text-muted-foreground">
-          Applies to projects added from now on, not existing ones. Does not
-          affect agent folders (~/.claude, ~/.cursor, …), which always seed
-          from the built-in per-agent lists.
-        </p>
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor="default-ignore" className="text-sm">
-          Default never-list
-        </label>
-        <textarea
-          id="default-ignore"
-          rows={6}
-          spellCheck={false}
-          className={fieldClass}
-          value={ignoreText}
-          disabled={busy}
-          onChange={(event) => setIgnoreText(event.target.value)}
-          onBlur={() => {
-            void commitIgnore();
-          }}
-        />
-        <p className="text-xs text-muted-foreground">
-          The never-list also applies to projects added from now on, not
-          existing ones, and to both projects and agent folders.
-        </p>
-      </div>
-    </div>
+    <SettingsField
+      id="default-ignore"
+      label="Default never-list"
+      value={ignoreText}
+      disabled={busy}
+      hint="Applies to projects added from now on, not existing ones, and to both projects and agent folders."
+      onChange={setIgnoreText}
+      onBlur={() => {
+        void commitIgnore();
+      }}
+    />
   );
 }
 
@@ -384,34 +417,24 @@ export function SettingsPanel({
         <div
           role="tablist"
           aria-label="Settings sections"
-          className="grid grid-cols-2 rounded-4xl border border-border p-0.5"
+          className="grid grid-cols-3 rounded-4xl border border-border p-0.5"
         >
-          <Button
-            type="button"
-            role="tab"
-            id="settings-tab-general"
-            aria-controls="settings-panel-general"
-            aria-selected={tab === "general"}
-            variant={tab === "general" ? "default" : "ghost"}
-            size="xs"
-            className="w-full"
-            onClick={() => setTab("general")}
-          >
-            General
-          </Button>
-          <Button
-            type="button"
-            role="tab"
-            id="settings-tab-patterns"
-            aria-controls="settings-panel-patterns"
-            aria-selected={tab === "patterns"}
-            variant={tab === "patterns" ? "default" : "ghost"}
-            size="xs"
-            className="w-full"
-            onClick={() => setTab("patterns")}
-          >
-            Patterns
-          </Button>
+          {SETTINGS_TABS.map(({ id, label }) => (
+            <Button
+              key={id}
+              type="button"
+              role="tab"
+              id={`settings-tab-${id}`}
+              aria-controls={`settings-panel-${id}`}
+              aria-selected={tab === id}
+              variant={tab === id ? "default" : "ghost"}
+              size="xs"
+              className="w-full"
+              onClick={() => setTab(id)}
+            >
+              {label}
+            </Button>
+          ))}
         </div>
       </DialogHeader>
       <div className="h-[28rem] overflow-y-auto px-6 pt-5 pb-7">
@@ -423,13 +446,21 @@ export function SettingsPanel({
           >
             <SettingsGeneral onChangeFolder={onChangeFolder ?? (() => {})} />
           </div>
-        ) : (
+        ) : tab === "patterns" ? (
           <div
             role="tabpanel"
             id="settings-panel-patterns"
             aria-labelledby="settings-tab-patterns"
           >
-            <SettingsDefaults />
+            <SettingsPatterns />
+          </div>
+        ) : (
+          <div
+            role="tabpanel"
+            id="settings-panel-never"
+            aria-labelledby="settings-tab-never"
+          >
+            <SettingsNeverList />
           </div>
         )}
       </div>
