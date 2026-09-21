@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { applyRootDiscovery, mergeRootsBySlug } from "./roots";
+import { applyRootDiscovery, looksLikeAgent, mergeRootsBySlug, rootsWithSeeding } from "./roots";
 import type { LinkableRow, RootRow } from "./types";
 
 function linkedRow(overrides: Partial<RootRow> = {}): RootRow {
@@ -23,6 +23,36 @@ function cloudRow(overrides: Partial<LinkableRow> = {}): LinkableRow {
     ...overrides,
   };
 }
+
+describe("rootsWithSeeding", () => {
+  it("inserts a linked placeholder until the real row arrives", () => {
+    const merged = rootsWithSeeding(
+      [linkedRow()],
+      [{ slug: "site", path: "/Users/thi/src/site", name: "site" }],
+    );
+    expect(merged.map((row) => row.slug)).toEqual(["notes", "site"]);
+    expect(merged.find((row) => row.slug === "site")).toMatchObject({
+      linked: true,
+      path: "/Users/thi/src/site",
+      status: { kind: "Pending" },
+    });
+  });
+
+  it("drops the placeholder once the same slug is linked", () => {
+    const merged = rootsWithSeeding(
+      [linkedRow({ slug: "site", path: "/Users/thi/src/site" })],
+      [{ slug: "site", path: "/Users/thi/src/site", name: "site" }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.path).toBe("/Users/thi/src/site");
+  });
+
+  it("treats a dotted directory directly under home as an agent", () => {
+    expect(looksLikeAgent("/Users/thi/.claude")).toBe(true);
+    expect(looksLikeAgent("/home/thi/.config/opencode")).toBe(true);
+    expect(looksLikeAgent("/Users/thi/src/site")).toBe(false);
+  });
+});
 
 describe("mergeRootsBySlug", () => {
   it("deduplicates a slug that appears in both local and cloud lists", () => {

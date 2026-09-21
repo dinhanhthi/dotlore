@@ -133,8 +133,12 @@ export function setProvider(dir: string): Promise<void> {
   return run(() => invoke("set_provider", { dir }));
 }
 
+/**
+ * Register a project. Does not take the global busy lock — the file tree
+ * shows its own seeding state while pattern files are copied.
+ */
 export function addRoot(path: string, slug?: string): Promise<string> {
-  return run(() => invoke("add_root", { path, slug: slug ?? null }));
+  return invoke("add_root", { path, slug: slug ?? null });
 }
 
 export function importInstalledAgents(): Promise<ImportAgentsDto> {

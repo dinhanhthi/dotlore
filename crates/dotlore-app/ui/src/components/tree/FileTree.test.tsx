@@ -43,6 +43,7 @@ function renderTree(row: RootRow): string {
     busy: false,
     banner: null,
     setBanner: () => {},
+    addProject: async () => {},
   };
   return renderToStaticMarkup(
     <TooltipProvider>
@@ -66,6 +67,51 @@ function buttonWithLabel(html: string, label: string): string {
 function isDisabled(button: string): boolean {
   return /\sdisabled(?:=|>|\s)/.test(button) || button.includes("data-disabled");
 }
+
+describe("FileTree seeding", () => {
+  it("shows a loading state in the tree while files are being added", () => {
+    const value: RootsContextValue = {
+      ...emptyRootsState,
+      selectedSlug: "site",
+      seeding: [{ slug: "site", path: "/Users/thi/src/site", name: "site" }],
+      roots: [
+        {
+          slug: "site",
+          path: "/Users/thi/src/site",
+          name: "site",
+          is_agent: false,
+          linked: true,
+          status: { kind: "Pending" },
+        },
+      ],
+      selectRoot: () => {},
+      selectFile: () => {},
+      openResolver: () => {},
+      openFirstConflict: () => {},
+      closeResolver: () => {},
+      showAllProjects: () => {},
+      showStarred: () => {},
+      toggleStar: () => {},
+      applyProvider: () => {},
+      refreshRoots: async () => {},
+      addProject: async () => {},
+      inflight: 0,
+      busy: false,
+      banner: null,
+      setBanner: () => {},
+    };
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <RootsContext.Provider value={value}>
+          <FileTree />
+        </RootsContext.Provider>
+      </TooltipProvider>,
+    );
+    expect(html).toContain("Adding files…");
+    expect(html).toContain('aria-busy="true"');
+    expect(html).not.toContain('aria-label="Add to track"');
+  });
+});
 
 describe("FileTree dialogs", () => {
   it("closes the picker and clears untrackTarget when selectedSlug or linked changes", () => {

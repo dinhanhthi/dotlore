@@ -10,7 +10,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { addRoot } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
 
 type AddRootDialogProps = {
@@ -26,25 +25,22 @@ export function AddRootDialog({
   open,
   onOpenChange,
 }: AddRootDialogProps) {
-  const { refreshRoots, selectRoot, busy } = useRoots();
+  const { addProject, busy } = useRoots();
   const [slug, setSlug] = useState(defaultSlug);
+  const [closing, setClosing] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setSlug(defaultSlug);
+    setClosing(false);
   }, [open, defaultSlug]);
 
-  async function submit() {
+  function submit() {
     const trimmed = slug.trim();
-    if (trimmed.length === 0 || busy) return;
-    try {
-      const created = await addRoot(path, trimmed);
-      await refreshRoots();
-      selectRoot(created);
-      onOpenChange(false);
-    } catch {
-      // Banner is set by `run()`.
-    }
+    if (trimmed.length === 0 || closing) return;
+    setClosing(true);
+    onOpenChange(false);
+    void addProject(path, trimmed);
   }
 
   return (
@@ -73,19 +69,19 @@ export function AddRootDialog({
               onChange={(event) => setSlug(event.target.value)}
               autoComplete="off"
               spellCheck={false}
-              disabled={busy}
+              disabled={busy || closing}
             />
           </div>
           <DialogFooter>
             <Button
               type="button"
               variant="outline"
-              disabled={busy}
+              disabled={closing}
               onClick={() => onOpenChange(false)}
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={busy || slug.trim().length === 0}>
+            <Button type="submit" disabled={closing || slug.trim().length === 0}>
               Add
             </Button>
           </DialogFooter>

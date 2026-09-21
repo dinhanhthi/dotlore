@@ -79,6 +79,30 @@ function rollupBytes(nodes: TreeNode[]): number {
   return total;
 }
 
+/** Keep nodes whose path matches `query`, plus ancestor folders of a match. */
+export function filterTree(nodes: TreeNode[], query: string): TreeNode[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return nodes;
+  const filtered: TreeNode[] = [];
+  for (const node of nodes) {
+    const next = filterNode(node, needle);
+    if (next) filtered.push(next);
+  }
+  return filtered;
+}
+
+function filterNode(node: TreeNode, needle: string): TreeNode | null {
+  if (node.path.toLowerCase().includes(needle)) return node;
+  if (node.kind === "file") return null;
+  const children: TreeNode[] = [];
+  for (const child of node.children) {
+    const next = filterNode(child, needle);
+    if (next) children.push(next);
+  }
+  if (children.length === 0) return null;
+  return { ...node, children };
+}
+
 export function buildTree(files: TrackedFile[]): TreeNode[] {
   const root: TreeNode[] = [];
 

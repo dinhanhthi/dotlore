@@ -20,9 +20,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use dotlore_core::config;
-use dotlore_core::daemon::Cmd;
+use dotlore_core::daemon::{Cmd, SharedEngine};
 use dotlore_core::engine::{
-    self, ConflictView, Engine, EntryKind, EntryView, ImportAgentsReport, InspectedEntry,
+    self, AddRootStart, ConflictView, Engine, EntryKind, EntryView, ImportAgentsReport, InspectedEntry,
     ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView, TrackOutcome, TrackedFile,
 };
 use dotlore_core::git;
@@ -351,18 +351,78 @@ pub async fn add_root(
     slug: Option<String>,
 ) -> Result<String, String> {
     let engine = state.shared_engine().map_err(front_msg)?;
-    let slug = tauri::async_runtime::spawn_blocking(move || {
-        engine
+    let engine_for_begin = engine.clone();
+    let started = tauri::async_runtime::spawn_blocking(move || {
+        engine_for_begin
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .add_root(Path::new(&path), slug.as_deref())
-            .map(|r| r.slug)
+            .begin_add_root(Path::new(&path), slug.as_deref())
             .map_err(front_err)
     })
     .await
     .map_err(front_msg)??;
+
+    let slug = match started {
+        AddRootStart::Done(report) => report.slug,
+        AddRootStart::Seed(seed) => {
+            // Pattern walk and the first copy stay off the engine mutex so
+            // listing another project does not wait on this folder.
+            let slug_for_cancel = seed.slug.clone();
+            let seeded = tauri::async_runtime::spawn_blocking(move || {
+                let materialized = seed.materialize().map_err(front_err);
+                (seed, materialized)
+            })
+            .await;
+            let (seed, materialized) = match seeded {
+                Ok(pair) => pair,
+                Err(err) => {
+                    cancel_add(&engine, &slug_for_cancel).await;
+                    return Err(front_msg(err));
+                }
+            };
+            if let Err(err) = materialized {
+                cancel_add(&engine, &seed.slug).await;
+                return Err(err);
+            }
+            let engine_for_finish = engine.clone();
+            let slug_for_finish = seed.slug.clone();
+            let finished = tauri::async_runtime::spawn_blocking(move || {
+                let mut guard = engine_for_finish
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let slug = seed.slug.clone();
+                match guard.complete_add_root(&seed) {
+                    Ok(()) => Ok(slug),
+                    Err(err) => {
+                        guard.cancel_add_root(&slug);
+                        Err(front_err(err))
+                    }
+                }
+            })
+            .await;
+            match finished {
+                Ok(result) => result?,
+                Err(err) => {
+                    cancel_add(&engine, &slug_for_finish).await;
+                    return Err(front_msg(err));
+                }
+            }
+        }
+    };
     notify(&app, &state)?;
     Ok(slug)
+}
+
+async fn cancel_add(engine: &SharedEngine, slug: &str) {
+    let engine = engine.clone();
+    let slug = slug.to_string();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cancel_add_root(&slug);
+    })
+    .await;
 }
 
 #[tauri::command]

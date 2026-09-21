@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Plus, RefreshCw } from "lucide-react";
+import { Loader2, Plus, RefreshCw } from "lucide-react";
 
+import { SearchBar } from "@/components/sidebar/SearchBar";
 import {
   EntryPickerDialog,
   UntrackEntryDialog,
@@ -22,7 +23,7 @@ import {
   trackedFiles,
 } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
-import { buildTree } from "@/lib/tree";
+import { buildTree, filterTree } from "@/lib/tree";
 import type { ConflictView, EntryView, TrackedFile } from "@/lib/types";
 
 const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -48,10 +49,25 @@ function conflictPathSet(views: ConflictView[]): Set<string> {
   return new Set(views.map((view) => String(view.live).replace(/\\/g, "/")));
 }
 
+function TreeSeeding({ name }: { name: string }) {
+  return (
+    <div className="flex h-full min-h-0 flex-col" aria-busy="true" aria-live="polite">
+      <header className="flex h-row shrink-0 items-center gap-3 border-b border-border px-3">
+        <span className="min-w-0 flex-1 truncate text-foreground">{name}</span>
+      </header>
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-muted-foreground">
+        <Loader2 className="size-5 animate-spin" aria-hidden />
+        <p className="text-center text-sm">Adding files…</p>
+      </div>
+    </div>
+  );
+}
+
 export function FileTree() {
-  const { roots, selectedSlug, selectedRel, selectFile, openResolver, busy } =
+  const { roots, selectedSlug, selectedRel, selectFile, openResolver, busy, seeding } =
     useRoots();
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
+  const seedingItem = seeding.find((item) => item.slug === selectedSlug) ?? null;
 
   const [files, setFiles] = useState<TrackedFile[]>([]);
   const [entries, setEntries] = useState<EntryView[]>([]);
@@ -62,12 +78,13 @@ export function FileTree() {
   );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [untrackTarget, setUntrackTarget] = useState<EntryView | null>(null);
+  const [query, setQuery] = useState("");
   const loadId = useRef({ slug: selectedSlug, linked: !!root?.linked });
 
   const statusKey = root ? JSON.stringify(root.status) : "";
 
   const loadTree = useCallback(async () => {
-    if (!selectedSlug || !root?.linked) {
+    if (seedingItem || !selectedSlug || !root?.linked) {
       return {
         files: [] as TrackedFile[],
         listed: [] as EntryView[],
@@ -87,7 +104,7 @@ export function FileTree() {
       conflicts: conflictPathSet(views),
       maxFileBytes: maxMb * 1024 * 1024,
     };
-  }, [selectedSlug, root?.linked]);
+  }, [selectedSlug, root?.linked, seedingItem]);
 
   const applyTree = useCallback(
     (next: {
@@ -113,13 +130,14 @@ export function FileTree() {
   }, [loadTree, applyTree, selectedSlug, root?.linked]);
 
   useEffect(() => {
+    if (seedingItem) return;
     const started = { slug: selectedSlug, linked: !!root?.linked };
     void (async () => {
       const next = await loadTree();
       if (!treeLoadMatches(loadId.current, started)) return;
       applyTree(next);
     })();
-  }, [loadTree, applyTree, statusKey, selectedSlug, root?.linked]);
+  }, [loadTree, applyTree, statusKey, selectedSlug, root?.linked, seedingItem]);
 
   useEffect(() => {
     loadId.current = { slug: selectedSlug, linked: !!root?.linked };
@@ -129,31 +147,39 @@ export function FileTree() {
     setFiles(next.files);
     setEntries(next.listed);
     setConflictSet(new Set());
+    setQuery("");
   }, [selectedSlug, root?.linked]);
 
   const tree = useMemo(() => buildTree(files), [files]);
+  const filtering = query.trim().length > 0;
+  const visibleTree = useMemo(() => filterTree(tree, query), [tree, query]);
 
   const isOpen = useCallback(
     (path: string, depth: number): boolean => {
+      if (filtering) return true;
       if (!selectedSlug) return false;
       const explicit = openBySlug[selectedSlug]?.[path];
       if (explicit !== undefined) return explicit;
       return depth === 0;
     },
-    [openBySlug, selectedSlug],
+    [filtering, openBySlug, selectedSlug],
   );
 
   const onToggle = useCallback(
     (path: string, depth: number) => {
-      if (!selectedSlug) return;
+      if (!selectedSlug || filtering) return;
       const next = !isOpen(path, depth);
       setOpenBySlug((current) => ({
         ...current,
         [selectedSlug]: { ...current[selectedSlug], [path]: next },
       }));
     },
-    [isOpen, selectedSlug],
+    [filtering, isOpen, selectedSlug],
   );
+
+  if (seedingItem) {
+    return <TreeSeeding name={seedingItem.name} />;
+  }
 
   if (!root) {
     return <div className="h-full" />;
@@ -205,9 +231,26 @@ export function FileTree() {
           <TooltipContent>Sync now</TooltipContent>
         </Tooltip>
       </header>
+      <div className="flex shrink-0 border-b border-border px-3 py-2">
+        <SearchBar
+          value={query}
+          onChange={setQuery}
+          placeholder="Search files"
+          label="Search files and folders"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && query) {
+              event.preventDefault();
+              setQuery("");
+            }
+          }}
+        />
+      </div>
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 px-1.5 py-1">
-        {tree.map((node) => (
+        {filtering && visibleTree.length === 0 ? (
+          <p className="px-2 py-1.5 text-sm text-muted-foreground">No matches</p>
+        ) : null}
+        {visibleTree.map((node) => (
           <TreeNode
             key={node.path}
             node={node}

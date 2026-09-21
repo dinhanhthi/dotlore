@@ -44,6 +44,7 @@ function wrap(node: React.ReactNode): string {
     busy: false,
     banner: null,
     setBanner: () => {},
+    addProject: async () => {},
   };
   return renderToStaticMarkup(
     <RootsContext.Provider value={value}>{node}</RootsContext.Provider>,

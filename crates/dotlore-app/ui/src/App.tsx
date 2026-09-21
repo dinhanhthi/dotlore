@@ -22,6 +22,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { uniqueConflictRels } from "@/lib/conflicts";
 import { errorMessage } from "@/lib/errors";
 import {
+  addRoot,
   conflicts as fetchConflicts,
   gitMissing as fetchGitMissing,
   getWorkSnapshot,
@@ -37,7 +38,9 @@ import {
 import {
   applyRootDiscovery,
   emptyRootsState,
+  folderName,
   RootsContext,
+  rootsWithSeeding,
   useRoots,
   type CloudDiscovery,
   type LocalDiscovery,
@@ -134,6 +137,7 @@ export function App() {
   const discoveryErrorRef = useRef<string | null>(null);
   const rootsRef = useRef(state.roots);
   rootsRef.current = state.roots;
+  const seedingSlugs = useRef(new Set<string>());
   const work = useSyncExternalStore(
     subscribeWork,
     getWorkSnapshot,
@@ -175,6 +179,9 @@ export function App() {
         (row) => row.slug === current.selectedSlug,
       );
       const stillSelected = selected !== undefined;
+      const seedingSelected = current.seeding.some(
+        (item) => item.slug === current.selectedSlug,
+      );
       const keepLive = selected?.linked === true;
       let error = current.error;
       if (applied.discoveryError !== null) {
@@ -190,7 +197,8 @@ export function App() {
         ...current,
         roots: overlayStatuses(applied.roots, liveRef.current),
         error,
-        selectedSlug: stillSelected ? current.selectedSlug : null,
+        selectedSlug:
+          stillSelected || seedingSelected ? current.selectedSlug : null,
         selectedRel: keepLive ? current.selectedRel : null,
         resolvingRel: keepLive ? current.resolvingRel : null,
       };
@@ -321,6 +329,66 @@ export function App() {
     setState((current) => ({ ...current, starredSlugs }));
   }, []);
 
+  const addProject = useCallback(
+    async (path: string, slug: string) => {
+      const name = folderName(path, slug);
+      if (seedingSlugs.current.has(slug)) {
+        setState((current) => ({
+          ...current,
+          view: "root",
+          selectedSlug: slug,
+          selectedRel: null,
+          resolvingRel: null,
+        }));
+        return;
+      }
+      seedingSlugs.current.add(slug);
+      setState((current) => ({
+        ...current,
+        view: "root",
+        selectedSlug: slug,
+        selectedRel: null,
+        resolvingRel: null,
+        seeding: current.seeding.some((item) => item.slug === slug)
+          ? current.seeding
+          : [...current.seeding, { slug, path, name }],
+      }));
+      try {
+        const created = await addRoot(path, slug);
+        await refreshCombined();
+        setState((current) => {
+          const stillHere = current.selectedSlug === slug || current.selectedSlug === created;
+          if (!stillHere) return current;
+          return {
+            ...current,
+            view: "root",
+            selectedSlug: created,
+            selectedRel: null,
+            resolvingRel: null,
+          };
+        });
+      } catch (err) {
+        setBanner(errorMessage(err, "Could not add project"));
+        setState((current) => {
+          if (current.selectedSlug !== slug) return current;
+          return {
+            ...current,
+            selectedSlug: null,
+            selectedRel: null,
+            resolvingRel: null,
+          };
+        });
+      } finally {
+        seedingSlugs.current.delete(slug);
+        setState((current) => ({
+          ...current,
+          seeding: current.seeding.filter((item) => item.slug !== slug),
+        }));
+      }
+    },
+    [refreshCombined],
+  );
+
   const applyProvider = useCallback((dir: string) => {
     discoveryErrorRef.current = null;
     setState((current) => ({ ...current, providerDir: dir, error: null }));
@@ -343,6 +411,7 @@ export function App() {
   const value = useMemo(
     () => ({
       ...state,
+      roots: rootsWithSeeding(state.roots, state.seeding),
       selectRoot,
       selectFile,
       openResolver,
@@ -353,6 +422,7 @@ export function App() {
       toggleStar,
       applyProvider,
       refreshRoots,
+      addProject,
       inflight: work.inflight,
       busy: work.inflight > 0,
       banner: work.banner,
@@ -370,6 +440,7 @@ export function App() {
       toggleStar,
       applyProvider,
       refreshRoots,
+      addProject,
       work,
     ],
   );
