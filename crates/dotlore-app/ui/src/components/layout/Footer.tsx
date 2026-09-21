@@ -129,7 +129,7 @@ export function Footer() {
   }
 
   return (
-    <footer className="flex h-11 items-center gap-4 border-t border-border px-3 text-[13px] text-muted-foreground">
+    <footer className="flex h-11 items-center gap-4 border-t border-border px-3 text-[0.8rem] text-muted-foreground">
       <div className="flex min-w-0 flex-1 items-center gap-2.5" aria-busy={busy}>
         {busy ? (
           <>
@@ -164,7 +164,7 @@ export function Footer() {
               />
             }
           >
-            <RefreshCw aria-hidden />
+            <RefreshCw className="size-3.5" aria-hidden />
           </TooltipTrigger>
           <TooltipContent>Sync now</TooltipContent>
         </Tooltip>

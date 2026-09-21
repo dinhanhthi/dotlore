@@ -63,7 +63,7 @@ export function SidebarItem({
     <div
       id={id}
       className={cn(
-        "group relative flex h-8 w-full items-center gap-2 rounded-2xl px-2",
+        "group relative flex h-8 w-full items-center gap-2 rounded-2xl px-2 mb-2",
         "transition-colors duration-[var(--dur-short)] ease-[var(--ease-out)]",
         "hover:bg-sidebar-accent/80",
         selected && "bg-sidebar-accent",
@@ -121,7 +121,7 @@ export function SidebarItem({
         >
           <Star
             aria-hidden
-            className={cn("size-4", starred && "fill-current text-foreground")}
+            className={cn("size-3.5", starred && "fill-current text-foreground")}
           />
         </button>
       )}

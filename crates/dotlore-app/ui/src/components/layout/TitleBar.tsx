@@ -48,18 +48,18 @@ export function TitleBar({ className }: { className?: string }) {
       <div
         data-tauri-drag-region
         onMouseDown={handleMouseDown}
-        className="flex h-full min-w-0 flex-1 items-center gap-2 pl-28"
+        className="flex h-full min-w-0 flex-1 items-center gap-2 pl-24"
       >
         <img
           src="/logo_256.png"
           alt=""
           className="pointer-events-none size-6"
         />
-        <span className="pointer-events-none text-sm font-medium text-foreground">
+        <span className="pointer-events-none text-base font-medium text-foreground">
           Dotlore
         </span>
-        <span className="pointer-events-none text-xs text-muted-foreground">
-          {version}
+        <span className="pointer-events-none text-xs font-mono text-muted-foreground">
+          v{version}
         </span>
       </div>
       <TitleBarActions />

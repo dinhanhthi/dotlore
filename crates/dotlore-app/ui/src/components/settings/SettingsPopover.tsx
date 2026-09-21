@@ -113,7 +113,7 @@ export function SettingsPopover() {
           />
         }
       >
-        <Settings aria-hidden />
+        <Settings className="size-3.5" aria-hidden />
       </PopoverTrigger>
       <PopoverContent side="top" align="end" className="w-80">
         <PopoverHeader>

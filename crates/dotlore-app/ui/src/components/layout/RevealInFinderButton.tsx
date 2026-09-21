@@ -28,7 +28,7 @@ export function RevealInFinderButton({ path }: { path: string | null }) {
           />
         }
       >
-        <FolderOpen aria-hidden />
+        <FolderOpen className="size-3.5" aria-hidden />
       </TooltipTrigger>
       <TooltipContent>Reveal in Finder</TooltipContent>
     </Tooltip>
