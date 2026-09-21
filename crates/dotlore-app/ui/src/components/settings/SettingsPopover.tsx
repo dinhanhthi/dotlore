@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
 import { ChangeCloudFolderDialog } from "@/components/settings/ChangeCloudFolderDialog";
+import { SettingsSeedList } from "@/components/settings/SettingsSeedList";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,6 +13,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -21,21 +29,19 @@ import {
 } from "@/components/ui/tooltip";
 import {
   defaultIgnore,
-  defaultPatterns,
   loginItemEnabled,
   maxFileMb,
   maxSeedFolderMb,
+  patternCatalogs,
   setDefaultIgnore,
-  setDefaultPatterns,
   setLoginItem,
   setMaxFileMb,
   setMaxSeedFolderMb,
+  setPatternCatalog,
+  type PatternCatalog,
 } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
 import { readTheme, writeTheme, type Theme } from "@/lib/theme";
-
-const fieldClass =
-  "w-full min-w-0 resize-y rounded-2xl border border-input bg-input/30 px-3 py-2 font-mono text-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50";
 
 const SETTINGS_TABS = [
   { id: "general", label: "General" },
@@ -45,11 +51,8 @@ const SETTINGS_TABS = [
 
 type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
 
-function linesToPatterns(text: string): string[] {
-  return text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+function ignoreToLines(text: string): string[] {
+  return text.split("\n").filter((line) => line.length > 0);
 }
 
 async function commitMb(
@@ -162,78 +165,108 @@ function SettingsLimits() {
   );
 }
 
-function SettingsField({
-  id,
-  label,
-  value,
-  disabled,
-  hint,
-  onChange,
-  onBlur,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  disabled: boolean;
-  hint: string;
-  onChange: (value: string) => void;
-  onBlur: () => void;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-sm">
-        {label}
-      </label>
-      <p className="text-xs text-muted-foreground">{hint}</p>
-      <textarea
-        id={id}
-        rows={12}
-        spellCheck={false}
-        className={fieldClass}
-        value={value}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.value)}
-        onBlur={onBlur}
-      />
-    </div>
-  );
-}
-
-/** Global seed include-list for new projects. */
+/** Global seed include-list for new projects and agent folders. */
 export function SettingsPatterns() {
   const { busy } = useRoots();
-  const [patternsText, setPatternsText] = useState("");
+  const [catalogs, setCatalogs] = useState<PatternCatalog[]>([]);
+  const [selectedId, setSelectedId] = useState("projects");
+  const [lines, setLines] = useState<string[]>([]);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
 
   useEffect(() => {
-    void defaultPatterns()
-      .then((patterns) => setPatternsText(patterns.join("\n")))
+    void patternCatalogs()
+      .then((next) => {
+        const chosen =
+          next.find((catalog) => catalog.id === selectedIdRef.current) ??
+          next[0];
+        setCatalogs(next);
+        if (!chosen) return;
+        setSelectedId(chosen.id);
+        setLines(chosen.lines);
+      })
       .catch(() => {
-        // getter failed; leave the field empty
+        // getter failed; leave the catalog list empty
       });
   }, []);
 
-  async function commitPatterns() {
+  function selectCatalog(id: string) {
+    const catalog = catalogs.find((item) => item.id === id);
+    if (!catalog) return;
+    setSelectedId(catalog.id);
+    setLines(catalog.lines);
+  }
+
+  async function commit(next: string[]) {
     if (busy) return;
+    const catalogId = selectedId;
     try {
-      await setDefaultPatterns(linesToPatterns(patternsText));
+      await setPatternCatalog(catalogId, next);
+      setCatalogs((current) =>
+        current.map((catalog) =>
+          catalog.id === catalogId ? { ...catalog, lines: next } : catalog,
+        ),
+      );
+      if (selectedIdRef.current === catalogId) setLines(next);
     } catch {
-      void defaultPatterns()
-        .then((patterns) => setPatternsText(patterns.join("\n")))
+      void patternCatalogs()
+        .then((nextCatalogs) => {
+          const chosen =
+            nextCatalogs.find(
+              (catalog) => catalog.id === selectedIdRef.current,
+            ) ?? nextCatalogs[0];
+          setCatalogs(nextCatalogs);
+          if (!chosen) return;
+          setSelectedId(chosen.id);
+          setLines(chosen.lines);
+        })
         .catch(() => {});
     }
   }
 
+  const selectedLabel =
+    catalogs.find((catalog) => catalog.id === selectedId)?.label ?? "Projects";
+
   return (
-    <SettingsField
+    <SettingsSeedList
       id="default-patterns"
       label="Default patterns"
-      value={patternsText}
+      hint="Applies the next time a project or agent folder is added. Folders already added stay as they are."
+      lines={lines}
       disabled={busy}
-      hint="Applies to projects added from now on, not existing ones. Does not affect agent folders (~/.claude, ~/.cursor, …), which always seed from the built-in per-agent lists."
-      onChange={setPatternsText}
-      onBlur={() => {
-        void commitPatterns();
+      addPlaceholder="Add a pattern"
+      onCommit={(next) => {
+        void commit(next);
       }}
+      catalog={
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                className="self-start"
+              />
+            }
+          >
+            {selectedLabel}
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuRadioGroup
+              value={selectedId}
+              onValueChange={selectCatalog}
+            >
+              {catalogs.map((catalog) => (
+                <DropdownMenuRadioItem key={catalog.id} value={catalog.id}>
+                  {catalog.label}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      }
     />
   );
 }
@@ -241,37 +274,38 @@ export function SettingsPatterns() {
 /** Global seed never-list for new projects and agent folders. */
 export function SettingsNeverList() {
   const { busy } = useRoots();
-  const [ignoreText, setIgnoreText] = useState("");
+  const [lines, setLines] = useState<string[]>([]);
 
   useEffect(() => {
     void defaultIgnore()
-      .then(setIgnoreText)
+      .then((text) => setLines(ignoreToLines(text)))
       .catch(() => {
-        // getter failed; leave the field empty
+        // getter failed; leave the list empty
       });
   }, []);
 
-  async function commitIgnore() {
+  async function commit(next: string[]) {
     if (busy) return;
     try {
-      await setDefaultIgnore(ignoreText);
+      await setDefaultIgnore(`${next.join("\n")}\n`);
+      setLines(next);
     } catch {
       void defaultIgnore()
-        .then(setIgnoreText)
+        .then((text) => setLines(ignoreToLines(text)))
         .catch(() => {});
     }
   }
 
   return (
-    <SettingsField
+    <SettingsSeedList
       id="default-ignore"
       label="Default never-list"
-      value={ignoreText}
+      hint="Applies the next time a project or agent folder is added. One list for projects and agent folders."
+      lines={lines}
       disabled={busy}
-      hint="Applies to projects added from now on, not existing ones, and to both projects and agent folders."
-      onChange={setIgnoreText}
-      onBlur={() => {
-        void commitIgnore();
+      addPlaceholder="Add an entry"
+      onCommit={(next) => {
+        void commit(next);
       }}
     />
   );
@@ -411,7 +445,7 @@ export function SettingsPanel({
         <div className="flex flex-col gap-1">
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
-            Cloud folder, appearance, and what new projects track.
+            Cloud folder, appearance, and what new folders track.
           </DialogDescription>
         </div>
         <div

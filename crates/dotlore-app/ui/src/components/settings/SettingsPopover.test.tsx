@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Dialog } from "@/components/ui/dialog";
 import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roots";
 
+import { SettingsSeedList } from "./SettingsSeedList";
 import {
   SettingsNeverList,
   SettingsPanel,
@@ -21,6 +22,8 @@ vi.mock("@/lib/ipc", () => ({
   setMaxSeedFolderMb: () => Promise.resolve(),
   loginItemEnabled: () => Promise.resolve(false),
   setLoginItem: () => Promise.resolve(),
+  patternCatalogs: () => Promise.resolve([]),
+  setPatternCatalog: () => Promise.resolve(),
 }));
 
 function wrap(node: React.ReactNode): string {
@@ -55,6 +58,7 @@ describe("SettingsPanel", () => {
       </Dialog>,
     );
     expect(html).toContain("Settings");
+    expect(html).toContain("what new folders track");
     expect(html).toContain('role="tablist"');
     expect(html).toMatch(/role="tab"[^>]*>General</);
     expect(html).toMatch(/role="tab"[^>]*>Patterns</);
@@ -79,25 +83,43 @@ describe("SettingsPanel", () => {
 });
 
 describe("SettingsPatterns", () => {
-  it("explains new-project scope and agent folders", () => {
+  it("renders a searchable catalog list instead of a textarea", () => {
     const html = wrap(<SettingsPatterns />);
-    expect(html).toMatch(/textarea/i);
-    expect(html.match(/<textarea/gi)?.length).toBe(1);
-    expect(html).toContain("projects added from now on");
-    expect(html).toContain("~/.claude");
-    expect(html).toContain("~/.cursor");
-    expect(html).not.toContain("never-list");
+    expect(html).not.toMatch(/textarea/i);
+    expect(html).toContain("Search");
+    expect(html).toContain("Add a pattern");
+    expect(html).toContain("Projects");
   });
 });
 
 describe("SettingsNeverList", () => {
-  it("explains new-project scope for the never-list", () => {
+  it("renders a searchable list instead of a textarea", () => {
     const html = wrap(<SettingsNeverList />);
-    expect(html).toMatch(/textarea/i);
-    expect(html.match(/<textarea/gi)?.length).toBe(1);
+    expect(html).not.toMatch(/textarea/i);
+    expect(html).toContain("Search");
+    expect(html).toContain("Add an entry");
+    expect(html).not.toContain("DropdownMenuRadioGroup");
     expect(html).toContain("never-list");
-    expect(html).toContain("projects added from now on");
     expect(html).toContain("agent folders");
-    expect(html).not.toContain("~/.claude");
+  });
+});
+
+describe("SettingsSeedList", () => {
+  it("renders each line with a remove button", () => {
+    const html = wrap(
+      <SettingsSeedList
+        id="seed-lines"
+        label="Default patterns"
+        hint="Applies the next time a project or agent folder is added. Folders already added stay as they are."
+        lines={["CLAUDE.md", "docs/"]}
+        disabled={false}
+        addPlaceholder="Add a pattern"
+        onCommit={() => {}}
+      />,
+    );
+    expect(html).toContain("CLAUDE.md");
+    expect(html).toContain("docs/");
+    expect(html).toContain('aria-label="Remove CLAUDE.md"');
+    expect(html).toContain('aria-label="Remove docs/"');
   });
 });
