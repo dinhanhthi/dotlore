@@ -184,6 +184,7 @@ function SettingsField({
       <label htmlFor={id} className="text-sm">
         {label}
       </label>
+      <p className="text-xs text-muted-foreground">{hint}</p>
       <textarea
         id={id}
         rows={12}
@@ -194,7 +195,6 @@ function SettingsField({
         onChange={(event) => onChange(event.target.value)}
         onBlur={onBlur}
       />
-      <p className="text-xs text-muted-foreground">{hint}</p>
     </div>
   );
 }
