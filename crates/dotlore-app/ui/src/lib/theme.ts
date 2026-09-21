@@ -1,6 +1,9 @@
+import { useEffect, useState } from "react";
+
 export type Theme = "light" | "dark";
 
 const STORAGE_KEY = "dotlore.theme";
+const THEME_EVENT = "dotlore-theme";
 
 export function readTheme(): Theme {
   try {
@@ -30,4 +33,21 @@ export function writeTheme(theme: Theme): void {
   } catch {
     // Quota or private-mode.
   }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent<Theme>(THEME_EVENT, { detail: theme }));
+  }
+}
+
+/** Current theme, updated when any control calls `writeTheme`. */
+export function useTheme(): readonly [Theme, (theme: Theme) => void] {
+  const [theme, setTheme] = useState<Theme>(readTheme);
+  useEffect(() => {
+    function onTheme(event: Event) {
+      const next = (event as CustomEvent<Theme>).detail;
+      if (next === "light" || next === "dark") setTheme(next);
+    }
+    window.addEventListener(THEME_EVENT, onTheme);
+    return () => window.removeEventListener(THEME_EVENT, onTheme);
+  }, []);
+  return [theme, writeTheme];
 }
