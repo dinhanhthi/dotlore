@@ -452,7 +452,34 @@ describe("settings defaults", () => {
   });
 });
 
+describe("pattern catalogs", () => {
+  it("overrides claude without touching defaultPatterns and rejects an unknown id", async () => {
+    resetStore();
+    const before = [...store.defaultPatterns];
+    await route("set_pattern_catalog", {
+      catalog: "claude",
+      patterns: ["custom.md"],
+    });
+    const catalogs = (await route("pattern_catalogs", {})) as {
+      id: string;
+      label: string;
+      lines: string[];
+    }[];
+    expect(catalogs.find((row) => row.id === "claude")).toEqual({
+      id: "claude",
+      label: "Claude",
+      lines: ["custom.md"],
+    });
+    expect(store.defaultPatterns).toEqual(before);
+    await expect(
+      route("set_pattern_catalog", { catalog: "nope", patterns: ["x"] }),
+    ).rejects.toThrow(/unknown pattern catalog/);
+    expect(store.agentPatterns).not.toHaveProperty("nope");
+  });
+});
+
 const MOCK_STATE_KEYS = [
+  "agentPatterns",
   "conflicts",
   "defaultIgnore",
   "defaultPatterns",

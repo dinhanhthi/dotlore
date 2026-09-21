@@ -220,6 +220,40 @@ function emptyFileRecord(): FileRecord {
   return { text: "", binary: false, too_large: false, bytes: 0, state: "Synced" };
 }
 
+/** Dropdown order. `projects` lines come from `store.defaultPatterns`; other ids use a short builtin. */
+const PATTERN_CATALOGS: readonly {
+  id: string;
+  label: string;
+  builtin: readonly string[];
+}[] = [
+  { id: "projects", label: "Projects", builtin: [] },
+  { id: "claude", label: "Claude", builtin: ["CLAUDE.md"] },
+  { id: "codex", label: "Codex", builtin: ["AGENTS.md"] },
+  { id: "cursor", label: "Cursor", builtin: [".cursor/"] },
+  { id: "gemini", label: "Gemini", builtin: ["GEMINI.md"] },
+  { id: "opencode", label: "OpenCode", builtin: ["opencode.json"] },
+  { id: "continue", label: "Continue", builtin: ["config.yaml"] },
+  { id: "junie", label: "Junie", builtin: ["guidelines.md"] },
+  { id: "kiro", label: "Kiro", builtin: ["steering/"] },
+  { id: "roo", label: "Roo", builtin: ["rules/"] },
+  { id: "cline", label: "Cline", builtin: ["skills/"] },
+  { id: "windsurf", label: "Windsurf", builtin: [".windsurfrules"] },
+  { id: "other", label: "Other agents", builtin: ["AGENTS.md", "skills/"] },
+];
+
+function stringPatterns(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error("mockapp: patterns is required");
+  }
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function catalogLines(id: string, builtin: readonly string[]): string[] {
+  if (id === "projects") return store.defaultPatterns;
+  if (Object.hasOwn(store.agentPatterns, id)) return store.agentPatterns[id] ?? [];
+  return [...builtin];
+}
+
 /** Seed include-list entries from `defaultPatterns` — match fixture files or create empty keys. */
 function seedEntriesFromDefaults(slug: string): EntryView[] {
   const files = store.files[slug] ?? (store.files[slug] = {});
@@ -445,12 +479,25 @@ const handlers: Record<
   },
   default_patterns: () => store.defaultPatterns,
   set_default_patterns: (args) => {
-    if (!Array.isArray(args.patterns)) {
-      throw new Error("mockapp: patterns is required");
+    store.defaultPatterns = stringPatterns(args.patterns);
+  },
+  pattern_catalogs: () =>
+    PATTERN_CATALOGS.map(({ id, label, builtin }) => ({
+      id,
+      label,
+      lines: catalogLines(id, builtin),
+    })),
+  set_pattern_catalog: (args) => {
+    const catalog = argString(args, "catalog");
+    const patterns = stringPatterns(args.patterns);
+    if (catalog === "projects") {
+      store.defaultPatterns = patterns;
+      return;
     }
-    store.defaultPatterns = args.patterns.filter(
-      (item): item is string => typeof item === "string",
-    );
+    if (!PATTERN_CATALOGS.some((row) => row.id === catalog)) {
+      throw new Error(`unknown pattern catalog ${catalog}`);
+    }
+    store.agentPatterns[catalog] = patterns;
   },
   default_ignore: () => store.defaultIgnore,
   set_default_ignore: (args) => {

@@ -204,6 +204,23 @@ export function setDefaultIgnore(ignore: string): Promise<void> {
   return run(() => invoke("set_default_ignore", { ignore }));
 }
 
+export type PatternCatalog = {
+  id: string;
+  label: string;
+  lines: string[];
+};
+
+export function patternCatalogs(): Promise<PatternCatalog[]> {
+  return invoke("pattern_catalogs");
+}
+
+export function setPatternCatalog(
+  catalog: string,
+  patterns: string[],
+): Promise<void> {
+  return run(() => invoke("set_pattern_catalog", { catalog, patterns }));
+}
+
 export function maxFileMb(): Promise<number> {
   return invoke("max_file_mb");
 }

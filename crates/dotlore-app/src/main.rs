@@ -85,6 +85,8 @@ fn main() {
             commands::untrack_entry,
             commands::default_patterns,
             commands::set_default_patterns,
+            commands::pattern_catalogs,
+            commands::set_pattern_catalog,
             commands::default_ignore,
             commands::set_default_ignore,
             commands::max_file_mb,

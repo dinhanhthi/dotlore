@@ -128,6 +128,15 @@ pub enum TrackResultDto {
     },
 }
 
+/// One include-list catalog. Named apart from [`engine::PatternCatalog`], which
+/// does not implement [`Serialize`].
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct PatternCatalogDto {
+    pub id: String,
+    pub label: String,
+    pub lines: Vec<String>,
+}
+
 /// Resolve `rel` against a tracked root. Rejects paths (and symlinks) that
 /// escape the root.
 fn resolve_in_root(root: &config::Root, rel: &str) -> Result<PathBuf> {
@@ -522,6 +531,48 @@ pub async fn set_default_patterns(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .set_default_patterns(patterns)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
+}
+
+#[tauri::command]
+pub async fn pattern_catalogs(
+    state: State<'_, AppState>,
+) -> Result<Vec<PatternCatalogDto>, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pattern_catalogs()
+            .into_iter()
+            .map(|catalog| PatternCatalogDto {
+                id: catalog.id,
+                label: catalog.label,
+                lines: catalog.lines,
+            })
+            .collect()
+    })
+    .await
+    .map_err(front_msg)
+}
+
+#[tauri::command]
+pub async fn set_pattern_catalog(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    catalog: String,
+    patterns: Vec<String>,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_pattern_catalog(&catalog, patterns)
             .map_err(front_err)
     })
     .await

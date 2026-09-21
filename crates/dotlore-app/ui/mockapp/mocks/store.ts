@@ -56,6 +56,8 @@ export type MockState = {
   excludes: Record<string, string[]>;
   pickerExtra: Record<string, Record<string, PickerRow[]>>;
   defaultPatterns: string[];
+  /** Per-catalog overrides. A missing key means the mock builtin; `[]` is an override. */
+  agentPatterns: Record<string, string[]>;
   defaultIgnore: string;
   maxFileMb: number;
   maxSeedFolderMb: number;
@@ -115,6 +117,7 @@ export function emptyPopulated(): MockState {
     excludes: {},
     pickerExtra: {},
     defaultPatterns: [...DEFAULT_PATTERNS],
+    agentPatterns: {},
     defaultIgnore: DEFAULT_IGNORE,
     maxFileMb: DEFAULT_MAX_FILE_MB,
     maxSeedFolderMb: DEFAULT_MAX_SEED_FOLDER_MB,
@@ -148,6 +151,10 @@ export function resetStore(next?: Partial<MockState>): void {
     next && "defaultPatterns" in next
       ? clone(next.defaultPatterns ?? [])
       : seed.defaultPatterns;
+  store.agentPatterns =
+    next && "agentPatterns" in next
+      ? clone(next.agentPatterns ?? {})
+      : seed.agentPatterns;
   store.defaultIgnore =
     next && "defaultIgnore" in next
       ? (next.defaultIgnore ?? "")
