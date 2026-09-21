@@ -47,6 +47,7 @@ import {
   type RootsState,
   type SelectRootOptions,
 } from "@/lib/roots";
+import { SidebarQueryProvider } from "@/lib/sidebar-query";
 import { readStarred, toggleStarred } from "@/lib/starred";
 import type { ConflictView, RootRow } from "@/lib/types";
 
@@ -131,6 +132,7 @@ export function App() {
     ...emptyRootsState,
     starredSlugs: readStarred(),
   }));
+  const [sidebarQuery, setSidebarQuery] = useState("");
   const [ready, setReady] = useState(false);
   const liveRef = useRef<RootRow[]>([]);
   const discoveryGen = useRef(0);
@@ -435,15 +437,17 @@ export function App() {
 
   return (
     <TooltipProvider delay={400}>
-      <RootsContext.Provider value={value}>
-        <Shell
-          hideTree={onboarding || !ready || state.view !== "root"}
-          sidebar={onboarding || !ready ? null : <Sidebar />}
-          tree={onboarding || !ready ? undefined : <FileTree />}
-          main={!ready ? null : <MainColumn />}
-          footer={<Footer />}
-        />
-      </RootsContext.Provider>
+      <SidebarQueryProvider query={sidebarQuery} setQuery={setSidebarQuery}>
+        <RootsContext.Provider value={value}>
+          <Shell
+            hideTree={onboarding || !ready || state.view !== "root"}
+            sidebar={onboarding || !ready ? null : <Sidebar />}
+            tree={onboarding || !ready ? undefined : <FileTree />}
+            main={!ready ? null : <MainColumn />}
+            footer={<Footer />}
+          />
+        </RootsContext.Provider>
+      </SidebarQueryProvider>
     </TooltipProvider>
   );
 }

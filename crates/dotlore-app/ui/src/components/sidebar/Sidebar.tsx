@@ -13,6 +13,7 @@ import { importInstalledAgents, linkRoot, recoverRoot, setBanner } from "@/lib/i
 import { pickLocalPath } from "@/lib/pick";
 import { compareRoots } from "@/lib/order";
 import { useRoots } from "@/lib/roots";
+import { matchesRootQuery, useSidebarQuery } from "@/lib/sidebar-query";
 import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -43,15 +44,6 @@ function writeCollapsed(ids: string[]): void {
   } catch {
     // Quota or private-mode — keep the in-memory list.
   }
-}
-
-function matchesQuery(row: RootRow, query: string): boolean {
-  const needle = query.trim().toLowerCase();
-  if (!needle) return true;
-  return (
-    row.name.toLowerCase().includes(needle) ||
-    row.slug.toLowerCase().includes(needle)
-  );
 }
 
 function conflictCount(row: RootRow): number {
@@ -103,7 +95,7 @@ export function Sidebar() {
     busy,
     seeding,
   } = useRoots();
-  const [query, setQuery] = useState("");
+  const { query, setQuery } = useSidebarQuery();
   const [refreshing, setRefreshing] = useState(false);
   const [collapsed, setCollapsed] = useState<string[]>(() => readCollapsed());
   const [pendingAdd, setPendingAdd] = useState<{
@@ -155,7 +147,7 @@ export function Sidebar() {
   }, [focusRequest, collapsed]);
 
   const starred = new Set(starredSlugs);
-  const visible = roots.filter((row) => matchesQuery(row, query));
+  const visible = roots.filter((row) => matchesRootQuery(row, query));
   const agents = visible.filter((row) => row.is_agent).sort(compareRoots);
   const projects = visible.filter((row) => !row.is_agent).sort(compareRoots);
 

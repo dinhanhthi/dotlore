@@ -2,6 +2,7 @@ import { RootCard } from "@/components/main/RootCard";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { compareRoots } from "@/lib/order";
 import { useRoots } from "@/lib/roots";
+import { matchesRootQuery, useSidebarQuery } from "@/lib/sidebar-query";
 import type { RootRow } from "@/lib/types";
 
 function CardGrid({ rows }: { rows: RootRow[] }) {
@@ -16,18 +17,25 @@ function CardGrid({ rows }: { rows: RootRow[] }) {
 
 export function AllProjects({ starredOnly = false }: { starredOnly?: boolean }) {
   const { roots, starredSlugs } = useRoots();
+  const { query } = useSidebarQuery();
   const starred = new Set(starredSlugs);
   const source = starredOnly
     ? roots.filter((row) => starred.has(row.slug))
     : roots;
-  const agents = source.filter((row) => row.is_agent).sort(compareRoots);
-  const projects = source.filter((row) => !row.is_agent).sort(compareRoots);
+  const visible = source.filter((row) => matchesRootQuery(row, query));
+  const agents = visible.filter((row) => row.is_agent).sort(compareRoots);
+  const projects = visible.filter((row) => !row.is_agent).sort(compareRoots);
+  const filtering = query.trim().length > 0;
 
-  if (source.length === 0) {
+  if (source.length === 0 || (filtering && visible.length === 0)) {
     return (
       <div className="flex h-full items-center justify-center px-6">
         <p className="text-center text-muted-foreground">
-          {starredOnly ? "Nothing starred yet." : "Nothing tracked yet."}
+          {source.length === 0
+            ? starredOnly
+              ? "Nothing starred yet."
+              : "Nothing tracked yet."
+            : "No matches"}
         </p>
       </div>
     );
