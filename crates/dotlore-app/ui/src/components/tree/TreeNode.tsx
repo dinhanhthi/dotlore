@@ -16,6 +16,14 @@ import { cn } from "@/lib/utils";
 
 import { coveringEntry, formatBytes, untrackTarget } from "./entries";
 
+/** Left inset shared by every row. */
+const TREE_INSET = "10px";
+/**
+ * One level: the `size-4` chevron plus the `gap-1.5` before the folder label.
+ * A child then starts where its parent's name starts.
+ */
+const TREE_LEVEL = "calc(1rem + 0.375rem)";
+
 function weightClass(weight: NodeWeight): string {
   switch (weight) {
     case "ok":
@@ -88,7 +96,7 @@ export function TreeNode({
                 "hover:bg-muted/70",
                 selected && "bg-muted",
               )}
-              style={{ paddingLeft: 10 + depth * 14 }}
+              style={{ paddingLeft: TREE_INSET }}
               title={covering ? `Covered by ${covering.key}` : undefined}
             />
           }
@@ -112,9 +120,8 @@ export function TreeNode({
             <button
               type="button"
               onClick={() => onSelect(node.path)}
-              className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground"
+              className="flex min-w-0 flex-1 items-center text-left text-foreground"
             >
-              <span className="size-4 shrink-0" aria-hidden />
               <span className="min-w-0 truncate text-sm">{node.name}</span>
             </button>
           )}
@@ -152,23 +159,34 @@ export function TreeNode({
           ) : null}
         </ContextMenuContent>
       </ContextMenu>
-      {open &&
-        node.children.map((child) => (
-          <TreeNode
-            key={child.path}
-            node={child}
-            depth={depth + 1}
-            selectedRel={selectedRel}
-            conflictSet={conflictSet}
-            isOpen={isOpen}
-            onToggle={onToggle}
-            onSelect={onSelect}
-            entries={entries}
-            onUntrack={onUntrack}
-            rootPath={rootPath}
-            maxFileBytes={maxFileBytes}
+      {open ? (
+        <div
+          className="relative flex w-full flex-col gap-0.5"
+          style={{ paddingLeft: TREE_LEVEL }}
+        >
+          <span
+            aria-hidden
+            className="pointer-events-none absolute -top-0.5 bottom-0 z-10 w-[0.5px] -translate-x-1/2 bg-foreground/15"
+            style={{ left: `calc(${TREE_INSET} + 0.5rem)` }}
           />
-        ))}
+          {node.children.map((child) => (
+            <TreeNode
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              selectedRel={selectedRel}
+              conflictSet={conflictSet}
+              isOpen={isOpen}
+              onToggle={onToggle}
+              onSelect={onSelect}
+              entries={entries}
+              onUntrack={onUntrack}
+              rootPath={rootPath}
+              maxFileBytes={maxFileBytes}
+            />
+          ))}
+        </div>
+      ) : null}
     </>
   );
 }
