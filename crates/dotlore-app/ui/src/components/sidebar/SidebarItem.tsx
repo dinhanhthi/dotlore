@@ -135,6 +135,18 @@ export function SidebarItem({
           </RowAction>
         </HoverOnly>
       )}
+      {onRemove && (
+        <HoverOnly>
+          <RowAction
+            label="Remove"
+            disabled={writeDisabled}
+            onClick={onRemove}
+            className="hover:text-destructive"
+          >
+            <Trash2 aria-hidden className="size-3.5" />
+          </RowAction>
+        </HoverOnly>
+      )}
       {onToggleStar && (
         <HoverOnly visible={starred}>
           <RowAction
@@ -147,18 +159,6 @@ export function SidebarItem({
               aria-hidden
               className={cn("size-3.5", starred && "fill-current text-foreground")}
             />
-          </RowAction>
-        </HoverOnly>
-      )}
-      {onRemove && (
-        <HoverOnly>
-          <RowAction
-            label="Remove"
-            disabled={writeDisabled}
-            onClick={onRemove}
-            className="hover:text-destructive"
-          >
-            <Trash2 aria-hidden className="size-3.5" />
           </RowAction>
         </HoverOnly>
       )}
