@@ -40,7 +40,7 @@ Overlapping edits resolve deterministically: the newer commit wins on **every** 
 
 ## 💻 Platforms
 
-**macOS** (desktop + menu bar) is the only supported target. Windows and Linux are not in scope. Encryption at rest, direct cloud APIs, and syncing session logs or caches are also out of scope — the threat model is "not in the project's git", not "hide from the cloud provider".
+**macOS** (desktop + menu bar) is the current priority. Windows and Linux are coming soon. Encryption at rest, direct cloud APIs, and syncing session logs or caches are out of scope — the threat model is "not in the project's git", not "hide from the cloud provider".
 
 ## 🛠️ Tech stack
 
@@ -76,10 +76,23 @@ pnpm format:check
 ### 📦 Build
 
 ```bash
-pnpm build                        # → src-tauri/target/release/bundle/macos/Dotlore.app
+pnpm build                        # → src-tauri/target/release/bundle/{macos/Dotlore.app, dmg/*.dmg}
 # pnpm tauri build                # same thing
 open src-tauri/target/release/bundle/macos/Dotlore.app
 ```
+
+> [!IMPORTANT]
+> `pnpm build` needs the updater signing key. `tauri.conf.json` sets
+> `bundle.createUpdaterArtifacts: true` and carries a `plugins.updater.pubkey`,
+> so the bundler signs `Dotlore.app.tar.gz` and fails if the private key is not
+> exported:
+>
+> ```bash
+> export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/dotlore.key)"
+> export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
+> ```
+>
+> `pnpm tauri dev` is unaffected — it does not bundle.
 
 To pass a sandbox home into the bundled binary (Finder's `open` does not forward env):
 

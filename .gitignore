@@ -8,4 +8,7 @@
 CLAUDE.md
 .hallmark/
 design.md
-.coding-friend/
+.coding-friend/*
+!.coding-friend/skills/
+
+.env

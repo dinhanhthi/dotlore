@@ -287,6 +287,27 @@ footer {
   text-underline-offset: 0.35em;
 }
 
+.version-badge {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  text-decoration: none;
+  transition: opacity 160ms ease;
+}
+
+.version-badge:hover {
+  opacity: 0.8;
+}
+
+.version-badge:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
