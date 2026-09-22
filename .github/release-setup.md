@@ -188,20 +188,48 @@ A release that publishes but is broken is fixed **forward** as the next patch,
 never by deleting the previous one. The updater resolves the newest release, so
 users move forward on their own.
 
-## Open decision: `requireSignedVersion`
+## Decided: `requireSignedVersion` stays OFF for now
 
-`plugins.updater.requireSignedVersion` is unset, so it defaults to `false`. The
-artifact is always verified against the compiled-in pubkey, but with the flag off
-an attacker who controls the unsigned `latest.json` could pair a new version
-number with an older, still-validly-signed artifact — a rollback to a known
-vulnerable build.
+`plugins.updater.requireSignedVersion` is unset, so it defaults to `false`.
 
-Turning it on requires the bundler to stamp `version:` into the signature's
-trusted comment. The release workflow prints that trusted comment and says
-whether the flag is safe to enable. **Read it in the first release's log before
-flipping anything** — enabling it when the stamp is absent strands every install
-exactly the way a wrong pubkey would.
+**Measured 2026-09-22 against a real signed local build** (Tauri CLI 2.11.4, the
+version `pnpm-lock.yaml` pins and therefore the version CI signs with):
 
-That diagnostic answers the question exactly once. Once the first release's log
-has answered it, resolve this section and delete the block from `release.yml`
-rather than printing it on every release forever.
+```
+$ base64 -d < …/Dotlore.app.tar.gz.sig | grep 'trusted comment'
+trusted comment: timestamp:1790099115	file:Dotlore.app.tar.gz
+```
+
+No `version:` field. `signed_version()`
+(`tauri-plugin-updater-2.12.0/src/updater.rs:1600`) splits the trusted comment on
+tabs and looks for exactly that prefix, so it returns `None`, and
+`verify_signed_version` (`:1567`) then returns `MissingSignedVersion` **whenever
+the flag is set**. Turning it on today would make every install refuse every
+update, permanently. So: off.
+
+**What we accept by leaving it off.** The artifact is still always verified
+against the compiled-in pubkey, so nobody can serve bytes we did not sign. What
+the flag would additionally stop is a *rollback*: someone who can serve a
+crafted `latest.json` — the manifest is not signed — pairing an inflated
+`version` with an older release's still-valid `url` and `signature`, pushing
+clients back onto a known-vulnerable build. That requires control of the GitHub
+releases endpoint, i.e. the repository itself. For v0.1.0 there is no older
+release to roll back to at all; the exposure begins once v0.1.1 exists.
+
+**Deferring is safe — the plan's "free now, expensive later" framing was wrong.**
+The flag is compiled into the *client* and is checked only against the artifact
+that client is downloading right now; it never looks at historical signatures.
+An app built with the flag on simply requires the *next* artifact to carry the
+stamp. So it can be switched on in any later release without stranding anything,
+provided the CLI in use by then stamps the version.
+
+**Owner for revisiting it: the first release after v0.1.0.** At that point, or
+whenever `@tauri-apps/cli` is next upgraded, re-run the one-liner above. If the
+trusted comment gains `version:`, add `"requireSignedVersion": true` to
+`plugins.updater` and ship it. If it has not, record that here again rather than
+letting the question lapse into an unowned "later".
+
+The release workflow's assert step prints the same trusted comment and states
+whether the flag is safe to enable, so every run re-checks this for free. Once it
+starts saying yes and the flag is on, delete that block rather than printing it
+forever.
