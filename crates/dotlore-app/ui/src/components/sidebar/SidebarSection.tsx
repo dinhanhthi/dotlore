@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 type SidebarSectionProps = {
   id: string;
   title: string;
+  count?: number;
   collapsed: boolean;
   onToggle: () => void;
   action?: ReactNode;
@@ -15,6 +16,7 @@ type SidebarSectionProps = {
 export function SidebarSection({
   id,
   title,
+  count,
   collapsed,
   onToggle,
   action,
@@ -38,7 +40,13 @@ export function SidebarSection({
               !collapsed && "rotate-90",
             )}
           />
-          {title}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate">{title}</span>{count !== undefined && (
+              <span className="shrink-0 text-[11px] leading-none tracking-normal text-muted-foreground/60 tabular-nums">
+                {count}
+              </span>
+            )}
+          </span>
         </button>
         {action}
       </div>

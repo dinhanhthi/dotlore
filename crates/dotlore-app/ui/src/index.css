@@ -186,14 +186,10 @@
   transition-timing-function: var(--ease-out);
 }
 
-/* Left sidebar list only. Narrow track, pale thumb. */
-.sidebar-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklch, var(--foreground) 22%, transparent)
-    transparent;
-}
-
+/* Left sidebar list only. A 6px classic bar, flush with the sidebar border.
+   scrollbar-width/scrollbar-color paint an inset thumb inside a wider track. */
 .sidebar-scroll::-webkit-scrollbar {
+  display: block;
   width: 6px;
 }
 
@@ -202,9 +198,7 @@
 }
 
 .sidebar-scroll::-webkit-scrollbar-thumb {
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background-clip: padding-box;
+  border-radius: 999px 0 0 999px;
   background-color: color-mix(in oklch, var(--foreground) 22%, transparent);
 }
 

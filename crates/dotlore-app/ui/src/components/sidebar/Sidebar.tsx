@@ -298,6 +298,7 @@ export function Sidebar() {
         <SidebarSection
           id="projects"
           title="Projects"
+          count={projects.length}
           collapsed={collapsed.includes("projects")}
           onToggle={() => toggleCollapsed("projects")}
           action={
