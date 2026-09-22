@@ -6,7 +6,12 @@ import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roo
 import type { RootRow } from "@/lib/types";
 
 import { pickerStateAfterIdentityChange } from "./EntryPickerDialog";
-import { FileTree, treeDialogsAfterRootChange, treeLoadMatches } from "./FileTree";
+import {
+  FileTree,
+  treeAwaitingLoad,
+  treeDialogsAfterRootChange,
+  treeLoadMatches,
+} from "./FileTree";
 
 const linked: RootRow = {
   slug: "dotlore",
@@ -133,6 +138,17 @@ describe("FileTree dialogs", () => {
     });
   });
 
+  it("shows a skeleton while a linked project's files are still loading", () => {
+    expect(
+      treeAwaitingLoad({ slug: "work", linked: true }, { slug: "personal", linked: true }),
+    ).toBe(true);
+    expect(treeAwaitingLoad({ slug: "work", linked: true }, null)).toBe(true);
+    expect(
+      treeAwaitingLoad({ slug: "work", linked: true }, { slug: "work", linked: true }),
+    ).toBe(false);
+    expect(treeAwaitingLoad({ slug: "work", linked: false }, null)).toBe(false);
+  });
+
   it("drops a tree apply that was started for a different slug", () => {
     expect(
       treeLoadMatches(
@@ -150,10 +166,11 @@ describe("FileTree dialogs", () => {
 });
 
 describe("FileTree header", () => {
-  it("offers Add to track next to Sync now on a linked project", () => {
+  it("shows the project name and a file skeleton before a linked tree loads", () => {
     const html = renderTree(linked);
-    expect(isDisabled(buttonWithLabel(html, "Add to track"))).toBe(false);
-    expect(html).toContain("Add to track");
+    expect(html).toContain('aria-label="Loading files"');
+    expect(html).toContain("dotlore");
+    expect(html).not.toContain('aria-label="Add to track"');
   });
 
   it("disables Add to track on an unlinked row", () => {

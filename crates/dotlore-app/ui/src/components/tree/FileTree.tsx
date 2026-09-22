@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Info, Loader2, Plus, RefreshCw } from "lucide-react";
 
+import { TreeSkeleton } from "@/components/layout/AppSkeleton";
 import { SearchBar } from "@/components/sidebar/SearchBar";
 import {
   EntryPickerDialog,
@@ -34,6 +35,16 @@ import type { ConflictView, EntryView, TrackedFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024;
+const EMPTY_CONFLICTS = new Set<string>();
+
+type TreeSnapshot = {
+  slug: string | null;
+  linked: boolean;
+  files: TrackedFile[];
+  listed: EntryView[];
+  conflicts: Set<string>;
+  maxFileBytes: number;
+};
 
 /** FileTree stays mounted across sidebar selection — drop the previous project. */
 export function treeDialogsAfterRootChange(): {
@@ -50,6 +61,17 @@ export function treeLoadMatches(
   started: { slug: string | null; linked: boolean },
 ): boolean {
   return current.slug === started.slug && current.linked === started.linked;
+}
+
+/** Linked trees fetch before they can paint. Anything already shown for another
+ * project must not stay on screen while that fetch runs. */
+export function treeAwaitingLoad(
+  current: { slug: string | null; linked: boolean },
+  shown: { slug: string | null; linked: boolean } | null,
+): boolean {
+  if (!current.linked || current.slug === null) return false;
+  if (shown === null) return true;
+  return shown.slug !== current.slug || shown.linked !== current.linked;
 }
 
 function conflictPathSet(views: ConflictView[]): Set<string> {
@@ -123,10 +145,7 @@ export function FileTree() {
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
   const seedingItem = seeding.find((item) => item.slug === selectedSlug) ?? null;
 
-  const [files, setFiles] = useState<TrackedFile[]>([]);
-  const [entries, setEntries] = useState<EntryView[]>([]);
-  const [conflictSet, setConflictSet] = useState<Set<string>>(() => new Set());
-  const [maxFileBytes, setMaxFileBytes] = useState(DEFAULT_MAX_FILE_BYTES);
+  const [snapshot, setSnapshot] = useState<TreeSnapshot | null>(null);
   const [openBySlug, setOpenBySlug] = useState<Record<string, Record<string, boolean>>>(
     {},
   );
@@ -160,17 +179,25 @@ export function FileTree() {
     };
   }, [selectedSlug, root?.linked, seedingItem]);
 
-  const applyTree = useCallback(
-    (next: {
-      files: TrackedFile[];
-      listed: EntryView[];
-      conflicts: Set<string>;
-      maxFileBytes: number;
-    }) => {
-      setFiles(next.files);
-      setEntries(next.listed);
-      setConflictSet(next.conflicts);
-      setMaxFileBytes(next.maxFileBytes);
+  const commitTree = useCallback(
+    (
+      started: { slug: string | null; linked: boolean },
+      next: {
+        files: TrackedFile[];
+        listed: EntryView[];
+        conflicts: Set<string>;
+        maxFileBytes: number;
+      },
+    ) => {
+      if (!treeLoadMatches(loadId.current, started)) return;
+      setSnapshot({
+        slug: started.slug,
+        linked: started.linked,
+        files: next.files,
+        listed: next.listed,
+        conflicts: next.conflicts,
+        maxFileBytes: next.maxFileBytes,
+      });
     },
     [],
   );
@@ -178,33 +205,39 @@ export function FileTree() {
   const refetch = useCallback(() => {
     const started = { slug: selectedSlug, linked: !!root?.linked };
     void loadTree().then((next) => {
-      if (!treeLoadMatches(loadId.current, started)) return;
-      applyTree(next);
+      commitTree(started, next);
     });
-  }, [loadTree, applyTree, selectedSlug, root?.linked]);
-
-  useEffect(() => {
-    if (seedingItem) return;
-    const started = { slug: selectedSlug, linked: !!root?.linked };
-    void (async () => {
-      const next = await loadTree();
-      if (!treeLoadMatches(loadId.current, started)) return;
-      applyTree(next);
-    })();
-  }, [loadTree, applyTree, statusKey, selectedSlug, root?.linked, seedingItem]);
+  }, [loadTree, commitTree, selectedSlug, root?.linked]);
 
   useEffect(() => {
     loadId.current = { slug: selectedSlug, linked: !!root?.linked };
     const next = treeDialogsAfterRootChange();
     setPickerOpen(next.pickerOpen);
     setUntrackTarget(next.untrackTarget);
-    setFiles(next.files);
-    setEntries(next.listed);
-    setConflictSet(new Set());
     setQuery("");
   }, [selectedSlug, root?.linked]);
 
-  const tree = useMemo(() => buildTree(files), [files]);
+  useEffect(() => {
+    if (seedingItem) return;
+    const started = { slug: selectedSlug, linked: !!root?.linked };
+    void (async () => {
+      const next = await loadTree();
+      commitTree(started, next);
+    })();
+  }, [loadTree, commitTree, statusKey, selectedSlug, root?.linked, seedingItem]);
+
+  const currentTree = { slug: selectedSlug, linked: !!root?.linked };
+  const treeReady =
+    snapshot !== null &&
+    snapshot.slug === currentTree.slug &&
+    snapshot.linked === currentTree.linked;
+  const awaiting = !seedingItem && treeAwaitingLoad(currentTree, snapshot);
+  const files = treeReady && snapshot ? snapshot.files : [];
+  const entries = treeReady && snapshot ? snapshot.listed : [];
+  const conflictSet = treeReady && snapshot ? snapshot.conflicts : EMPTY_CONFLICTS;
+  const maxFileBytes = treeReady && snapshot ? snapshot.maxFileBytes : DEFAULT_MAX_FILE_BYTES;
+
+  const tree = useMemo(() => (awaiting ? [] : buildTree(files)), [awaiting, files]);
   const filtering = query.trim().length > 0;
   const visibleTree = useMemo(() => filterTree(tree, query), [tree, query]);
 
@@ -237,6 +270,10 @@ export function FileTree() {
 
   if (!root) {
     return <div className="h-full" />;
+  }
+
+  if (awaiting) {
+    return <TreeSkeleton title={root.name} />;
   }
 
   return (

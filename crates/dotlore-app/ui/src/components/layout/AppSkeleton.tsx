@@ -40,15 +40,22 @@ export function SidebarSkeleton() {
 
 const TREE_ROW_WIDTHS = ["60%", "75%", "50%", "68%", "42%"];
 
-export function TreeSkeleton() {
+export function TreeSkeleton({ title }: { title?: string }) {
   return (
     <div
       role="status"
+      aria-busy="true"
       aria-label="Loading files"
       className="flex h-full min-h-0 min-w-0 flex-col"
     >
-      <div className="flex h-row shrink-0 items-center border-b border-border px-3">
-        <Bar className="h-3.5 bg-muted" width="45%" />
+      <div className="flex h-row min-w-0 shrink-0 items-center border-b border-border px-3">
+        {title ? (
+          <span className="min-w-0 flex-1 truncate text-foreground" title={title}>
+            {title}
+          </span>
+        ) : (
+          <Bar className="h-3.5 bg-muted" width="45%" />
+        )}
       </div>
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <Bar className="h-8 flex-1 bg-muted" />
