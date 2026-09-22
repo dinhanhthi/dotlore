@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the generated Info.plist. Points macOS 26 at the layered
+	     icon in Contents/Resources/Assets.car, which scripts/icon.sh compiles
+	     from icons/Icon.icon. CFBundleIconFile still names icon.icns, which is
+	     what macOS 13-15 draws. -->
+	<key>CFBundleIconName</key>
+	<string>Icon</string>
+</dict>
+</plist>

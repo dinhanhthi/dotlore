@@ -118,6 +118,26 @@ if [ ! -d "$app_release" ]; then
 	exit 1
 fi
 
+# Info.plist names CFBundleIconName, so on macOS 26 the Dock draws the icon out
+# of Contents/Resources/Assets.car and falls back to icon.icns — inside the
+# system's grey backdrop — when it is missing. The file gets there through
+# bundle.resources in tauri.conf.json, a copy that fails silently if the key is
+# ever renamed or the source deleted. Asserted here because the result is a
+# green release whose icon only looks wrong once it is on a user's Dock.
+if [ ! -s "$app_release/Contents/Resources/Assets.car" ]; then
+	echo "error: no Contents/Resources/Assets.car in the bundle — check bundle.resources in src-tauri/tauri.conf.json and that src-tauri/icons/Assets.car exists (scripts/icon.sh rebuilds it)" >&2
+	exit 1
+fi
+
+# The other half. src-tauri/Info.plist is merged by filename convention, with no
+# entry in tauri.conf.json to keep it honest, so a CLI that stops honouring that
+# convention drops CFBundleIconName and the Dock falls back to icon.icns —
+# plated — with the Assets.car sitting right there, unread and unasserted.
+if [ "$(plutil -extract CFBundleIconName raw -o - "$app_release/Contents/Info.plist" 2>/dev/null)" != "Icon" ]; then
+	echo "error: CFBundleIconName is not \"Icon\" in the built Info.plist — is src-tauri/Info.plist still merged by the Tauri CLI?" >&2
+	exit 1
+fi
+
 echo "built $app_release"
 lipo -info "$app_release/Contents/MacOS/dotlore" || true
 
