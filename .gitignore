@@ -10,3 +10,5 @@ CLAUDE.md
 design.md
 .coding-friend/*
 !.coding-friend/skills/
+
+.env
