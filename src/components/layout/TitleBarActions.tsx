@@ -51,7 +51,7 @@ function ConflictAlert() {
             type="button"
             variant="ghost"
             size="icon-sm"
-            className="text-destructive"
+            className="text-status-conflict"
             aria-label={`${label} — show them`}
             onClick={showConflicts}
           />

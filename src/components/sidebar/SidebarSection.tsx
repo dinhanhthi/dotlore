@@ -52,7 +52,7 @@ export function SidebarSection({
               <TriangleAlert
                 role="img"
                 aria-label={`${conflicts} ${conflicts === 1 ? "conflict" : "conflicts"}`}
-                className="size-3.5 shrink-0 text-destructive"
+                className="size-3.5 shrink-0 text-status-conflict"
               />
             )}
           </span>

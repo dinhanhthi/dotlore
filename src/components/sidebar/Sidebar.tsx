@@ -261,7 +261,7 @@ export function Sidebar() {
             selected={view === "conflicts"}
             conflictCount={conflicts}
             leading={
-              <TriangleAlert aria-hidden className="size-4 shrink-0 text-destructive" />
+              <TriangleAlert aria-hidden className="size-4 shrink-0 text-status-conflict" />
             }
             onClick={showConflicts}
           />
