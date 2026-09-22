@@ -42,7 +42,6 @@
       "icons/icon.ico"
     ],
     "category": "Utility",
-    "externalBin": ["binaries/dotlore"],
     "macOS": {
       "minimumSystemVersion": "13.0",
       "signingIdentity": "-"

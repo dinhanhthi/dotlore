@@ -19,9 +19,8 @@ use state::AppState;
 const WINDOW: &str = "main";
 
 fn main() {
-    // The only environment this binary reads, once, at startup — the same
-    // documented exception `dotlore-cli` has: `DOTLORE_HOME` (through
-    // `default_home`) and `$HOME`.
+    // The only environment this binary (the desktop app) reads, once, at
+    // startup: `DOTLORE_HOME` (through `default_home`) and `$HOME`.
     let home = config::default_home();
     let home_dir = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
 

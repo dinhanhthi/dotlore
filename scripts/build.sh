@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
 #
-# Release-build Dotlore.app via `cargo tauri`, with the `dotlore` CLI shipped
-# as a sidecar in Contents/MacOS.
+# Release-build Dotlore.app via `cargo tauri`. A universal build still produces
+# one desktop executable under Contents/MacOS.
 #
 # This is a build script, not app code: the "no shell, ever" invariant is about
 # what the engine runs at runtime. Everything the app itself executes goes
 # through std::process::Command with an argv array.
-#
-# tauri-build copies bundle.externalBin at `cargo build` time (see copy_binaries
-# in tauri-build), not only at bundle time. A host-triple sidecar must exist
-# under crates/dotlore-app/binaries/ before `cargo build -p dotlore-app` will
-# succeed; this script writes those files before it invokes cargo-tauri.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 want=(aarch64-apple-darwin x86_64-apple-darwin)
-bindir="$root/crates/dotlore-app/binaries"
-cli_bin=dotlore
 
 # --- targets ----------------------------------------------------------------
 # A missing target degrades to a single-arch build with a warning. Failing the
@@ -48,21 +41,6 @@ if [ "$n" -eq 0 ]; then
 fi
 if [ "$n" -lt "${#want[@]}" ]; then
 	echo "warning: the bundle will NOT be universal (${have[*]} only)" >&2
-fi
-
-# --- sidecar ----------------------------------------------------------------
-mkdir -p "$bindir"
-slices=()
-for t in "${have[@]}"; do
-	cargo build --release -p dotlore-cli --target "$t"
-	# Per-slice names: tauri-build's copy_binaries looks up
-	# binaries/dotlore-<TARGET> while compiling each architecture.
-	cp "target/$t/release/$cli_bin" "$bindir/$cli_bin-$t"
-	slices+=("target/$t/release/$cli_bin")
-done
-if [ "$n" -eq "${#want[@]}" ]; then
-	# Bundler target universal-apple-darwin looks for this exact name.
-	lipo -create "${slices[@]}" -output "$bindir/$cli_bin-universal-apple-darwin"
 fi
 
 # --- tauri -------------------------------------------------------------------
@@ -109,4 +87,3 @@ fi
 
 echo "built $app_release"
 lipo -info "$app_release/Contents/MacOS/dotlore-app" || true
-lipo -info "$app_release/Contents/MacOS/dotlore" || true

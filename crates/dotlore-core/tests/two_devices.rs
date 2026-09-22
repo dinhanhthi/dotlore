@@ -433,6 +433,19 @@ fn overlapping() -> Overlap {
 
 // --- tests -----------------------------------------------------------------
 
+/// One tracked edit on A reaches B and both roots report Synced.
+#[test]
+fn two_devices_smoke_syncs_one_file() {
+    let (mut a, mut b) = standard_start();
+    edit_line(&a, "CLAUDE.md", 1, "line 1 from A");
+    dance(&mut [&mut a, &mut b]);
+
+    assert_eq!(read(&a, "CLAUDE.md"), read(&b, "CLAUDE.md"));
+    assert_dir_eq(a.root.path(), b.root.path());
+    assert_synced(&mut a);
+    assert_synced(&mut b);
+}
+
 #[test]
 fn non_overlapping_edits_merge_silently() {
     let (mut a, mut b) = non_overlapping();

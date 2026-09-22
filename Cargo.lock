@@ -868,15 +868,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dotlore-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dotlore-core",
- "serde_json",
-]
-
-[[package]]
 name = "dotlore-core"
 version = "0.1.0"
 dependencies = [

@@ -12,9 +12,9 @@
     "tauri": "bash scripts/tauri.sh",
     "build": "bash scripts/build.sh",
     "test": "bash scripts/test.sh",
+    "smoke:two-devices": "cargo test -p dotlore-core --test two_devices two_devices_smoke_syncs_one_file -- --exact",
     "format": "cargo fmt",
     "format:check": "cargo fmt --check && pnpm --dir crates/dotlore-app/ui exec tsc --noEmit",
-    "cli": "cargo run -q -p dotlore-cli",
     "reset:dev": "bash scripts/reset-dev.sh"
   },
   "devDependencies": {

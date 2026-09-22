@@ -17,9 +17,6 @@ if [ "${1:-}" = "build" ]; then
 	exec bash "$root/scripts/build.sh" "$@"
 fi
 
-# cargo build of the app crate needs the sidecar on disk.
-bash "$root/scripts/sidecar.sh"
-
 # macOS Dock names a bare Mach-O after its filename. `pnpm tauri build`
 # already exec'd scripts/build.sh above, so this runner is dev-only.
 if [ "$(uname -s)" = "Darwin" ]; then
