@@ -24,4 +24,4 @@ Or serve the folder with any static server.
 | `CNAME` | Custom domain (`dotlore.dinhanhthi.com`) |
 | `.nojekyll` | Skip Jekyll on GitHub Pages |
 
-Do not couple this folder to `crates/dotlore-app/ui`.
+Do not couple this folder to `src/`.

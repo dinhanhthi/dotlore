@@ -1,9 +1,11 @@
 /docs/*
 /target
+/src-tauri/target
 /node_modules
-/crates/dotlore-app/ui/mockapp/dist
+/dist
+/mockapp/dist
+/src-tauri/gen/
 CLAUDE.md
 .hallmark/
 design.md
-pnpm-workspace.yaml
 .coding-friend/

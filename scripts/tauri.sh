@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Run the Tauri CLI from crates/dotlore-app so beforeDevCommand / frontendDist
-# resolve against ui/. `pnpm tauri build` is the same as `pnpm build`.
+# Run the Tauri CLI from src-tauri so beforeDevCommand / frontendDist
+# resolve against the repo root. `pnpm tauri build` is the same as `pnpm build`.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,6 +17,10 @@ if [ "${1:-}" = "build" ]; then
 	exec bash "$root/scripts/build.sh" "$@"
 fi
 
+# Same target dir as scripts/build.sh. Dev binaries land in
+# src-tauri/target so cargo's runner path matches the single manifest.
+export CARGO_TARGET_DIR="$root/src-tauri/target"
+
 # macOS Dock names a bare Mach-O after its filename. `pnpm tauri build`
 # already exec'd scripts/build.sh above, so this runner is dev-only.
 if [ "$(uname -s)" = "Darwin" ]; then
@@ -29,5 +33,5 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	export "$runner_var=$root/scripts/dev-dock-bundle.sh"
 fi
 
-cd "$root/crates/dotlore-app"
+cd "$root/src-tauri"
 exec "$tauri" "$@"

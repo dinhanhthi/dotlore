@@ -44,10 +44,9 @@ if [ "$n" -lt "${#want[@]}" ]; then
 fi
 
 # --- tauri -------------------------------------------------------------------
-# Invoke the cargo-tauri binary, not `cargo tauri`. Cargo subcommands start
-# from the workspace root, which makes `pnpm --dir ui` miss crates/dotlore-app/ui.
-# cargo-tauri itself resolves tauri.conf.json and beforeBuildCommand relative
-# to the app crate.
+# Invoke the cargo-tauri binary from src-tauri. It resolves tauri.conf.json
+# and beforeBuildCommand relative to that directory, where `pnpm ui:build`
+# walks up to the root package.
 if ! command -v cargo-tauri >/dev/null 2>&1; then
 	echo "error: cargo-tauri is not on PATH" >&2
 	exit 1
@@ -60,17 +59,21 @@ if [ "$n" -eq "${#want[@]}" ]; then
 	tauri_args+=(--target universal-apple-darwin)
 fi
 
+# Pin the target dir so an inherited CARGO_TARGET_DIR cannot move the
+# bundle off src-tauri/target/.
+export CARGO_TARGET_DIR="$root/src-tauri/target"
+
 (
-	cd "$root/crates/dotlore-app"
+	cd "$root/src-tauri"
 	cargo-tauri "${tauri_args[@]}"
 )
 
-# A universal build lands under target/universal-apple-darwin/...; the
-# documented path is target/release/bundle/macos/Dotlore.app. Mirror it so
-# both locations are usable.
-app_release="$root/target/release/bundle/macos/Dotlore.app"
+# A universal build lands under src-tauri/target/universal-apple-darwin/...;
+# the documented path is src-tauri/target/release/bundle/macos/Dotlore.app.
+# Mirror it so both locations are usable.
+app_release="$root/src-tauri/target/release/bundle/macos/Dotlore.app"
 if [ "$n" -eq "${#want[@]}" ]; then
-	app_universal="$root/target/universal-apple-darwin/release/bundle/macos/Dotlore.app"
+	app_universal="$root/src-tauri/target/universal-apple-darwin/release/bundle/macos/Dotlore.app"
 	if [ ! -d "$app_universal" ]; then
 		echo "error: expected $app_universal after a universal tauri build" >&2
 		exit 1
@@ -86,4 +89,4 @@ if [ ! -d "$app_release" ]; then
 fi
 
 echo "built $app_release"
-lipo -info "$app_release/Contents/MacOS/dotlore-app" || true
+lipo -info "$app_release/Contents/MacOS/dotlore" || true

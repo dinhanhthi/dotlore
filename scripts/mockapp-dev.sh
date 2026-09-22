@@ -18,5 +18,5 @@ if [ -n "$pids" ]; then
 	fi
 fi
 
-cd "$root/crates/dotlore-app/ui"
+cd "$root"
 exec pnpm exec vite --config mockapp/vite.config.ts
