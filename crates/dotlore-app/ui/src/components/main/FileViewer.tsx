@@ -90,7 +90,7 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex h-row shrink-0 items-center gap-3 border-b border-border px-4">
-        <span className="min-w-0 flex-1 truncate font-path" title={rel}>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs" title={rel}>
           {rel}
         </span>
         <span className="shrink-0 tabular-nums text-xs text-muted-foreground">

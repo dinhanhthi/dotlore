@@ -242,7 +242,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex h-row shrink-0 items-center gap-2 border-b border-border px-pad-x">
-        <span className="min-w-0 truncate font-path" title={rel}>
+        <span className="min-w-0 truncate font-mono text-xs" title={rel}>
           {rel}
         </span>
         <span className="shrink-0 text-muted-foreground">from {device}</span>
