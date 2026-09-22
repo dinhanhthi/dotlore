@@ -127,6 +127,26 @@ export function orderedPendingOps(pending: PendingMap): PendingOp[] {
   ];
 }
 
+/**
+ * A displayed row matches when its name contains `needle`, or an expanded
+ * folder has a loaded child that matches. Collapsed and not-yet-loaded
+ * folders are not searched inside.
+ */
+export function pickerRowMatchesQuery(
+  row: PickerRow,
+  needle: string,
+  expanded: Readonly<Record<string, boolean>>,
+  childrenByRel: Readonly<Record<string, readonly PickerRow[] | undefined>>,
+): boolean {
+  if (row.name.toLowerCase().includes(needle)) return true;
+  if (row.kind !== "directory" || expanded[row.rel] !== true) return false;
+  const children = childrenByRel[row.rel];
+  if (!children) return false;
+  return children.some((child) =>
+    pickerRowMatchesQuery(child, needle, expanded, childrenByRel),
+  );
+}
+
 export function sortPickerRows(rows: PickerRow[]): PickerRow[] {
   return rows
     .filter((row) => row.kind === "file" || row.kind === "directory")

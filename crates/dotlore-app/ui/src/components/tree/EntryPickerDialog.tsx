@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
+import { SearchBar } from "@/components/sidebar/SearchBar";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,7 +22,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { errorMessage } from "@/lib/errors";
 import {
   answerTrackConfirm,
@@ -37,6 +37,7 @@ import { formatBytes, untrackCopy } from "./entries";
 import {
   isShownTracked,
   orderedPendingOps,
+  pickerRowMatchesQuery,
   pickerStateAfterIdentityChange,
   sortPickerRows,
   stagePending,
@@ -84,6 +85,7 @@ export function EntryPickerDialog({
     {},
   );
   const [loadingRel, setLoadingRel] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState("");
   const requestGen = useRef(0);
   const applying = useRef(false);
 
@@ -93,6 +95,7 @@ export function EntryPickerDialog({
     setExpanded(next.expanded);
     setChildrenByRel({});
     setLoadingRel({});
+    setQuery("");
     applying.current = false;
     if (!open) {
       requestGen.current += 1;
@@ -166,48 +169,77 @@ export function EntryPickerDialog({
   }
 
   const rootRows = childrenByRel[""];
+  const needle = query.trim().toLowerCase();
+  const visibleRows =
+    rootRows === undefined
+      ? undefined
+      : needle
+        ? rootRows.filter((row) =>
+            pickerRowMatchesQuery(row, needle, expanded, childrenByRel),
+          )
+        : rootRows;
   const changeCount = Object.keys(pending).length;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
+      <DialogContent className="flex h-[min(42rem,calc(100dvh-2rem))] w-full flex-col overflow-hidden sm:max-w-2xl">
+        <DialogHeader className="shrink-0 pr-8">
           <DialogTitle>Add to track</DialogTitle>
           <DialogDescription>
             Mark files and folders to track or untrack. Nothing changes until
             you apply.
           </DialogDescription>
         </DialogHeader>
-        <ScrollArea className="h-80 rounded-2xl border border-border">
-          {rootRows === undefined ? (
-            <div className="flex h-full items-center justify-center text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-              <span className="sr-only">Loading files</span>
-            </div>
-          ) : rootRows.length === 0 ? (
-            <p className="px-3 py-2 text-sm text-muted-foreground">
-              This folder is empty.
-            </p>
-          ) : (
-            <div className="flex flex-col gap-0.5 px-1.5 py-1">
-              {rootRows.map((row) => (
-                <PickerNode
-                  key={row.rel}
-                  row={row}
-                  entries={entries}
-                  pending={pending}
-                  trackedRels={trackedRels}
-                  expanded={expanded}
-                  childrenByRel={childrenByRel}
-                  loadingRel={loadingRel}
-                  onToggle={toggle}
-                  onStage={stage}
-                />
-              ))}
-            </div>
-          )}
-        </ScrollArea>
-        <DialogFooter>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+          <div className="shrink-0">
+            <SearchBar
+              value={query}
+              onChange={setQuery}
+              placeholder="Search files"
+              label="Search files and folders"
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && query) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setQuery("");
+                }
+              }}
+            />
+          </div>
+          <div className="min-h-0 w-full min-w-0 flex-1 overflow-x-hidden overflow-y-auto rounded-2xl border border-border">
+            {visibleRows === undefined ? (
+              <div className="flex h-full items-center justify-center text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+                <span className="sr-only">Loading files</span>
+              </div>
+            ) : visibleRows.length === 0 ? (
+              <p className="px-3 py-2 text-sm text-muted-foreground">
+                {rootRows && rootRows.length > 0
+                  ? "No matches"
+                  : "This folder is empty."}
+              </p>
+            ) : (
+              <div className="flex w-full min-w-0 flex-col gap-0.5 px-1.5 py-1">
+                {visibleRows.map((row) => (
+                  <PickerNode
+                    key={row.rel}
+                    row={row}
+                    entries={entries}
+                    pending={pending}
+                    trackedRels={trackedRels}
+                    expanded={expanded}
+                    childrenByRel={childrenByRel}
+                    loadingRel={loadingRel}
+                    needle={needle}
+                    onToggle={toggle}
+                    onStage={stage}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <DialogFooter className="shrink-0">
           <Button
             type="button"
             variant="outline"
@@ -236,6 +268,7 @@ type PickerNodeProps = {
   expanded: Record<string, boolean>;
   childrenByRel: Record<string, PickerRow[]>;
   loadingRel: Record<string, boolean>;
+  needle: string;
   onToggle: (rel: string) => void;
   onStage: (rel: string, kind: PickerKind, action: "track" | "untrack") => void;
 };
@@ -248,6 +281,7 @@ function PickerNode({
   expanded,
   childrenByRel,
   loadingRel,
+  needle,
   onToggle,
   onStage,
 }: PickerNodeProps) {
@@ -256,12 +290,20 @@ function PickerNode({
   const open = kind === "directory" && expanded[row.rel] === true;
   const loading = loadingRel[row.rel] === true;
   const nested = childrenByRel[row.rel];
+  const shownNested =
+    nested === undefined
+      ? undefined
+      : needle
+        ? nested.filter((child) =>
+            pickerRowMatchesQuery(child, needle, expanded, childrenByRel),
+          )
+        : nested;
 
   return (
     <>
       <div
         className={cn(
-          "group relative flex h-8 w-full items-center gap-2 rounded-2xl pr-2",
+          "group relative flex h-8 w-full min-w-0 items-center gap-2 rounded-2xl pr-2",
           "transition-colors duration-[var(--dur-short)] ease-[var(--ease-out)]",
           "hover:bg-muted/70",
         )}
@@ -304,9 +346,10 @@ function PickerNode({
           onClick={() => onStage(row.rel, kind, tracked ? "untrack" : "track")}
         />
       </div>
-      {open ? (
+      {open &&
+      (shownNested === undefined || shownNested.length > 0 || !needle) ? (
         <div
-          className="relative flex w-full flex-col gap-0.5"
+          className="relative flex w-full min-w-0 flex-col gap-0.5"
           style={{ paddingLeft: TREE_LEVEL }}
         >
           <span
@@ -314,10 +357,10 @@ function PickerNode({
             className="pointer-events-none absolute -top-0.5 bottom-0 z-10 w-[0.5px] -translate-x-1/2 bg-foreground/15"
             style={{ left: `calc(${TREE_INSET} + 0.5rem)` }}
           />
-          {nested === undefined ? null : nested.length === 0 ? (
+          {shownNested === undefined ? null : shownNested.length === 0 ? (
             <p className="px-2 py-1 text-xs text-muted-foreground">Empty</p>
           ) : (
-            nested.map((child) => (
+            shownNested.map((child) => (
               <PickerNode
                 key={child.rel}
                 row={child}
@@ -327,6 +370,7 @@ function PickerNode({
                 expanded={expanded}
                 childrenByRel={childrenByRel}
                 loadingRel={loadingRel}
+                needle={needle}
                 onToggle={onToggle}
                 onStage={onStage}
               />
