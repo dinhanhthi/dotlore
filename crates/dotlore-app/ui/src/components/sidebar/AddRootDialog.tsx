@@ -47,6 +47,7 @@ export function AddRootDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <form
+          className="grid gap-6"
           onSubmit={(event) => {
             event.preventDefault();
             void submit();
@@ -59,17 +60,15 @@ export function AddRootDialog({
               <span className="font-mono break-all text-foreground">{path}</span>
             </DialogDescription>
           </DialogHeader>
-          <div className="py-2">
-            <Input
-              id="add-root-slug"
-              aria-labelledby="add-root-slug-label"
-              value={slug}
-              onChange={(event) => setSlug(event.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-              disabled={busy || closing}
-            />
-          </div>
+          <Input
+            id="add-root-slug"
+            aria-labelledby="add-root-slug-label"
+            value={slug}
+            onChange={(event) => setSlug(event.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            disabled={busy || closing}
+          />
           <DialogFooter>
             <Button
               type="button"
