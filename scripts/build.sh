@@ -44,19 +44,43 @@ if [ "$n" -lt "${#want[@]}" ]; then
 fi
 
 # --- tauri -------------------------------------------------------------------
-# Invoke the cargo-tauri binary from src-tauri. It resolves tauri.conf.json
-# and beforeBuildCommand relative to that directory, where `pnpm ui:build`
-# walks up to the root package.
-if ! command -v cargo-tauri >/dev/null 2>&1; then
-	echo "error: cargo-tauri is not on PATH" >&2
-	exit 1
+# Invoke the Tauri CLI from src-tauri. It resolves tauri.conf.json and
+# beforeBuildCommand relative to that directory, where `pnpm ui:build` walks up
+# to the root package.
+#
+# Prefer the @tauri-apps/cli binary scripts/tauri.sh already uses, so a fresh
+# clone builds after `pnpm install` alone and CI spends no time on
+# `cargo install tauri-cli`. A cargo-tauri already on PATH still works.
+tauri="$root/node_modules/.bin/tauri"
+if [ ! -x "$tauri" ]; then
+	if command -v cargo-tauri >/dev/null 2>&1; then
+		tauri="$(command -v cargo-tauri)"
+	else
+		echo "error: no Tauri CLI found — run pnpm install at the repo root" >&2
+		exit 1
+	fi
 fi
 
 tauri_args=(build)
 # universal-apple-darwin hard-fails if a slice is missing. One target: omit
-# --target entirely so cargo-tauri builds the host triple.
+# --target entirely so the CLI builds the host triple.
 if [ "$n" -eq "${#want[@]}" ]; then
 	tauri_args+=(--target universal-apple-darwin)
+fi
+
+# tauri.conf.json pins bundle.macOS.signingIdentity to "-" so a local build
+# produces an ad-hoc-signed, runnable bundle without a Developer ID. A real
+# release overrides it here rather than relying on whether the
+# APPLE_SIGNING_IDENTITY environment variable outranks the config value: that
+# precedence is undocumented, and getting it wrong ships an ad-hoc bundle that
+# looks fine in CI and is blocked by Gatekeeper on every user's Mac. An explicit
+# --config leaves nothing to resolve. python3 builds the JSON so an identity
+# containing a quote cannot produce a malformed override.
+if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+	tauri_args+=(--config "$(python3 -c '
+import json, os
+print(json.dumps({"bundle": {"macOS": {"signingIdentity": os.environ["APPLE_SIGNING_IDENTITY"]}}}))
+')")
 fi
 
 # Pin the target dir so an inherited CARGO_TARGET_DIR cannot move the
@@ -65,7 +89,7 @@ export CARGO_TARGET_DIR="$root/src-tauri/target"
 
 (
 	cd "$root/src-tauri"
-	cargo-tauri "${tauri_args[@]}"
+	"$tauri" "${tauri_args[@]}"
 )
 
 # A universal build lands under src-tauri/target/universal-apple-darwin/...;

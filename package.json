@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "pnpm tauri dev",
     "ui:dev": "vite",
-    "ui:build": "vite build",
+    "ui:build": "bash scripts/ui-build.sh",
     "mockapp:dev": "bash scripts/mockapp-dev.sh",
     "mockapp:build": "tsc -p mockapp/tsconfig.json --noEmit && vite build --config mockapp/vite.config.ts",
     "tauri": "bash scripts/tauri.sh",
