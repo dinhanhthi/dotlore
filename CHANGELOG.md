@@ -17,7 +17,7 @@ First release. Dotlore tracks the AI-agent config your projects git-ignore and s
 - Files stay where they are — never moved, never symlinked, never added to your project's git history.
 - Every project gets a private staging git repo under `~/Library/Application Support/dotlore/`.
 - Entries are tracked and untracked from the file tree, including nested paths.
-- Seed lists ship per agent (Claude Code, Codex, Cursor, Gemini, opencode, Continue, Junie, Kiro, Roo, Cline, Windsurf) and per project; both are editable in Settings.
+- Seed lists ship per agent (Claude Code, Codex, Cursor, Gemini, OpenCode, Continue, Junie, Kiro, Roo, Cline, Windsurf) and per project; both are editable in Settings.
 - A never-list (`.dotloreignore`) keeps paths out of a project's sync.
 - Size limits of 50 MB per file and 200 MB per seed folder, both configurable.
 - An agent home such as `~/.claude` syncs as a root of its own, and agent homes already installed on the Mac can be imported into the sidebar in one step.
@@ -32,11 +32,12 @@ First release. Dotlore tracks the AI-agent config your projects git-ignore and s
 - Settings for the cloud folder, seed lists, pattern catalogs, never-list, and size limits, plus Start at login.
 - First run picks the cloud folder inside iCloud Drive or Google Drive; Dotlore creates its own `dotlore/` subfolder there.
 - Start at login installs a macOS LaunchAgent, and a second copy on the same home exits quietly instead of opening a duplicate window.
+- Check for Updates… in the app menu, plus a silent check at launch: a signed update is offered in a dialog, downloaded and installed, and the app restarts into it.
 - Failures surface as toasts, and sync refuses to run when the system `git` is missing, pointing at `xcode-select --install`.
 
 ### Platform
 
-- macOS only: desktop window plus menu-bar item. Windows and Linux are not in scope.
+- macOS (desktop window plus menu-bar item) is the current priority; Windows and Linux are coming soon.
 - Rust engine in `src-tauri/` driving the system `git` binary; React 19, TypeScript, Tailwind CSS v4, and CodeMirror 6 in `src/`.
 
 ### Out of scope

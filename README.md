@@ -40,7 +40,7 @@ Overlapping edits resolve deterministically: the newer commit wins on **every** 
 
 ## 💻 Platforms
 
-**macOS** (desktop + menu bar) is the only supported target. Windows and Linux are not in scope. Encryption at rest, direct cloud APIs, and syncing session logs or caches are also out of scope — the threat model is "not in the project's git", not "hide from the cloud provider".
+**macOS** (desktop + menu bar) is the current priority. Windows and Linux are coming soon. Encryption at rest, direct cloud APIs, and syncing session logs or caches are out of scope — the threat model is "not in the project's git", not "hide from the cloud provider".
 
 ## 🛠️ Tech stack
 
@@ -76,7 +76,7 @@ pnpm format:check
 ### 📦 Build
 
 ```bash
-pnpm build                        # → src-tauri/target/release/bundle/macos/Dotlore.app
+pnpm build                        # → src-tauri/target/release/bundle/{macos/Dotlore.app, dmg/*.dmg}
 # pnpm tauri build                # same thing
 open src-tauri/target/release/bundle/macos/Dotlore.app
 ```
