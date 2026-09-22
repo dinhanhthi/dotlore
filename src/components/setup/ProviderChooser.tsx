@@ -1,6 +1,14 @@
 import { useState } from "react";
+import { ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { errorMessage } from "@/lib/errors";
 import { icloudDir, listGdriveMounts, setProvider } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
@@ -8,6 +16,14 @@ import { useRoots } from "@/lib/roots";
 
 /** What the Google Drive client calls the account's own root. */
 const MY_DRIVE = "My Drive";
+
+type Provider = "icloud" | "gdrive" | "other";
+
+const PROVIDER_LABELS: Record<Provider, string> = {
+  icloud: "iCloud Drive",
+  gdrive: "Google Drive",
+  other: "Other…",
+};
 
 function mountName(path: string): string {
   const name = path.split("/").filter(Boolean).pop();
@@ -21,7 +37,9 @@ type ProviderChooserProps = {
 
 export function ProviderChooser({ onApplied }: ProviderChooserProps) {
   const { applyProvider, busy, setBanner } = useRoots();
+  const [provider, setProviderChoice] = useState<Provider | null>(null);
   const [mounts, setMounts] = useState<string[] | null>(null);
+  const [account, setAccount] = useState<string | null>(null);
   const [localBusy, setLocalBusy] = useState(false);
   const locked = busy || localBusy;
 
@@ -43,72 +61,101 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
     }
   }
 
+  function chooseProvider(next: Provider) {
+    setProviderChoice(next);
+    setMounts(null);
+    setAccount(null);
+    if (next === "icloud") {
+      void withLock(async () => {
+        await apply(await icloudDir());
+      });
+      return;
+    }
+    if (next === "other") {
+      void withLock(async () => {
+        const dir = await pickLocalPath();
+        if (dir === null) return;
+        await apply(dir);
+      });
+      return;
+    }
+    void listGdriveMounts()
+      .then(setMounts)
+      .catch((err) => {
+        setBanner(errorMessage(err, "Could not list Google Drive folders"));
+      });
+  }
+
+  function chooseAccount(mount: string) {
+    setAccount(mount);
+    void withLock(async () => {
+      await apply(`${mount}/${MY_DRIVE}`);
+    });
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-col gap-2">
-        <Button
-          variant="outline"
-          className="w-full"
-          disabled={locked}
-          onClick={() => {
-            void withLock(async () => {
-              await apply(await icloudDir());
-            });
-          }}
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              type="button"
+              variant="outline"
+              disabled={locked}
+              className="w-full justify-between"
+            />
+          }
         >
-          iCloud Drive
-        </Button>
-        <Button
-          variant="outline"
-          className="w-full"
-          disabled={locked}
-          onClick={() => {
-            void listGdriveMounts()
-              .then(setMounts)
-              .catch((err) => {
-                setBanner(errorMessage(err, "Could not list Google Drive folders"));
-              });
-          }}
-        >
-          Google Drive…
-        </Button>
-        <Button
-          variant="outline"
-          className="w-full"
-          disabled={locked}
-          onClick={() => {
-            void withLock(async () => {
-              const dir = await pickLocalPath();
-              if (dir === null) return;
-              await apply(dir);
-            });
-          }}
-        >
-          Other…
-        </Button>
-      </div>
-      {mounts !== null &&
-        (mounts.length === 0 ? (
+          {provider === null ? "Select a provider" : PROVIDER_LABELS[provider]}
+          <ChevronDown aria-hidden />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuRadioGroup
+            value={provider ?? ""}
+            onValueChange={(value) => chooseProvider(value as Provider)}
+          >
+            {(Object.keys(PROVIDER_LABELS) as Provider[]).map((id) => (
+              <DropdownMenuRadioItem key={id} value={id}>
+                {PROVIDER_LABELS[id]}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {provider === "gdrive" && mounts !== null && (
+        mounts.length === 0 ? (
           <p className="text-muted-foreground">No Google Drive folder found</p>
         ) : (
-          <div className="flex flex-col items-start gap-1">
-            {mounts.map((mount) => (
-              <Button
-                key={mount}
-                variant="ghost"
-                size="sm"
-                disabled={locked}
-                onClick={() => {
-                  void withLock(async () => {
-                    await apply(`${mount}/${MY_DRIVE}`);
-                  });
-                }}
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={locked}
+                  className="w-full justify-between"
+                />
+              }
+            >
+              {account === null ? "Select an account" : mountName(account)}
+              <ChevronDown aria-hidden />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuRadioGroup
+                value={account ?? ""}
+                onValueChange={chooseAccount}
               >
-                {mountName(mount)}
-              </Button>
-            ))}
-          </div>
-        ))}
+                {mounts.map((mount) => (
+                  <DropdownMenuRadioItem key={mount} value={mount}>
+                    {mountName(mount)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )
+      )}
     </div>
   );
 }
