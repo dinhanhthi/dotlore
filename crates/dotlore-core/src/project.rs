@@ -53,6 +53,7 @@ pub const DEFAULT_PATTERNS: &[&str] = &[
     "docs/",
     ".claude/",
     ".codex/",
+    ".coding-friend/",
     ".cursor/",
     ".gemini/",
     ".agents/",
@@ -1201,6 +1202,21 @@ mod tests {
         assert!(DEFAULT_PATTERNS.contains(&"docs/"));
         assert!(DEFAULT_PATTERNS.contains(&".env"));
         assert!(DEFAULT_PATTERNS.contains(&".env.local"));
+    }
+
+    #[test]
+    fn seed_tracks_a_coding_friend_directory() {
+        let td = tempfile::TempDir::new().unwrap();
+        let root = td.path();
+        put(&root.join(".coding-friend/config.json"), "{}");
+
+        let (file, skipped) =
+            seed(root, &default_pattern_strings(), "", Limits::default()).unwrap();
+        assert!(skipped.is_empty());
+        assert!(
+            tracked_keys(&file).contains(&".coding-friend/".into()),
+            "project seed patterns must track .coding-friend/"
+        );
     }
 
     #[test]
