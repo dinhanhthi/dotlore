@@ -49,6 +49,10 @@ function conflictCount(row: RootRow): number {
   return row.status.kind === "Conflicts" ? row.status.detail : 0;
 }
 
+function sumConflicts(rows: RootRow[]): number {
+  return rows.reduce((total, row) => total + conflictCount(row), 0);
+}
+
 function AddSectionButton({
   label,
   onPick,
@@ -261,6 +265,7 @@ export function Sidebar() {
           id="agents"
           title="Agents"
           count={agents.length}
+          conflicts={sumConflicts(agents)}
           collapsed={collapsed.includes("agents")}
           onToggle={() => toggleCollapsed("agents")}
           action={
@@ -299,6 +304,7 @@ export function Sidebar() {
           id="projects"
           title="Projects"
           count={projects.length}
+          conflicts={sumConflicts(projects)}
           collapsed={collapsed.includes("projects")}
           onToggle={() => toggleCollapsed("projects")}
           action={

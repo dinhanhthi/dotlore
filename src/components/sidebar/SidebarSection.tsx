@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, TriangleAlert } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -7,6 +7,7 @@ type SidebarSectionProps = {
   id: string;
   title: string;
   count?: number;
+  conflicts?: number;
   collapsed: boolean;
   onToggle: () => void;
   action?: ReactNode;
@@ -17,6 +18,7 @@ export function SidebarSection({
   id,
   title,
   count,
+  conflicts = 0,
   collapsed,
   onToggle,
   action,
@@ -45,6 +47,13 @@ export function SidebarSection({
               <span className="shrink-0 text-[11px] leading-none tracking-normal text-muted-foreground/60 tabular-nums">
                 {count}
               </span>
+            )}
+            {conflicts > 0 && (
+              <TriangleAlert
+                role="img"
+                aria-label={`${conflicts} ${conflicts === 1 ? "conflict" : "conflicts"}`}
+                className="size-3.5 shrink-0 text-destructive"
+              />
             )}
           </span>
         </button>
