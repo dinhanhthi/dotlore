@@ -17,6 +17,10 @@ if [ "${1:-}" = "build" ]; then
 	exec bash "$root/scripts/build.sh" "$@"
 fi
 
+# Same target dir as scripts/build.sh. Dev binaries land in
+# src-tauri/target so cargo's runner path matches the single manifest.
+export CARGO_TARGET_DIR="$root/src-tauri/target"
+
 # macOS Dock names a bare Mach-O after its filename. `pnpm tauri build`
 # already exec'd scripts/build.sh above, so this runner is dev-only.
 if [ "$(uname -s)" = "Darwin" ]; then

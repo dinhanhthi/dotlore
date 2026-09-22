@@ -7,9 +7,9 @@ use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{App, AppHandle, Listener, Manager};
 
-use dotlore_core::cloud::is_bidi_control;
-use dotlore_core::daemon::Cmd;
-use dotlore_core::git;
+use crate::cloud::is_bidi_control;
+use crate::daemon::Cmd;
+use crate::git;
 
 use crate::show_window;
 use crate::state::{load_cfg, AppState};
@@ -186,7 +186,7 @@ pub fn one_line(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dotlore_core::cloud::is_bidi_control;
+    use crate::cloud::is_bidi_control;
 
     fn view() -> TrayView {
         TrayView::default()

@@ -17,12 +17,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use dotlore_core::cloud::Cloud;
-use dotlore_core::config::Config;
-use dotlore_core::engine::{configure_provider, Engine, FileSync, ResolveOutcome, RootStatus};
-use dotlore_core::git::Git;
-use dotlore_core::project::{self, PROJECT_FILE};
-use dotlore_core::repo::{provider_key, remote_ref, FetchMode, Repo, Transaction};
+use dotlore::cloud::Cloud;
+use dotlore::config::Config;
+use dotlore::engine::{configure_provider, Engine, FileSync, ResolveOutcome, RootStatus};
+use dotlore::git::Git;
+use dotlore::project::{self, PROJECT_FILE};
+use dotlore::repo::{provider_key, remote_ref, FetchMode, Repo, Transaction};
 use tempfile::TempDir;
 
 const SLUG: &str = "proj-claude";
@@ -2132,7 +2132,7 @@ fn merge_to_target(dev: &Device) -> (Repo, Transaction) {
         .fetch_bundles(&dev.engine.cloud, FetchMode::Normal)
         .unwrap();
     let mut tx = repo
-        .begin_tx(&key, "HEAD", dotlore_core::conflict::resolve_index)
+        .begin_tx(&key, "HEAD", dotlore::conflict::resolve_index)
         .unwrap();
     for d in &devices {
         repo.merge_remote(&tx, d).unwrap();

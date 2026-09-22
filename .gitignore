@@ -1,5 +1,6 @@
 /docs/*
 /target
+/src-tauri/target
 /node_modules
 /dist
 /mockapp/dist

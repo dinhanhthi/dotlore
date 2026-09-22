@@ -59,17 +59,21 @@ if [ "$n" -eq "${#want[@]}" ]; then
 	tauri_args+=(--target universal-apple-darwin)
 fi
 
+# Scoped to this script. cargo-tauri otherwise inherits a workspace
+# CARGO_TARGET_DIR and writes the bundle under the repo-root target/.
+export CARGO_TARGET_DIR="$root/src-tauri/target"
+
 (
 	cd "$root/src-tauri"
 	cargo-tauri "${tauri_args[@]}"
 )
 
-# A universal build lands under target/universal-apple-darwin/...; the
-# documented path is target/release/bundle/macos/Dotlore.app. Mirror it so
-# both locations are usable.
-app_release="$root/target/release/bundle/macos/Dotlore.app"
+# A universal build lands under src-tauri/target/universal-apple-darwin/...;
+# the documented path is src-tauri/target/release/bundle/macos/Dotlore.app.
+# Mirror it so both locations are usable.
+app_release="$root/src-tauri/target/release/bundle/macos/Dotlore.app"
 if [ "$n" -eq "${#want[@]}" ]; then
-	app_universal="$root/target/universal-apple-darwin/release/bundle/macos/Dotlore.app"
+	app_universal="$root/src-tauri/target/universal-apple-darwin/release/bundle/macos/Dotlore.app"
 	if [ ! -d "$app_universal" ]; then
 		echo "error: expected $app_universal after a universal tauri build" >&2
 		exit 1

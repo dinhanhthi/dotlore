@@ -472,7 +472,11 @@ impl Engine {
     }
 
     fn check_not_pending(&self, slug: &str, path: &Path) -> Result<()> {
-        if let Some((other, _)) = self.pending_adds.iter().find(|(_, pending)| pending == path) {
+        if let Some((other, _)) = self
+            .pending_adds
+            .iter()
+            .find(|(_, pending)| pending == path)
+        {
             bail!("{} is already being added as {other}", path.display());
         }
         if self.pending_adds.iter().any(|(pending, _)| pending == slug) {
@@ -2002,10 +2006,7 @@ mod tests {
             Ok(_) => panic!("a second add took a slug that is still seeding"),
             Err(err) => err,
         };
-        assert!(
-            err.to_string().contains("already being added"),
-            "{err:#}"
-        );
+        assert!(err.to_string().contains("already being added"), "{err:#}");
         assert!(
             a.home.path().join("repos/proj-claude/.git").is_dir(),
             "the in-progress staging repo must stay put"

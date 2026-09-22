@@ -854,7 +854,8 @@ name = "dotlore"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "dotlore-core",
+ "ignore",
+ "notify",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
@@ -864,18 +865,6 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
- "tempfile",
-]
-
-[[package]]
-name = "dotlore-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ignore",
- "notify",
- "serde",
- "serde_json",
  "tempfile",
 ]
 

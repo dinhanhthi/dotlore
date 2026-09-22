@@ -23,15 +23,15 @@ use anyhow::{bail, Result};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use dotlore_core::config;
-use dotlore_core::daemon::{Cmd, SharedEngine};
-use dotlore_core::engine::{
+use crate::config;
+use crate::daemon::{Cmd, SharedEngine};
+use crate::engine::{
     self, AddRootStart, ConflictView, Engine, EntryKind, EntryView, ImportAgentsReport,
     InspectedEntry, ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView, TrackOutcome,
     TrackedFile,
 };
-use dotlore_core::git;
-use dotlore_core::project;
+use crate::git;
+use crate::project;
 
 use crate::login_item;
 use crate::state::{load_cfg, AppState, RootRow, StatusPayload};
@@ -1263,7 +1263,10 @@ struct Dirent {
     d_name: [i8; 1024],
 }
 
+// `mirror` declares the same libc functions with its own opaque `DIR`.
+// The two wrappers never exchange pointers; the layouts match.
 #[cfg(target_os = "macos")]
+#[allow(clashing_extern_declarations)]
 extern "C" {
     fn close(fd: i32) -> i32;
     fn fdopendir(fd: i32) -> *mut DIR;
@@ -1421,9 +1424,9 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
 
-    use dotlore_core::cloud::Manifest;
-    use dotlore_core::config::Config;
-    use dotlore_core::engine::Engine;
+    use crate::cloud::Manifest;
+    use crate::config::Config;
+    use crate::engine::Engine;
     use tempfile::TempDir;
 
     fn dir_root(path: PathBuf) -> config::Root {

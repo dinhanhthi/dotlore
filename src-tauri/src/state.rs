@@ -14,9 +14,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use dotlore_core::config::{self, Config, Root};
-use dotlore_core::daemon::{self, Cmd, Event, SharedEngine};
-use dotlore_core::engine::{Engine, ResolutionSnapshot, RootStatus};
+use crate::config::{self, Config, Root};
+use crate::daemon::{self, Cmd, Event, SharedEngine};
+use crate::engine::{Engine, ResolutionSnapshot, RootStatus};
 
 /// One daemon cycle, as it crosses into the webview.
 #[derive(Serialize, Clone, Debug)]
