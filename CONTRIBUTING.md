@@ -15,6 +15,20 @@ pnpm build
 
 The scripts in `package.json` wrap the engine gates. Those gates still apply: `cargo build --manifest-path src-tauri/Cargo.toml` must be warning-free (the desktop app is that package). `pnpm tauri dev` and `pnpm build` build the UI from `src/` into `dist` so you do not have to.
 
+### A dev run has its own state directory
+
+`pnpm dev` and `pnpm tauri dev` default `DOTLORE_HOME` to `~/Downloads/dotlore-dev`, and print the value they used. You do not export anything; a release build is unaffected, because the default is set below the `build` branch in `scripts/tauri.sh`.
+
+This exists so a dev run can sit beside a copy installed in `/Applications`. Both lock `<home>/app.lock` (`src-tauri/src/lib.rs`), and on a clash the second one writes one line to stderr and calls `exit(0)` — no window, exit status zero. Launched from Finder that stderr goes nowhere, so the only symptom is an app that appears not to open. Separate homes avoid it entirely.
+
+`scripts/dev-home.sh` holds that path and is the only place it is written down; `scripts/tauri.sh` and `scripts/reset-dev.sh` both source it. Keep it that way. If the two ever disagree, `pnpm reset:dev` deletes the state of the *installed* app — someone's real project list — while claiming to clear the dev one. An explicit `DOTLORE_HOME` still overrides both.
+
+Three things are shared regardless of `DOTLORE_HOME`, because they are keyed on `$HOME` or on the bundle identifier, not on the state dir:
+
+- **Start at login.** `login_item.rs` has a single `LABEL` (`dev.dinhanhthi.dotlore`) and writes `~/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist` whose `program` points at whichever copy toggled it last. Toggle it in the installed app only, never in a dev run, or macOS launches your `target/debug` binary at login.
+- **The updater's target.** `pnpm dev` runs through `scripts/dev-dock-bundle.sh`, which builds a real bundle at `src-tauri/target/debug/Dotlore.app` so the Dock shows "Dotlore". The updater resolves its install target from `current_exe` by walking up out of `Contents/MacOS`, so a dev run that accepts an update overwrites *that* bundle with the released one. Only reachable while the published version is ahead of `src-tauri/Cargo.toml`; in a dev run, choose "Later". The launch check never prompts — it swallows the error and logs.
+- **The cloud folder.** `device_id` is random per home (`config.rs`), so a dev run is a second device. Point it at a different cloud folder unless you want a permanent extra `devices/<id>/` entry — the cloud is immutable and nothing ever deletes one.
+
 ## Layout
 
 The React/TypeScript frontend lives at `src/`. The Tauri shell and the engine live at `src-tauri/` (package and binary `dotlore`). `src-tauri/src/main.rs` is the only environment reader. `src-tauri/src/lib.rs` exports the engine modules and `pub fn run(home, home_dir)`.
@@ -29,9 +43,13 @@ pnpm mockapp:dev   # http://localhost:38422
 
 Pick a scenario from the right sidebar (or `?scenario=<id>`). **Never change `src/` components to make the browser happy** — fix `mockapp/mocks/` instead. Details: [`mockapp/README.md`](mockapp/README.md).
 
+**`mockapp/` never drives a version bump.** It holds real TypeScript and its own vite config, so it reads like app code — it is not. `pnpm mockapp:build` runs a separate config, and the app's own `beforeBuildCommand` (`pnpm ui:build`) never touches it, so not one byte of `mockapp/` reaches a shipped bundle. `/cf-ship` therefore leaves it out of `APP_PATHS`, and a `(mockapp)`-scoped commit is excluded even when it touched app paths. A commit that changes `mockapp/` *and* `src/` still counts, through `src/`.
+
 ## Landing page (`website/`)
 
 `website/` is the public landing page: static HTML + CSS, no build, no tests. Open `website/index.html` in a browser. A push to `main` that touches `website/` deploys to GitHub Pages (`dotlore.dinhanhthi.com`). Do not couple it to `src/`. Details: [`website/README.md`](website/README.md).
+
+**`website/` never drives a version bump** either, by both filters: the path is outside `APP_PATHS`, and a `(website)`-scoped commit is excluded even when it touched app paths. A range containing only `website/` and `mockapp/` commits reports `HAS APP CHANGES: no`, which `/cf-ship` treats as *nothing to release* — not as "bump a patch". The one edit `/cf-ship` does make here is the version badge between the `<!-- dotlore:version -->` markers, which `bump.sh` rewrites as a whole element, href and label together.
 
 ## Invariants
 

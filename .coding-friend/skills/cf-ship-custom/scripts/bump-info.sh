@@ -78,7 +78,18 @@ cd "$REPO_ROOT"
 # needs — so a commit that only approves a new build script is an app change.
 # components.json is deliberately NOT in: it is the shadcn CLI's config, read by
 # no build step, so it cannot change the shipped app.
-APP_PATHS=(src/ src-tauri/ mockapp/ scripts/ assets/ index.html vite.config.ts tsconfig.json package.json pnpm-lock.yaml pnpm-workspace.yaml)
+# mockapp/ is out for the same reason, and it is the one exclusion most likely to
+# look wrong: it holds real TypeScript and its own vite config, so it reads like
+# app code. It is not. It is the browser-only preview harness with a mocked
+# backend — `pnpm mockapp:build` runs a separate vite config, and the app's own
+# beforeBuildCommand (`pnpm ui:build`) never touches it, so not one byte of
+# mockapp/ reaches a shipped bundle. A commit that changes mockapp/ AND src/
+# still counts, through src/.
+# Known edge, deliberately not split: package.json carries the mockapp:* scripts
+# alongside the real build scripts and packageManager, so a mockapp-only change
+# to package.json does count. Splitting one file across the two lists buys less
+# than it costs.
+APP_PATHS=(src/ src-tauri/ scripts/ assets/ index.html vite.config.ts tsconfig.json package.json pnpm-lock.yaml pnpm-workspace.yaml)
 # Resolved here so the changelog links are printed ready-made below. Leaving the
 # model to build "[#hash](url)" from a bare base URL is how v0.1.0 shipped with
 # no commit links at all — the instruction said "append commit links" and never
@@ -100,10 +111,10 @@ fi
 REPO_URL="$(printf '%s\n' "$ORIGIN_URL" \
   | sed 's|git@github.com:|https://github.com/|' \
   | sed 's|\.git$||')"
-EXCLUDED_PATHS="website/ docs/ .github/ .coding-friend/"
+EXCLUDED_PATHS="website/ mockapp/ docs/ .github/ .coding-friend/"
 # Conventional-commit scopes that never count toward a bump, however many app
 # files the commit touched.
-EXCLUDED_SCOPE_RE='^[0-9a-f]+ [a-z]+\(website\)!?:'
+EXCLUDED_SCOPE_RE='^[0-9a-f]+ [a-z]+\((website|mockapp)\)!?:'
 
 # ─── Names that come from outside this repository ─────────────────────────────
 #
@@ -710,8 +721,8 @@ echo "                            the user; do not release from this state."
 echo ""
 echo "--- Path→package mapping (authoritative — do not infer another) ---"
 echo "One package: dotlore, the desktop app. There is nothing else to version —"
-echo "website/, docs/, .github/ and .coding-friend/ are not separately versioned"
-echo "and never drive a bump."
+echo "website/, mockapp/, docs/, .github/ and .coding-friend/ are not separately"
+echo "versioned and never drive a bump."
 echo "  Bump-relevant:  ${APP_PATHS[*]}  → dotlore"
 echo "  NOT relevant:   $EXCLUDED_PATHS  → no bump, no version of their own"
 echo "                  (docs/ is gitignored here. .coding-friend/ is NOT:"
@@ -719,14 +730,18 @@ echo "                   .gitignore re-includes .coding-friend/skills/, so this"
 echo "                   guide and its scripts are tracked and do reach a fresh"
 echo "                   clone — only .coding-friend/config.json stays local."
 echo "                   Release tooling, so it still never drives a bump.)"
-echo "  Also excluded:  any commit whose conventional scope is (website), even when"
-echo "                  it touched bump-relevant paths. A release that only changes"
-echo "                  the marketing site has NO app changes."
+echo "                  (mockapp/ is the browser-only preview harness with a mocked"
+echo "                   backend. It has its own vite config and never enters a"
+echo "                   shipped bundle, so it cannot change what users run.)"
+echo "  Also excluded:  any commit whose conventional scope is (website) or (mockapp),"
+echo "                  even when it touched bump-relevant paths. A release that only"
+echo "                  changes the marketing site or the preview harness has NO app"
+echo "                  changes."
 echo ""
 echo "--- Change summary ---"
 echo "Commits in range (all):            $(count "$ALL_COMMITS")"
 echo "  touching bump-relevant paths:    $(count "$PATH_COMMITS")   [path filter, merges excluded]"
-echo "  of those, (website)-scoped:      $(count "$SCOPE_EXCLUDED")   [scope filter — excluded]"
+echo "  of those, (website)/(mockapp)-scoped: $(count "$SCOPE_EXCLUDED")   [scope filter — excluded]"
 echo "Release-relevant commits:          $(count "$RELEVANT")"
 echo "Files changed under those paths:   $(count "$CHANGED_FILES")"
 echo "HAS APP CHANGES:                   $HAS_APP_CHANGES"
@@ -758,7 +773,7 @@ echo "[data] Release-relevant commits (path filter passed, scope filter passed).
 echo "       Shape: hash=<hash> link=<canonical link> subject=\"<author text>\""
 print_commits "$RELEVANT"
 echo ""
-echo "[data] Excluded by scope — (website)-scoped despite touching app paths."
+echo "[data] Excluded by scope — (website)/(mockapp)-scoped despite touching app paths."
 echo "       These do NOT count toward the bump. Judge whether any is genuinely"
 echo "       an app change that was mis-scoped:"
 print_commits "$SCOPE_EXCLUDED"
