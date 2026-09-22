@@ -27,7 +27,7 @@
 //! `ponytail:` one ceiling left in the LaunchAgent design, inherent to
 //! `bootstrap` and not fixable inside this module: enabling from the running
 //! app bootstraps a `RunAtLoad` job, so launchd starts a **second**
-//! `dotlore-app` immediately. `main`'s single-instance lock is what makes
+//! `dotlore` immediately. `main`'s single-instance lock is what makes
 //! that copy leave again; the alternative was skipping `bootstrap`, which
 //! would mean the agent only takes effect at the next login.
 
@@ -187,17 +187,17 @@ mod tests {
 
     #[test]
     fn the_agent_runs_at_login_and_is_not_resurrected() {
-        let p = plist_content("/Applications/Dotlore.app/Contents/MacOS/dotlore-app");
+        let p = plist_content("/Applications/Dotlore.app/Contents/MacOS/dotlore");
         assert!(p.contains("<key>Label</key>\n\t<string>dev.dinhanhthi.dotlore</string>"));
-        assert!(p.contains("<string>/Applications/Dotlore.app/Contents/MacOS/dotlore-app</string>"));
+        assert!(p.contains("<string>/Applications/Dotlore.app/Contents/MacOS/dotlore</string>"));
         assert!(p.contains("<key>RunAtLoad</key>\n\t<true/>"));
         assert!(p.contains("<key>KeepAlive</key>\n\t<false/>"));
     }
 
     #[test]
     fn an_ampersand_in_the_path_does_not_break_the_plist() {
-        let p = plist_content("/Users/a&b/<x>/dotlore-app");
-        assert!(p.contains("<string>/Users/a&amp;b/&lt;x&gt;/dotlore-app</string>"));
+        let p = plist_content("/Users/a&b/<x>/dotlore");
+        assert!(p.contains("<string>/Users/a&amp;b/&lt;x&gt;/dotlore</string>"));
         assert!(!p.contains("a&b"));
     }
 }

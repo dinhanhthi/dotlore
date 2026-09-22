@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Run the Tauri CLI from crates/dotlore-app so beforeDevCommand / frontendDist
-# resolve against ui/. `pnpm tauri build` is the same as `pnpm build`.
+# Run the Tauri CLI from src-tauri so beforeDevCommand / frontendDist
+# resolve against the repo root. `pnpm tauri build` is the same as `pnpm build`.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,5 +29,5 @@ if [ "$(uname -s)" = "Darwin" ]; then
 	export "$runner_var=$root/scripts/dev-dock-bundle.sh"
 fi
 
-cd "$root/crates/dotlore-app"
+cd "$root/src-tauri"
 exec "$tauri" "$@"

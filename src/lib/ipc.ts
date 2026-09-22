@@ -172,7 +172,7 @@ export function gitMissing(): Promise<boolean> {
 export function syncNow(): Promise<void> {
   syncing += 1;
   emit();
-  return run(() => invoke("sync_now")).finally(() => {
+  return run(() => invoke<void>("sync_now")).finally(() => {
     syncing = Math.max(0, syncing - 1);
     emit();
   });

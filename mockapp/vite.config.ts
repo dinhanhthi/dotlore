@@ -6,10 +6,9 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 const mockapp = path.dirname(fileURLToPath(import.meta.url));
-const ui = path.resolve(mockapp, "..");
-const repo = path.resolve(ui, "../../..");
-const uiSrc = path.join(ui, "src");
-const uiNm = path.join(ui, "node_modules");
+const repo = path.resolve(mockapp, "..");
+const uiSrc = path.join(repo, "src");
+const uiNm = path.join(repo, "node_modules");
 
 const ALIASED_TAURI = new Set([
   "@tauri-apps/api/core",

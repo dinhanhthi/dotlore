@@ -18,7 +18,7 @@ use crate::state::{load_cfg, AppState};
 /// `RootStatus::Error` is not bounded (see [`one_line`]).
 const LABEL_MAX: usize = 80;
 
-const ICON: Image<'_> = include_image!("../../assets/logo_256.png");
+const ICON: Image<'_> = include_image!("../assets/logo_256.png");
 
 const ID_OPEN: &str = "open";
 const ID_SYNC: &str = "sync";

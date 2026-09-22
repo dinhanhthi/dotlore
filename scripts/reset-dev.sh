@@ -8,7 +8,7 @@
 set -euo pipefail
 
 HOME_DIR="${DOTLORE_HOME:-$HOME/Library/Application Support/dotlore}"
-WEBKIT_DIR="$HOME/Library/WebKit/dotlore-app"
+WEBKIT_DIR="$HOME/Library/WebKit/dotlore"
 PLIST="$HOME/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist"
 CFG="$HOME_DIR/config.json"
 

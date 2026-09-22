@@ -54,14 +54,14 @@ esac
 home1="$workdir/home1"
 state1="$workdir/state1"
 cloud1="$workdir/cloud1"
-mkdir -p "$home1/Library/WebKit/dotlore-app"
+mkdir -p "$home1/Library/WebKit/dotlore"
 mkdir -p "$home1/Library/LaunchAgents"
 mkdir -p "$state1/repos/demo" "$state1/tmp" "$state1/recovery"
 printf 'x' >"$state1/config.json"
 printf 'x' >"$state1/lock"
 printf 'x' >"$state1/app.lock"
 printf 'x' >"$state1/repos/demo/HEAD"
-printf 'x' >"$home1/Library/WebKit/dotlore-app/localstorage"
+printf 'x' >"$home1/Library/WebKit/dotlore/localstorage"
 printf 'x' >"$home1/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist"
 mkdir -p "$cloud1/dotlore/demo"
 printf '{"slug":"demo"}' >"$cloud1/dotlore/demo/manifest.json"
@@ -86,7 +86,7 @@ assert_file "$state1/repos/demo/HEAD"
 assert_file "$state1/tmp"
 assert_file "$state1/recovery"
 assert_file "$cloud1/dotlore/demo/manifest.json"
-assert_file "$home1/Library/WebKit/dotlore-app/localstorage"
+assert_file "$home1/Library/WebKit/dotlore/localstorage"
 assert_file "$home1/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist"
 assert_mentions "$out1" "$cloud1/dotlore"
 assert_mentions "$out1" "$state1/config.json"
@@ -95,7 +95,7 @@ assert_mentions "$out1" "$state1/app.lock"
 assert_mentions "$out1" "$state1/tmp"
 assert_mentions "$out1" "$state1/repos"
 assert_mentions "$out1" "$state1/recovery"
-assert_mentions "$out1" "$home1/Library/WebKit/dotlore-app"
+assert_mentions "$out1" "$home1/Library/WebKit/dotlore"
 assert_mentions "$out1" "$home1/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist"
 if grep -Eiq 'clean reset|reset complete|reset succeeded' <<<"$out1"; then
 	fail "dry-run claimed a reset it did not perform"$'\n'"$out1"
@@ -123,7 +123,7 @@ assert_gone "$state1/repos"
 assert_gone "$state1/recovery"
 assert_gone "$cloud1/dotlore"
 assert_file "$cloud1" # never the provider folder itself
-assert_gone "$home1/Library/WebKit/dotlore-app"
+assert_gone "$home1/Library/WebKit/dotlore"
 assert_gone "$home1/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist"
 for p in \
 	"$cloud1/dotlore" \
@@ -133,7 +133,7 @@ for p in \
 	"$state1/tmp" \
 	"$state1/repos" \
 	"$state1/recovery" \
-	"$home1/Library/WebKit/dotlore-app" \
+	"$home1/Library/WebKit/dotlore" \
 	"$home1/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist"; do
 	line=$(grep -F -- "$p" <<<"$out2" || true)
 	[ -n "$line" ] || fail "--yes output missing line for $p"$'\n'"$out2"
@@ -227,10 +227,10 @@ echo "ok: missing config.json skips cloud and absent home paths"
 # ---------------------------------------------------------------------------
 home6="$workdir/home6"
 state6="$workdir/state6"
-mkdir -p "$home6/Library/WebKit/dotlore-app"
-mkdir -p "$state6/Library/WebKit/dotlore-app"
-printf 'real' >"$home6/Library/WebKit/dotlore-app/store"
-printf 'fake' >"$state6/Library/WebKit/dotlore-app/store"
+mkdir -p "$home6/Library/WebKit/dotlore"
+mkdir -p "$state6/Library/WebKit/dotlore"
+printf 'real' >"$home6/Library/WebKit/dotlore/store"
+printf 'fake' >"$state6/Library/WebKit/dotlore/store"
 cat >"$state6/config.json" <<'EOF'
 {"device_id":"ab","device_name":"m","provider_dir":null,"roots":[]}
 EOF
@@ -239,8 +239,8 @@ out6=$(HOME="$home6" DOTLORE_HOME="$state6" bash "$script" --yes 2>&1)
 ec6=$?
 set -e
 assert_eq "$ec6" "0" "webkit path exit status"
-assert_gone "$home6/Library/WebKit/dotlore-app"
-assert_file "$state6/Library/WebKit/dotlore-app/store"
+assert_gone "$home6/Library/WebKit/dotlore"
+assert_file "$state6/Library/WebKit/dotlore/store"
 if grep -F -- "$state6/Library/WebKit" <<<"$out6" >/dev/null; then
 	fail "mentioned WebKit under DOTLORE_HOME"$'\n'"$out6"
 fi

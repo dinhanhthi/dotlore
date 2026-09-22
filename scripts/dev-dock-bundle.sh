@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Cargo runner for `pnpm tauri dev` on macOS. Launch Services names a bare
-# Mach-O after its filename, so the Dock hover would read dotlore-app.
+# Mach-O after its filename, so the Dock hover would read dotlore.
 # Executing that binary from Dotlore.app/Contents/MacOS with
 # CFBundleDisplayName set registers the title as Dotlore.
 set -euo pipefail
@@ -14,7 +14,7 @@ fi
 bin="$1"
 shift
 
-if [ "$(basename "$bin")" != "dotlore-app" ]; then
+if [ "$(basename "$bin")" != "dotlore" ]; then
 	exec "$bin" "$@"
 fi
 
@@ -22,9 +22,9 @@ app="$(dirname "$bin")/Dotlore.app"
 macos="$app/Contents/MacOS"
 mkdir -p "$macos"
 
-rm -f "$macos/dotlore-app"
-if ! ln "$bin" "$macos/dotlore-app"; then
-	cp -f "$bin" "$macos/dotlore-app"
+rm -f "$macos/dotlore"
+if ! ln "$bin" "$macos/dotlore"; then
+	cp -f "$bin" "$macos/dotlore"
 fi
 
 cat > "$app/Contents/Info.plist" <<'EOF'
@@ -37,7 +37,7 @@ cat > "$app/Contents/Info.plist" <<'EOF'
 	<key>CFBundleName</key>
 	<string>Dotlore</string>
 	<key>CFBundleExecutable</key>
-	<string>dotlore-app</string>
+	<string>dotlore</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -46,4 +46,4 @@ cat > "$app/Contents/Info.plist" <<'EOF'
 </plist>
 EOF
 
-exec "$macos/dotlore-app" "$@"
+exec "$macos/dotlore" "$@"

@@ -2,7 +2,7 @@
   "productName": "Dotlore",
   "identifier": "dev.dinhanhthi.dotlore",
   "build": {
-    "frontendDist": "ui/dist",
+    "frontendDist": "../dist",
     "devUrl": "http://localhost:38421",
     "beforeDevCommand": "pnpm ui:dev",
     "beforeBuildCommand": "pnpm ui:build"
@@ -27,7 +27,7 @@
       "csp": null
     },
     "trayIcon": {
-      "iconPath": "../../assets/logo_256.png",
+      "iconPath": "../assets/logo_256.png",
       "iconAsTemplate": false
     }
   },

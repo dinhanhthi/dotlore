@@ -44,10 +44,9 @@ if [ "$n" -lt "${#want[@]}" ]; then
 fi
 
 # --- tauri -------------------------------------------------------------------
-# Invoke the cargo-tauri binary, not `cargo tauri`. Cargo subcommands start
-# from the workspace root, which makes `pnpm --dir ui` miss crates/dotlore-app/ui.
-# cargo-tauri itself resolves tauri.conf.json and beforeBuildCommand relative
-# to the app crate.
+# Invoke the cargo-tauri binary from src-tauri. It resolves tauri.conf.json
+# and beforeBuildCommand relative to that directory, where `pnpm ui:build`
+# walks up to the root package.
 if ! command -v cargo-tauri >/dev/null 2>&1; then
 	echo "error: cargo-tauri is not on PATH" >&2
 	exit 1
@@ -61,7 +60,7 @@ if [ "$n" -eq "${#want[@]}" ]; then
 fi
 
 (
-	cd "$root/crates/dotlore-app"
+	cd "$root/src-tauri"
 	cargo-tauri "${tauri_args[@]}"
 )
 
@@ -86,4 +85,4 @@ if [ ! -d "$app_release" ]; then
 fi
 
 echo "built $app_release"
-lipo -info "$app_release/Contents/MacOS/dotlore-app" || true
+lipo -info "$app_release/Contents/MacOS/dotlore" || true

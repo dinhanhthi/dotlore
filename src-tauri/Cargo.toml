@@ -1,14 +1,14 @@
 [package]
-name = "dotlore-app"
+name = "dotlore"
 version.workspace = true
 edition = "2021"
 
 [[bin]]
-name = "dotlore-app"
+name = "dotlore"
 path = "src/main.rs"
 
 [dependencies]
-dotlore-core = { path = "../dotlore-core" }
+dotlore-core = { path = "../crates/dotlore-core" }
 anyhow = "1"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"

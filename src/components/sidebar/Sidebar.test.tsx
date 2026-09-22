@@ -60,6 +60,7 @@ function renderSidebar(overrides: Partial<RootsContextValue> = {}) {
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots,
+    addProject: async () => {},
     inflight: 0,
     busy: false,
     banner: null,
@@ -71,7 +72,7 @@ function renderSidebar(overrides: Partial<RootsContextValue> = {}) {
       <Sidebar />
     </RootsContext.Provider>,
   );
-  return { html, refreshRoots: value.refreshRoots };
+  return { html, refreshRoots };
 }
 
 function clickRefresh() {

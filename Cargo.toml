@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["src-tauri", "crates/dotlore-core"]
 resolver = "2"
 
 [workspace.package]
