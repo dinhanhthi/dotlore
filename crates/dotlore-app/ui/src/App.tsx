@@ -7,6 +7,11 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import {
+  MainSkeleton,
+  SidebarSkeleton,
+  TreeSkeleton,
+} from "@/components/layout/AppSkeleton";
 import { Footer } from "@/components/layout/Footer";
 import { Shell } from "@/components/layout/Shell";
 import { AllProjects } from "@/components/main/AllProjects";
@@ -38,6 +43,7 @@ import {
 import {
   applyRootDiscovery,
   emptyRootsState,
+  emptyTrackedStats,
   folderName,
   RootsContext,
   rootsWithSeeding,
@@ -46,6 +52,7 @@ import {
   type LocalDiscovery,
   type RootsState,
   type SelectRootOptions,
+  type TrackedStats,
 } from "@/lib/roots";
 import { SidebarQueryProvider } from "@/lib/sidebar-query";
 import { readStarred, toggleStarred } from "@/lib/starred";
@@ -77,17 +84,24 @@ function isLinked(roots: RootRow[], slug: string | null): boolean {
   return roots.find((row) => row.slug === slug)?.linked === true;
 }
 
+function statsOf(files: { bytes: number }[]): TrackedStats {
+  return {
+    files: files.length,
+    bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+  };
+}
+
 async function loadTrackedCounts(
   roots: RootRow[],
-): Promise<Record<string, number>> {
+): Promise<Record<string, TrackedStats>> {
   const entries = await Promise.all(
     roots.map(async (row) => {
-      if (!row.linked) return [row.slug, 0] as const;
+      if (!row.linked) return [row.slug, emptyTrackedStats] as const;
       try {
         const files = await trackedFiles(row.slug);
-        return [row.slug, files.length] as const;
+        return [row.slug, statsOf(files)] as const;
       } catch {
-        return [row.slug, 0] as const;
+        return [row.slug, emptyTrackedStats] as const;
       }
     }),
   );
@@ -440,10 +454,10 @@ export function App() {
       <SidebarQueryProvider query={sidebarQuery} setQuery={setSidebarQuery}>
         <RootsContext.Provider value={value}>
           <Shell
-            hideTree={onboarding || !ready || state.view !== "root"}
-            sidebar={onboarding || !ready ? null : <Sidebar />}
-            tree={onboarding || !ready ? undefined : <FileTree />}
-            main={!ready ? null : <MainColumn />}
+            hideTree={ready && (onboarding || state.view !== "root")}
+            sidebar={!ready ? <SidebarSkeleton /> : onboarding ? null : <Sidebar />}
+            tree={!ready ? <TreeSkeleton /> : <FileTree />}
+            main={!ready ? <MainSkeleton /> : <MainColumn />}
             footer={<Footer />}
           />
         </RootsContext.Provider>

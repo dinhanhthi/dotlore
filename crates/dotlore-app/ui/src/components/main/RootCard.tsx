@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Star, Trash2 } from "lucide-react";
 
 import { RemoveRootAlert } from "@/components/sidebar/RemoveRootAlert";
+import { formatBytes } from "@/components/tree/entries";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,7 +69,9 @@ export function RootCard({ row }: RootCardProps) {
     seeding,
   } = useRoots();
   const starred = starredSlugs.includes(row.slug);
-  const fileCount = trackedBySlug[row.slug] ?? 0;
+  const tracked = trackedBySlug[row.slug];
+  const fileCount = tracked?.files ?? 0;
+  const trackedBytes = tracked?.bytes ?? 0;
   const [removeOpen, setRemoveOpen] = useState(false);
   const conflicts = row.status.kind === "Conflicts" ? row.status.detail : 0;
   const seedingThis = seeding.some((item) => item.slug === row.slug);
@@ -138,6 +141,8 @@ export function RootCard({ row }: RootCardProps) {
           )}
           <span className="tabular-nums">
             {fileCount} {fileCount === 1 ? "file" : "files"}
+            {" · "}
+            {formatBytes(trackedBytes)}
           </span>
         </span>
         <div className="flex shrink-0 items-center gap-0.5">

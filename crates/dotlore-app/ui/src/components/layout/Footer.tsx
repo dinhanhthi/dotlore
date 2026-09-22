@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Loader2, Moon, RefreshCw, Sun } from "lucide-react";
 
 import { SettingsPopover } from "@/components/settings/SettingsPopover";
+import { formatBytes } from "@/components/tree/entries";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -109,7 +110,9 @@ export function Footer() {
   } = useRoots();
   const syncing = useSyncing();
   const status = aggregateStatus(providerDir, roots);
-  const filesTracked = Object.values(trackedBySlug).reduce((n, c) => n + c, 0);
+  const tracked = Object.values(trackedBySlug);
+  const filesTracked = tracked.reduce((n, stats) => n + stats.files, 0);
+  const bytesTracked = tracked.reduce((n, stats) => n + stats.bytes, 0);
   const conflicts = roots.reduce((n, r) => n + conflictCount(r.status), 0);
   const selected = roots.find((row) => row.slug === selectedSlug) ?? null;
   const statusKey = selected ? JSON.stringify(selected.status) : "";
@@ -239,8 +242,8 @@ export function Footer() {
         </div>
       ) : (
         <div className="shrink-0 tabular-nums">
-          {roots.length} roots · {filesTracked} files tracked · {conflicts}{" "}
-          conflicts
+          {roots.length} roots · {filesTracked} files tracked ·{" "}
+          {formatBytes(bytesTracked)} · {conflicts} conflicts
         </div>
       )}
       <div className="flex min-w-0 flex-1 items-center justify-end gap-1">

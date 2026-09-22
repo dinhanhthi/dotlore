@@ -23,12 +23,20 @@ export type SeedingRoot = {
   name: string;
 };
 
+/** File count and byte total for one project, from its tracked-file list. */
+export type TrackedStats = {
+  files: number;
+  bytes: number;
+};
+
+export const emptyTrackedStats: TrackedStats = { files: 0, bytes: 0 };
+
 export type RootsState = {
   roots: RootRow[];
   providerDir: string | null;
   error: string | null;
   gitMissing: boolean;
-  trackedBySlug: Record<string, number>;
+  trackedBySlug: Record<string, TrackedStats>;
   starredSlugs: string[];
   selectedSlug: string | null;
   selectedRel: string | null;
