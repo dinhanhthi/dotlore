@@ -81,6 +81,19 @@ pnpm build                        # → src-tauri/target/release/bundle/macos/Do
 open src-tauri/target/release/bundle/macos/Dotlore.app
 ```
 
+> [!IMPORTANT]
+> `pnpm build` needs the updater signing key. `tauri.conf.json` sets
+> `bundle.createUpdaterArtifacts: true` and carries a `plugins.updater.pubkey`,
+> so the bundler signs `Dotlore.app.tar.gz` and fails if the private key is not
+> exported:
+>
+> ```bash
+> export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/dotlore.key)"
+> export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
+> ```
+>
+> `pnpm tauri dev` is unaffected — it does not bundle.
+
 To pass a sandbox home into the bundled binary (Finder's `open` does not forward env):
 
 ```bash

@@ -15,6 +15,7 @@ mod commands;
 mod login_item;
 mod state;
 mod tray;
+mod updater;
 
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
@@ -40,6 +41,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             // Regular (the Tauri default) keeps the Dock icon. Accessory
             // hid the app from the Dock and left only the menu-bar item.
@@ -61,6 +63,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             app.manage(AppState::new(home, home_dir));
             app.state::<AppState>().start_runtime(app.handle());
             about::install(app)?;
+            updater::install(app)?;
             tray::build(app)?;
             show_window(app.handle());
 
