@@ -114,6 +114,7 @@ function MainPanel() {
     useRoots();
   if (view === "all") return <AllProjects />;
   if (view === "starred") return <AllProjects starredOnly />;
+  if (view === "conflicts") return <AllProjects conflictsOnly />;
   if (!selectedSlug || !selectedRel) return <EmptyState />;
   if (resolvingRel === selectedRel) {
     return (
@@ -334,6 +335,14 @@ export function App() {
     }));
   }, []);
 
+  const showConflicts = useCallback(() => {
+    setState((current) => ({
+      ...current,
+      view: "conflicts",
+      resolvingRel: null,
+    }));
+  }, []);
+
   const toggleStar = useCallback((slug: string) => {
     const starredSlugs = toggleStarred(slug);
     setState((current) => ({ ...current, starredSlugs }));
@@ -416,6 +425,7 @@ export function App() {
       closeResolver,
       showAllProjects,
       showStarred,
+      showConflicts,
       toggleStar,
       applyProvider,
       refreshRoots,
@@ -434,6 +444,7 @@ export function App() {
       closeResolver,
       showAllProjects,
       showStarred,
+      showConflicts,
       toggleStar,
       applyProvider,
       refreshRoots,

@@ -33,6 +33,7 @@ function renderViewer(): string {
     closeResolver: () => {},
     showAllProjects: () => {},
     showStarred: () => {},
+    showConflicts: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},

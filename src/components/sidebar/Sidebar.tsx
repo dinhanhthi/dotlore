@@ -1,6 +1,6 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
-import { LayoutGrid, Plus, RefreshCw, Star } from "lucide-react";
+import { LayoutGrid, Plus, RefreshCw, Star, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -11,7 +11,7 @@ import {
 import { importInstalledAgents, linkRoot, recoverRoot, setBanner } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { compareRoots } from "@/lib/order";
-import { useRoots } from "@/lib/roots";
+import { conflictCount, conflictTotal, useRoots } from "@/lib/roots";
 import { matchesRootQuery, useSidebarQuery } from "@/lib/sidebar-query";
 import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
@@ -43,14 +43,6 @@ function writeCollapsed(ids: string[]): void {
   } catch {
     // Quota or private-mode — keep the in-memory list.
   }
-}
-
-function conflictCount(row: RootRow): number {
-  return row.status.kind === "Conflicts" ? row.status.detail : 0;
-}
-
-function sumConflicts(rows: RootRow[]): number {
-  return rows.reduce((total, row) => total + conflictCount(row), 0);
 }
 
 function AddSectionButton({
@@ -93,12 +85,14 @@ export function Sidebar() {
     openFirstConflict,
     showAllProjects,
     showStarred,
+    showConflicts,
     toggleStar,
     refreshRoots,
     busy,
     seeding,
   } = useRoots();
   const { query, setQuery } = useSidebarQuery();
+  const conflicts = conflictTotal(roots);
   const [refreshing, setRefreshing] = useState(false);
   const [collapsed, setCollapsed] = useState<string[]>(() => readCollapsed());
   const [pendingAdd, setPendingAdd] = useState<{
@@ -261,11 +255,22 @@ export function Sidebar() {
           }
           onClick={showStarred}
         />
+        {conflicts > 0 && (
+          <SidebarItem
+            label="Conflicts"
+            selected={view === "conflicts"}
+            conflictCount={conflicts}
+            leading={
+              <TriangleAlert aria-hidden className="size-4 shrink-0 text-destructive" />
+            }
+            onClick={showConflicts}
+          />
+        )}
         <SidebarSection
           id="agents"
           title="Agents"
           count={agents.length}
-          conflicts={sumConflicts(agents)}
+          conflicts={conflictTotal(agents)}
           collapsed={collapsed.includes("agents")}
           onToggle={() => toggleCollapsed("agents")}
           action={
@@ -304,7 +309,7 @@ export function Sidebar() {
           id="projects"
           title="Projects"
           count={projects.length}
-          conflicts={sumConflicts(projects)}
+          conflicts={conflictTotal(projects)}
           collapsed={collapsed.includes("projects")}
           onToggle={() => toggleCollapsed("projects")}
           action={

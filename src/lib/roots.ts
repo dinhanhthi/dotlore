@@ -4,7 +4,7 @@ import { getWorkSnapshot, subscribeWork } from "./ipc";
 
 import type { LinkableRow, RootRow } from "./types";
 
-export type AppView = "root" | "all" | "starred";
+export type AppView = "root" | "all" | "starred" | "conflicts";
 
 export type FocusRequest = {
   slug: string;
@@ -59,6 +59,7 @@ export type RootsContextValue = RootsState & {
   closeResolver: () => void;
   showAllProjects: () => void;
   showStarred: () => void;
+  showConflicts: () => void;
   toggleStar: (slug: string) => void;
   /** Set `providerDir` immediately so onboarding unmounts, then refresh roots. */
   applyProvider: (dir: string) => void;
@@ -86,6 +87,16 @@ export const emptyRootsState: RootsState = {
   focusRequest: null,
   seeding: [],
 };
+
+/** Unresolved conflicts in one root. */
+export function conflictCount(row: RootRow): number {
+  return row.status.kind === "Conflicts" ? row.status.detail : 0;
+}
+
+/** Unresolved conflicts across every root. */
+export function conflictTotal(rows: RootRow[]): number {
+  return rows.reduce((total, row) => total + conflictCount(row), 0);
+}
 
 /** Last path segment, or the slug when the path has none. */
 export function folderName(path: string, slug: string): string {

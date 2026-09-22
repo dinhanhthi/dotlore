@@ -1,7 +1,7 @@
 import { RootCard } from "@/components/main/RootCard";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { compareRoots } from "@/lib/order";
-import { useRoots } from "@/lib/roots";
+import { conflictCount, useRoots } from "@/lib/roots";
 import { matchesRootQuery, useSidebarQuery } from "@/lib/sidebar-query";
 import type { RootRow } from "@/lib/types";
 
@@ -15,13 +15,21 @@ function CardGrid({ rows }: { rows: RootRow[] }) {
   );
 }
 
-export function AllProjects({ starredOnly = false }: { starredOnly?: boolean }) {
+export function AllProjects({
+  starredOnly = false,
+  conflictsOnly = false,
+}: {
+  starredOnly?: boolean;
+  conflictsOnly?: boolean;
+}) {
   const { roots, starredSlugs } = useRoots();
   const { query } = useSidebarQuery();
   const starred = new Set(starredSlugs);
   const source = starredOnly
     ? roots.filter((row) => starred.has(row.slug))
-    : roots;
+    : conflictsOnly
+      ? roots.filter((row) => conflictCount(row) > 0)
+      : roots;
   const visible = source.filter((row) => matchesRootQuery(row, query));
   const agents = visible.filter((row) => row.is_agent).sort(compareRoots);
   const projects = visible.filter((row) => !row.is_agent).sort(compareRoots);
@@ -34,7 +42,9 @@ export function AllProjects({ starredOnly = false }: { starredOnly?: boolean }) 
           {source.length === 0
             ? starredOnly
               ? "Nothing starred yet."
-              : "Nothing tracked yet."
+              : conflictsOnly
+                ? "No conflicts."
+                : "Nothing tracked yet."
             : "No matches"}
         </p>
       </div>

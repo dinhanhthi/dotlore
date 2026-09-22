@@ -57,6 +57,7 @@ function renderSidebar(overrides: Partial<RootsContextValue> = {}) {
     closeResolver: () => {},
     showAllProjects: () => {},
     showStarred: () => {},
+    showConflicts: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots,
@@ -129,5 +130,27 @@ describe("Sidebar agents refresh", () => {
   it("disables the refresh button while busy", () => {
     const { html } = renderSidebar({ busy: true });
     expect(html).toMatch(/<button[^>]*aria-label="Refresh agents"[^>]*disabled/);
+  });
+});
+
+describe("Sidebar conflicts entry", () => {
+  const conflicted = {
+    slug: "home-claude",
+    path: "/Users/x/.claude",
+    name: ".claude",
+    is_agent: true,
+    linked: true,
+    status: { kind: "Conflicts" as const, detail: 3 },
+  };
+
+  it("stays hidden while nothing conflicts", () => {
+    const { html } = renderSidebar({ roots: [{ ...conflicted, status: { kind: "Synced" } }] });
+    expect(html).not.toContain("Conflicts</span>");
+  });
+
+  it("appears with the total once a root conflicts", () => {
+    const { html } = renderSidebar({ roots: [conflicted] });
+    expect(html).toContain("Conflicts</span>");
+    expect(html).toContain('aria-label="3 conflicts"');
   });
 });

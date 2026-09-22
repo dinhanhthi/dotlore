@@ -37,6 +37,7 @@ function wrap(node: React.ReactNode): string {
     closeResolver: () => {},
     showAllProjects: () => {},
     showStarred: () => {},
+    showConflicts: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},
