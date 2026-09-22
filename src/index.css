@@ -238,3 +238,7 @@
 .cm-merge-host .cm-mergeViewEditors {
   height: 100%;
 }
+
+.cm-merge-host .cm-mergeViewEditor + .cm-mergeViewEditor {
+  border-left: 1px solid var(--border);
+}

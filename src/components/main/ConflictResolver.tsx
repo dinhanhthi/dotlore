@@ -313,7 +313,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
         <>
           <div className="grid shrink-0 grid-cols-2 border-b border-border text-label text-muted-foreground">
             <div className="px-pad-x py-1">LIVE</div>
-            <div className="px-pad-x py-1">OTHER</div>
+            <div className="border-l border-border px-pad-x py-1">OTHER</div>
           </div>
           <div ref={mergeParentRef} className="cm-merge-host min-h-0 flex-1 overflow-hidden" />
         </>
