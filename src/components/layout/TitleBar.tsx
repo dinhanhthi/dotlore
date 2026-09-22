@@ -6,8 +6,6 @@ import { cn } from "@/lib/utils";
 
 import { TitleBarActions } from "./TitleBarActions";
 
-const APP_VERSION = "0.1.0";
-
 /**
  * Overlay titlebar: drag strip on the left (traffic lights sit here),
  * actions pinned to the far right. WKWebView ignores `data-tauri-drag-region`;
@@ -28,13 +26,13 @@ function handleMouseDown(e: MouseEvent) {
 }
 
 export function TitleBar({ className }: { className?: string }) {
-  const [version, setVersion] = useState(APP_VERSION);
+  const [version, setVersion] = useState("");
 
   useEffect(() => {
     void getVersion()
       .then(setVersion)
       .catch(() => {
-        setVersion(APP_VERSION);
+        // Leave the label hidden rather than guess a version.
       });
   }, []);
 
@@ -58,9 +56,11 @@ export function TitleBar({ className }: { className?: string }) {
         <span className="pointer-events-none text-base font-medium text-foreground">
           Dotlore
         </span>
-        <span className="pointer-events-none text-xs font-mono text-muted-foreground">
-          v{version}
-        </span>
+        {version ? (
+          <span className="pointer-events-none text-xs font-mono text-muted-foreground">
+            v{version}
+          </span>
+        ) : null}
       </div>
       <TitleBarActions />
     </div>
