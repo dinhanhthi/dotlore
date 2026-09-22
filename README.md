@@ -57,12 +57,10 @@ Overlapping edits resolve deterministically: the newer commit wins on **every** 
 
 **Prerequisites:** [Rust](https://rustup.rs/) 1.89+ (uses `std::fs::File::lock`), [Node.js](https://nodejs.org/) 20+, [pnpm](https://pnpm.io/), the system `git`, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for macOS. If `git` is missing, Dotlore refuses to sync and points you at `xcode-select --install`.
 
-Set `DOTLORE_HOME` so a local run does not write to `~/Library/Application Support/dotlore/`. The directory is created on first use. Two copies of the app on the same home share a lock file.
+`pnpm tauri dev` keeps its state in `~/Downloads/dotlore-dev` instead of `~/Library/Application Support/dotlore/`, so a dev run can sit beside a copy installed in `/Applications`. It prints the path it used, and an explicit `DOTLORE_HOME` overrides it. The directory is created on first use. Two copies sharing one home fight over a lock file, and the loser exits without a window.
 
 ```bash
 pnpm install
-
-export DOTLORE_HOME="$HOME/Downloads/dotlore"
 
 pnpm tauri dev                    # desktop app (opens the window if provider is unset)
 pnpm ui:dev                       # frontend only, from src/

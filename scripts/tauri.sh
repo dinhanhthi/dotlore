@@ -17,6 +17,16 @@ if [ "${1:-}" = "build" ]; then
 	exec bash "$root/scripts/build.sh" "$@"
 fi
 
+# Keep a dev run off the installed app's state. Both copies lock <home>/app.lock
+# and the loser calls exit(0) with no window and only a stderr line, which from
+# Finder reads as "the app just did not open". Set below the `build` branch on
+# purpose: a release build has no business carrying a dev home.
+#
+# scripts/dev-home.sh holds the path, shared with scripts/reset-dev.sh. An
+# explicit DOTLORE_HOME still wins.
+. "$root/scripts/dev-home.sh"
+echo "dotlore: DOTLORE_HOME=$DOTLORE_HOME" >&2
+
 # Same target dir as scripts/build.sh. Dev binaries land in
 # src-tauri/target so cargo's runner path matches the single manifest.
 export CARGO_TARGET_DIR="$root/src-tauri/target"

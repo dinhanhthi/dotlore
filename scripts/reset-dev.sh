@@ -7,7 +7,11 @@
 # or the cloud path is skipped.
 set -euo pipefail
 
-HOME_DIR="${DOTLORE_HOME:-$HOME/Library/Application Support/dotlore}"
+# Same default as `pnpm dev` — see scripts/dev-home.sh. Without this, a
+# `pnpm reset:dev` after `pnpm dev` would wipe the state of the installed app
+# instead of the dev one.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dev-home.sh"
+HOME_DIR="$DOTLORE_HOME"
 WEBKIT_DIR="$HOME/Library/WebKit/dotlore"
 PLIST="$HOME/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist"
 CFG="$HOME_DIR/config.json"
