@@ -69,18 +69,24 @@ export CARGO_TARGET_DIR="$root/src-tauri/target"
 )
 
 # A universal build lands under src-tauri/target/universal-apple-darwin/...;
-# the documented path is src-tauri/target/release/bundle/macos/Dotlore.app.
-# Mirror it so both locations are usable.
-app_release="$root/src-tauri/target/release/bundle/macos/Dotlore.app"
+# the documented path is src-tauri/target/release/bundle/. Mirror the WHOLE
+# bundle directory, not just Dotlore.app: with createUpdaterArtifacts the
+# bundler also emits macos/Dotlore.app.tar.gz and its .sig, and the dmg target
+# emits dmg/*.dmg. Mirroring only the .app stranded all three in the universal
+# directory, where the release pipeline does not look for them.
+bundle_release="$root/src-tauri/target/release/bundle"
+app_release="$bundle_release/macos/Dotlore.app"
 if [ "$n" -eq "${#want[@]}" ]; then
-	app_universal="$root/src-tauri/target/universal-apple-darwin/release/bundle/macos/Dotlore.app"
-	if [ ! -d "$app_universal" ]; then
-		echo "error: expected $app_universal after a universal tauri build" >&2
+	bundle_universal="$root/src-tauri/target/universal-apple-darwin/release/bundle"
+	if [ ! -d "$bundle_universal/macos/Dotlore.app" ]; then
+		echo "error: expected $bundle_universal/macos/Dotlore.app after a universal tauri build" >&2
 		exit 1
 	fi
-	mkdir -p "$(dirname "$app_release")"
-	rm -rf "$app_release"
-	ditto "$app_universal" "$app_release"
+	# Replaced wholesale so a single-arch build's leftovers cannot survive next
+	# to universal ones and be picked up by a later glob.
+	rm -rf "$bundle_release"
+	mkdir -p "$(dirname "$bundle_release")"
+	ditto "$bundle_universal" "$bundle_release"
 fi
 
 if [ ! -d "$app_release" ]; then
@@ -90,3 +96,13 @@ fi
 
 echo "built $app_release"
 lipo -info "$app_release/Contents/MacOS/dotlore" || true
+
+# Named, not globbed, so a missing updater artifact is visible here rather than
+# at the point the release pipeline tries to upload it.
+for extra in "$bundle_release"/dmg/*.dmg "$app_release.tar.gz" "$app_release.tar.gz.sig"; do
+	if [ -e "$extra" ]; then
+		echo "built $extra"
+	else
+		echo "note: not produced: $extra" >&2
+	fi
+done

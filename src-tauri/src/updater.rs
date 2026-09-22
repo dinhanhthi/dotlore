@@ -16,6 +16,9 @@ use tauri_plugin_updater::UpdaterExt;
 
 const CHECK_ID: &str = "check-for-updates";
 const TITLE: &str = "Software Update";
+const CHECK_FAILED: &str = "Could not check for updates. Check your connection and try again.";
+const INSTALL_FAILED: &str =
+    "Could not install the update. Dotlore is unchanged — try again from Check for Updates…";
 
 /// Add the menu item next to About, then start the launch check.
 ///
@@ -59,7 +62,7 @@ pub fn install(app: &App) -> tauri::Result<()> {
 async fn check(app: &AppHandle, interactive: bool) {
     let updater = match app.updater() {
         Ok(updater) => updater,
-        Err(e) => return failed(app, interactive, e.to_string()),
+        Err(e) => return failed(app, interactive, CHECK_FAILED, e.to_string()),
     };
     match updater.check().await {
         Ok(Some(update)) => prompt(app, update),
@@ -71,17 +74,23 @@ async fn check(app: &AppHandle, interactive: bool) {
                     .show(|_| {});
             }
         }
-        Err(e) => failed(app, interactive, e.to_string()),
+        Err(e) => failed(app, interactive, CHECK_FAILED, e.to_string()),
     }
 }
 
 /// The launch check logs and stops here. Only the menu item may raise a dialog,
 /// and it gets one sentence rather than the library's error text.
-fn failed(app: &AppHandle, interactive: bool, detail: String) {
+///
+/// `message` is the caller's, because the two failure paths fail for different
+/// reasons: a check fails on the network, an install most often fails because
+/// the user dismissed the admin password prompt — the plugin reports that as
+/// `PermissionDenied("Failed to move the new app into place")`, and telling that
+/// user to check their connection points them at the wrong thing.
+fn failed(app: &AppHandle, interactive: bool, message: &str, detail: String) {
     eprintln!("dotlore: updater: {detail}");
     if interactive {
         app.dialog()
-            .message("Could not check for updates. Check your connection and try again.")
+            .message(message)
             .title(TITLE)
             .kind(MessageDialogKind::Warning)
             .show(|_| {});
@@ -110,7 +119,7 @@ fn prompt(app: &AppHandle, update: tauri_plugin_updater::Update) {
                 match update.download_and_install(|_, _| {}, || {}).await {
                     // `restart` does not return; the new bundle is already in place.
                     Ok(()) => app.restart(),
-                    Err(e) => failed(&app, true, e.to_string()),
+                    Err(e) => failed(&app, true, INSTALL_FAILED, e.to_string()),
                 }
             });
         });
