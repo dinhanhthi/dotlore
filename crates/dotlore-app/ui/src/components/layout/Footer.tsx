@@ -214,7 +214,6 @@ export function Footer() {
           {formatBytes(bytesTracked)} · {conflicts} conflicts
         </div>
       )}
-      <div className="min-w-0 flex-1" aria-hidden />
     </footer>
   );
 }
