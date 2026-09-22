@@ -18,11 +18,11 @@ import { AllProjects } from "@/components/main/AllProjects";
 import { ConflictResolver } from "@/components/main/ConflictResolver";
 import { EmptyState } from "@/components/main/EmptyState";
 import { FileViewer } from "@/components/main/FileViewer";
-import { GitMissingBanner } from "@/components/settings/SettingsPopover";
+import { NoticeToasts } from "@/components/notices/NoticeToasts";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { ProviderSetup } from "@/components/setup/ProviderSetup";
 import { FileTree } from "@/components/tree/FileTree";
-import { ErrorBanner } from "@/components/ui/ErrorBanner";
+import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { uniqueConflictRels } from "@/lib/conflicts";
 import { errorMessage } from "@/lib/errors";
@@ -58,7 +58,7 @@ import { SidebarQueryProvider } from "@/lib/sidebar-query";
 import { readStarred, toggleStarred } from "@/lib/starred";
 import type { ConflictView, RootRow } from "@/lib/types";
 
-/** Import catalog agents when a provider is set. Failures stay on the banner; refresh still runs. */
+/** Import catalog agents when a provider is set. Failures show as a toast; refresh still runs. */
 async function importAgentsWhenReady(dir: string | null): Promise<void> {
   if (dir === null) return;
   try {
@@ -66,7 +66,7 @@ async function importAgentsWhenReady(dir: string | null): Promise<void> {
     const first = report.failed[0];
     if (first) setBanner(first.message);
   } catch {
-    // `run` already stored the command error on the banner.
+    // `run` already stored the command error for the toast.
   }
 }
 
@@ -127,16 +127,10 @@ function MainPanel() {
 }
 
 function MainColumn() {
-  const { gitMissing, providerDir, banner, setBanner } = useRoots();
+  const { providerDir } = useRoots();
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {banner !== null ? (
-        <ErrorBanner message={banner} onDismiss={() => setBanner(null)} />
-      ) : null}
-      {gitMissing ? <GitMissingBanner /> : null}
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {providerDir === null ? <ProviderSetup /> : <MainPanel />}
-      </div>
+    <div className="h-full min-h-0 overflow-hidden">
+      {providerDir === null ? <ProviderSetup /> : <MainPanel />}
     </div>
   );
 }
@@ -453,13 +447,16 @@ export function App() {
     <TooltipProvider delay={400}>
       <SidebarQueryProvider query={sidebarQuery} setQuery={setSidebarQuery}>
         <RootsContext.Provider value={value}>
-          <Shell
-            hideTree={ready && (onboarding || state.view !== "root")}
-            sidebar={!ready ? <SidebarSkeleton /> : onboarding ? null : <Sidebar />}
-            tree={!ready ? <TreeSkeleton /> : <FileTree />}
-            main={!ready ? <MainSkeleton /> : <MainColumn />}
-            footer={<Footer />}
-          />
+          <Toaster>
+            <NoticeToasts banner={work.banner} gitMissing={state.gitMissing} />
+            <Shell
+              hideTree={ready && (onboarding || state.view !== "root")}
+              sidebar={!ready ? <SidebarSkeleton /> : onboarding ? null : <Sidebar />}
+              tree={!ready ? <TreeSkeleton /> : <FileTree />}
+              main={!ready ? <MainSkeleton /> : <MainColumn />}
+              footer={<Footer />}
+            />
+          </Toaster>
         </RootsContext.Provider>
       </SidebarQueryProvider>
     </TooltipProvider>

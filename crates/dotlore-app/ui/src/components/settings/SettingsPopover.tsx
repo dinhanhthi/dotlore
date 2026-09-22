@@ -543,36 +543,6 @@ export function SettingsDialog({
 export const GIT_INSTALL_CMD = "xcode-select --install";
 export const GIT_MISSING_BANNER = "git not found — run: xcode-select --install";
 
-export function GitMissingBanner() {
-  const [copied, setCopied] = useState(false);
-
-  function copy() {
-    void navigator.clipboard.writeText(GIT_INSTALL_CMD).then(
-      () => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1500);
-      },
-      () => {
-        // WebView clipboard can be denied; the command stays on screen.
-      },
-    );
-  }
-
-  return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-destructive/40 bg-destructive/10 px-3 py-1.5 text-destructive">
-      <p className="min-w-0 flex-1">{GIT_MISSING_BANNER}</p>
-      <Button
-        variant="ghost"
-        size="xs"
-        className="text-destructive hover:text-destructive"
-        onClick={copy}
-      >
-        {copied ? "Copied" : "Copy"}
-      </Button>
-    </div>
-  );
-}
-
 function tildePath(path: string): string {
   return path.replace(/^\/Users\/[^/]+/, "~");
 }
