@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
 import { ChangeCloudFolderDialog } from "@/components/settings/ChangeCloudFolderDialog";
 import { SettingsSeedList } from "@/components/settings/SettingsSeedList";
+import { WipeCloudDataAlert } from "@/components/settings/WipeCloudDataAlert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -320,6 +321,7 @@ function SettingsGeneral({
 }) {
   const { providerDir, busy } = useRoots();
   const [loginOn, setLoginOn] = useState(false);
+  const [wipeOpen, setWipeOpen] = useState(false);
   const [theme, setTheme] = useTheme();
 
   useEffect(() => {
@@ -383,6 +385,18 @@ function SettingsGeneral({
             </TooltipContent>
           </Tooltip>
         </div>
+        {providerDir !== null && (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="self-start text-destructive hover:text-destructive"
+            disabled={busy}
+            onClick={() => setWipeOpen(true)}
+          >
+            Wipe cloud data…
+          </Button>
+        )}
+        <WipeCloudDataAlert open={wipeOpen} onOpenChange={setWipeOpen} />
       </section>
       <section className="flex flex-col gap-3">
         <h3 className="text-label text-muted-foreground">Preferences</h3>

@@ -399,6 +399,11 @@ const handlers: Record<
     delete store.pickerExtra[slug];
     emitStatus();
   },
+  wipe_cloud_data: () => {
+    const readded = store.roots.map((row) => row.slug);
+    emitStatus();
+    return { readded, failed: [] };
+  },
   recover_root: (args) => {
     const row = requireRoot(argString(args, "slug"));
     row.status = { kind: "Synced" };

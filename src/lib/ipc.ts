@@ -202,6 +202,15 @@ export function removeRoot(slug: string): Promise<void> {
   return run(() => invoke("remove_root", { slug }));
 }
 
+export type WipeReport = {
+  readded: string[];
+  failed: { slug: string; error: string }[];
+};
+
+export function wipeCloudData(): Promise<WipeReport> {
+  return run(() => invoke<WipeReport>("wipe_cloud_data"));
+}
+
 export function recoverRoot(slug: string): Promise<void> {
   return run(() => invoke("recover_root", { slug }));
 }

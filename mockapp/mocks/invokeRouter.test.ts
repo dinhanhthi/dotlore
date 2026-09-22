@@ -209,6 +209,20 @@ describe("remove_root", () => {
   });
 });
 
+describe("wipe_cloud_data", () => {
+  it("re-adds every current root and keeps the roots list intact", async () => {
+    resetStore();
+    const slugs = store.roots.map((row) => row.slug);
+    expect(slugs.length).toBeGreaterThan(0);
+
+    await expect(route("wipe_cloud_data", {})).resolves.toEqual({
+      readded: slugs,
+      failed: [],
+    });
+    expect(store.roots.map((row) => row.slug)).toEqual(slugs);
+  });
+});
+
 describe("link_root", () => {
   it("marks the row linked and drops that slug from linkable", async () => {
     await route("link_root", {
