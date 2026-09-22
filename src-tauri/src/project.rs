@@ -85,19 +85,12 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
             "settings.local.json",
             "CLAUDE.md",
             "keybindings.json",
-            "statusline-command.sh",
-            "agents/",
-            "skills/",
             "commands/",
             "rules/",
-            "hooks/",
             "scripts/",
             "output-styles/",
             "workflows/",
-            "themes/",
-            "plugins/installed_plugins.json",
-            "plugins/known_marketplaces.json",
-            "plugins/blocklist.json",
+            "themes/"
         ],
     ),
     (
@@ -106,8 +99,6 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
             "config.toml",
             "AGENTS.md",
             "rules/",
-            "hooks.json",
-            "skills/",
             "prompts/",
         ],
     ),
@@ -115,15 +106,10 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
         "cursor",
         &[
             "cli-config.json",
-            "mcp.json",
             "AGENTS.md",
             "rules/",
-            "skills/",
-            "skills-cursor/",
             "agents/",
-            "commands/",
-            "hooks.json",
-            "hooks/",
+            "commands/"
         ],
     ),
     (
@@ -132,9 +118,7 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
             "settings.json",
             "GEMINI.md",
             "commands/",
-            "agents/",
-            "skills/",
-            "extensions/",
+            "agents/"
         ],
     ),
     (
@@ -148,8 +132,6 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
             "agents/",
             "command/",
             "commands/",
-            "plugins/",
-            "skills/",
         ],
     ),
     (
@@ -157,7 +139,6 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
         &[
             "config.yaml",
             "rules/",
-            "skills/",
             "assistants/",
             "prompts/",
         ],
@@ -168,10 +149,10 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
     ),
     (
         "kiro",
-        &["settings/", "steering/", "skills/", "agents/", "hooks/"],
+        &["settings/", "steering/", "agents/"],
     ),
-    ("roo", &["rules/", "skills/"]),
-    ("cline", &["rules/", "skills/"]),
+    ("roo", &["rules/"]),
+    ("cline", &["rules/"]),
     ("windsurf", &["memories/global_rules.md"]),
 ];
 
