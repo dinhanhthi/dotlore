@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { Loader2, Moon, RefreshCw, Sun } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 
-import { SettingsPopover } from "@/components/settings/SettingsPopover";
 import { formatBytes } from "@/components/tree/entries";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,7 +12,6 @@ import { uniqueConflictRels } from "@/lib/conflicts";
 import { conflicts as fetchConflicts, syncNow } from "@/lib/ipc";
 import { useRoots, useSyncing, type SeedingRoot } from "@/lib/roots";
 import type { RootRow, RootStatus } from "@/lib/types";
-import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 type Aggregate = {
@@ -64,36 +62,6 @@ function aggregateStatus(
     return { glyph: "dot", color: "bg-status-pending", text: "Pending" };
   }
   return { glyph: "dot", color: "bg-status-synced", text: "Synced" };
-}
-
-function ThemeToggle() {
-  const [theme, setTheme] = useTheme();
-  const next = theme === "dark" ? "light" : "dark";
-  const label =
-    next === "light" ? "Switch to light theme" : "Switch to dark theme";
-
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="text-muted-foreground"
-            aria-label={label}
-            onClick={() => setTheme(next)}
-          />
-        }
-      >
-        {theme === "dark" ? (
-          <Moon className="size-3.5" aria-hidden />
-        ) : (
-          <Sun className="size-3.5" aria-hidden />
-        )}
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  );
 }
 
 export function Footer() {
@@ -246,10 +214,7 @@ export function Footer() {
           {formatBytes(bytesTracked)} · {conflicts} conflicts
         </div>
       )}
-      <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
-        <ThemeToggle />
-        <SettingsPopover />
-      </div>
+      <div className="min-w-0 flex-1" aria-hidden />
     </footer>
   );
 }

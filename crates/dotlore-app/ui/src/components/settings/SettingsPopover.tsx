@@ -567,12 +567,12 @@ export function SettingsPopover() {
     <>
       <Button
         variant="ghost"
-        size="icon-xs"
+        size="icon-sm"
         className="text-muted-foreground"
         aria-label="Settings"
         onClick={() => setOpen(true)}
       >
-        <Settings className="size-3.5" aria-hidden />
+        <Settings aria-hidden />
       </Button>
       <SettingsDialog open={open} onOpenChange={setOpen} />
     </>

@@ -2,7 +2,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
+import { FileHeaderActions } from "@/components/layout/RootActions";
 import { viewerExtensions } from "@/lib/cm";
 import { readFile } from "@/lib/ipc";
 import { composeLivePath } from "@/lib/path";
@@ -96,7 +96,7 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
         <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
           {content ? formatBytes(content.bytes_len) : ""}
         </span>
-        <RevealInFinderButton path={livePath} />
+        <FileHeaderActions path={livePath} />
       </header>
       {body}
     </div>
