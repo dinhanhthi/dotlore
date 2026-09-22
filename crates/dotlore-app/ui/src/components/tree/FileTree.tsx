@@ -12,7 +12,6 @@ import {
 import { formatBytes } from "@/components/tree/entries";
 import { TreeNode } from "@/components/tree/TreeNode";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
   TooltipContent,
@@ -307,7 +306,7 @@ export function FileTree() {
           }}
         />
       </div>
-      <ScrollArea className="min-h-0 flex-1">
+      <div className="panel-scroll min-h-0 min-w-0 flex-1 overflow-auto">
         <div className="flex flex-col gap-0.5 px-1.5 py-1">
         {filtering && visibleTree.length === 0 ? (
           <p className="px-2 py-1.5 text-sm text-muted-foreground">No matches</p>
@@ -335,7 +334,7 @@ export function FileTree() {
           />
         ))}
         </div>
-      </ScrollArea>
+      </div>
       <footer className="flex h-row shrink-0 items-center border-t border-border px-3 text-xs tabular-nums text-muted-foreground">
         {projectSizeLabel(files)}
       </footer>

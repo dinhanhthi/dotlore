@@ -186,53 +186,48 @@
   transition-timing-function: var(--ease-out);
 }
 
-/* Left sidebar list only. A 6px classic bar, flush with the sidebar border.
-   scrollbar-width/scrollbar-color paint an inset thumb inside a wider track. */
-.sidebar-scroll::-webkit-scrollbar {
-  display: block;
-  width: 6px;
-}
-
-.sidebar-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.sidebar-scroll::-webkit-scrollbar-thumb {
-  border-radius: 999px 0 0 999px;
-  background-color: color-mix(in oklch, var(--foreground) 22%, transparent);
-}
-
-.sidebar-scroll::-webkit-scrollbar-thumb:hover {
-  background-color: color-mix(in oklch, var(--foreground) 40%, transparent);
-}
-
-/* Third panel only: file preview and conflict editors. Same 6px bar as the
-   sidebar, on both axes. */
+/* Classic 6px bars, flush with the panel edge. The outer side of the thumb is
+   square so it sits on the border; scrollbar-width/scrollbar-color paint an
+   inset thumb inside a wider track. */
+.sidebar-scroll::-webkit-scrollbar,
+.panel-scroll::-webkit-scrollbar,
 .cm-scroller::-webkit-scrollbar,
 .cm-merge-host .cm-mergeView::-webkit-scrollbar {
+  display: block;
   width: 6px;
   height: 6px;
 }
 
+.sidebar-scroll::-webkit-scrollbar-track,
+.panel-scroll::-webkit-scrollbar-track,
 .cm-scroller::-webkit-scrollbar-track,
-.cm-merge-host .cm-mergeView::-webkit-scrollbar-track {
+.cm-merge-host .cm-mergeView::-webkit-scrollbar-track,
+.cm-scroller::-webkit-scrollbar-corner,
+.cm-merge-host .cm-mergeView::-webkit-scrollbar-corner,
+.panel-scroll::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-.cm-scroller::-webkit-scrollbar-thumb,
-.cm-merge-host .cm-mergeView::-webkit-scrollbar-thumb {
-  border-radius: 999px;
+.sidebar-scroll::-webkit-scrollbar-thumb,
+.panel-scroll::-webkit-scrollbar-thumb:vertical,
+.cm-scroller::-webkit-scrollbar-thumb:vertical,
+.cm-merge-host .cm-mergeView::-webkit-scrollbar-thumb:vertical {
+  border-radius: 999px 0 0 999px;
   background-color: color-mix(in oklch, var(--foreground) 22%, transparent);
 }
 
+.panel-scroll::-webkit-scrollbar-thumb:horizontal,
+.cm-scroller::-webkit-scrollbar-thumb:horizontal,
+.cm-merge-host .cm-mergeView::-webkit-scrollbar-thumb:horizontal {
+  border-radius: 999px 999px 0 0;
+  background-color: color-mix(in oklch, var(--foreground) 22%, transparent);
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover,
+.panel-scroll::-webkit-scrollbar-thumb:hover,
 .cm-scroller::-webkit-scrollbar-thumb:hover,
 .cm-merge-host .cm-mergeView::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in oklch, var(--foreground) 40%, transparent);
-}
-
-.cm-scroller::-webkit-scrollbar-corner,
-.cm-merge-host .cm-mergeView::-webkit-scrollbar-corner {
-  background: transparent;
 }
 
 .cm-merge-host .cm-mergeView {
