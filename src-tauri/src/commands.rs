@@ -28,7 +28,7 @@ use crate::daemon::{Cmd, SharedEngine};
 use crate::engine::{
     self, AddRootStart, ConflictView, Engine, EntryKind, EntryView, ImportAgentsReport,
     InspectedEntry, ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView, TrackOutcome,
-    TrackedFile,
+    TrackedFile, WipeReport,
 };
 use crate::git;
 use crate::project;
@@ -132,6 +132,20 @@ pub struct ImportAgentsDto {
 pub struct ImportAgentFailureDto {
     pub path: String,
     pub message: String,
+}
+
+/// What [`wipe_cloud_data`] re-added, and the slugs it could not.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct WipeReportDto {
+    pub readded: Vec<String>,
+    pub failed: Vec<WipeFailureDto>,
+}
+
+/// One slug [`wipe_cloud_data`] could not re-add.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct WipeFailureDto {
+    pub slug: String,
+    pub error: String,
 }
 
 /// Result of [`track_entry`]. Confirmation does not mutate.
@@ -519,6 +533,25 @@ pub async fn remove_root(
     .await
     .map_err(front_msg)??;
     notify(&app, &state)
+}
+
+#[tauri::command]
+pub async fn wipe_cloud_data(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<WipeReportDto, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .wipe_cloud_data()
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)?;
+    Ok(wipe_report_dto(report))
 }
 
 #[tauri::command]
@@ -969,6 +1002,17 @@ fn import_agents_dto(report: ImportAgentsReport) -> ImportAgentsDto {
                 path: path.to_string_lossy().into_owned(),
                 message,
             })
+            .collect(),
+    }
+}
+
+fn wipe_report_dto(report: WipeReport) -> WipeReportDto {
+    WipeReportDto {
+        readded: report.readded,
+        failed: report
+            .failed
+            .into_iter()
+            .map(|(slug, error)| WipeFailureDto { slug, error })
             .collect(),
     }
 }

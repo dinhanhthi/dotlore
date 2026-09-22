@@ -27,7 +27,7 @@ Three things are shared regardless of `DOTLORE_HOME`, because they are keyed on 
 
 - **Start at login.** `login_item.rs` has a single `LABEL` (`dev.dinhanhthi.dotlore`) and writes `~/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist` whose `program` points at whichever copy toggled it last. Toggle it in the installed app only, never in a dev run, or macOS launches your `target/debug` binary at login.
 - **The updater's target.** `pnpm dev` runs through `scripts/dev-dock-bundle.sh`, which builds a real bundle at `src-tauri/target/debug/Dotlore.app` so the Dock shows "Dotlore". The updater resolves its install target from `current_exe` by walking up out of `Contents/MacOS`, so a dev run that accepts an update overwrites *that* bundle with the released one. Only reachable while the published version is ahead of `src-tauri/Cargo.toml`; in a dev run, choose "Later". The launch check never prompts — it swallows the error and logs.
-- **The cloud folder.** `device_id` is random per home (`config.rs`), so a dev run is a second device. Point it at a different cloud folder unless you want a permanent extra `devices/<id>/` entry — the cloud is immutable and nothing ever deletes one.
+- **The cloud folder.** `device_id` is random per home (`config.rs`), so a dev run is a second device. Point it at a different cloud folder unless you want a permanent extra `devices/<id>/` entry — the cloud is immutable and nothing but an explicit "Wipe cloud data" deletes one.
 
 ## Layout
 
@@ -66,6 +66,8 @@ These are not style rules. The engine's correctness rests on them, and each one 
 **The git child environment is an allowlist, not a denylist.** `Git::command` calls `env_clear()` and sets only the hermetic variables plus `PATH`. Never replace this with `env_remove` calls: four consecutive review rounds each found another `GIT_*` variable that had to be added, and two of them (`GIT_CONFIG_PARAMETERS`, `GIT_TEMPLATE_DIR`) were arbitrary code execution via git hooks, reachable despite `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`. Clearing is the only form that is closed against variables nobody has thought of yet. Adding something back to the allowlist is a deliberate decision, not a convenience.
 
 **The cloud is immutable.** Bundles are published under a temp name and installed with a no-replace operation. Nothing in the cloud folder is ever rewritten or deleted.
+
+*One scoped exception:* the Settings "Wipe cloud data" action. `Engine::wipe_cloud_data`, reached only from the `wipe_cloud_data` command after the user confirms a dialog, deletes the whole `<provider>/dotlore` folder — every device's bundles — then the local `repos/`, `recovery/` and `tmp/`, and re-adds every registered root so each one re-seeds from the current patterns. It refuses a symlinked target and never touches a live root. The sync engine itself never rewrites or deletes anything in the cloud, and no sync path may call into the wipe.
 
 **Live files are sacred.** Tracked files stay in place. Conflict markers never reach them, and neither do `.conflict-*` siblings, `.dotloreignore`, or `.dotloreproject` — those live in staging only and never in a live root. `mirror::apply_to_root` fails closed: a missing snapshot expectation is an error, and a path that drifted from its expectation is skipped and reported, never overwritten.
 

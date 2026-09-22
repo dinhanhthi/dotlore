@@ -221,6 +221,13 @@ pub struct ImportAgentsReport {
     pub failed: Vec<(PathBuf, String)>,
 }
 
+/// What [`Engine::wipe_cloud_data`] re-added, and the slugs it could not.
+#[derive(Debug)]
+pub struct WipeReport {
+    pub readded: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
 /// Preview of a path the user may add. `bytes` excludes ignored, unsafe,
 /// and over-file-limit content.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -566,6 +573,53 @@ impl Engine {
             self.cfg.dismissed_agents.push(removed.path);
         }
         self.save(&g)
+    }
+
+    /// Delete `<provider>/dotlore` for every device, then this device's
+    /// `repos/`, `recovery/` and `tmp/`, and add every registered root again
+    /// so each one re-seeds from the current patterns. `config.json` and the
+    /// lock files are kept.
+    ///
+    /// The one scoped exception to "the cloud is immutable", reached only when
+    /// the user asks for it. Never call it from a sync path. Every target is
+    /// checked before the first delete: a symlink or a non-directory stops
+    /// the wipe with nothing removed. The home lock is dropped before the
+    /// re-adds because [`add_root`] locks again itself.
+    pub fn wipe_cloud_data(&mut self) -> Result<WipeReport> {
+        let g = config::lock(&self.home)?;
+        // `reload` already refuses a config without a provider folder.
+        self.reload(&g)?;
+        if !self.pending_adds.is_empty() {
+            bail!("an add is in progress");
+        }
+
+        // The cloud goes first: with a manifest left behind, the re-add
+        // below would link instead of seeding.
+        let mut targets = vec![self.cloud().base];
+        targets.extend(["repos", "recovery", "tmp"].map(|d| self.home.join(d)));
+        let mut present = Vec::new();
+        for t in &targets {
+            if removable_dir(t)? {
+                present.push(t);
+            }
+        }
+        for t in present {
+            fs::remove_dir_all(t).with_context(|| format!("deleting {}", t.display()))?;
+        }
+
+        let roots = std::mem::take(&mut self.cfg.roots);
+        self.save(&g)?;
+        drop(g);
+
+        let mut readded = Vec::new();
+        let mut failed = Vec::new();
+        for root in roots {
+            match self.add_root(&root.path, Some(&root.slug)) {
+                Ok(_) => readded.push(root.slug),
+                Err(e) => failed.push((root.slug, format!("{e:#}"))),
+            }
+        }
+        Ok(WipeReport { readded, failed })
     }
 
     /// Rebuild a damaged staging repo from a verified backup plus the cloud.
@@ -1887,6 +1941,23 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether `path` is a real directory [`Engine::wipe_cloud_data`] may
+/// delete. Missing is `false`; a symlink or any other entry is refused.
+fn removable_dir(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(md) if md.file_type().is_symlink() => {
+            bail!("{} is a symlink; refusing to delete it", path.display())
+        }
+        Ok(md) if md.is_dir() => Ok(true),
+        Ok(_) => bail!(
+            "{} is not a directory; refusing to delete it",
+            path.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
 }
 
 /// Byte-compare a backup against its source before anything is rebuilt: a
@@ -3458,5 +3529,139 @@ mod tests {
             report.failed
         );
         assert_eq!(report.added, vec!["home-codex".to_string()]);
+    }
+
+    #[test]
+    fn wipe_cloud_data_republishes_every_root_from_scratch() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let base = a.engine.cloud.base.clone();
+        // Leftovers of another device and of a slug nobody tracks any more.
+        let other = base.join("proj-claude/devices").join("b".repeat(32));
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("000001.bundle"), b"old").unwrap();
+        fs::create_dir_all(base.join("stale-claude")).unwrap();
+
+        let report = a.engine.wipe_cloud_data().unwrap();
+        assert_eq!(report.readded, vec!["proj-claude".to_string()]);
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert!(!other.exists());
+        assert!(!base.join("stale-claude").exists());
+        let bundles = cloud_of(&a).list_bundles("proj-claude");
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].device, "a".repeat(32));
+        assert_eq!(bundles[0].seq, 1);
+        assert!(cloud_of(&a).read_manifest("proj-claude").is_some());
+    }
+
+    #[test]
+    fn wipe_cloud_data_keeps_the_config() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let before = Config::load(a.home.path()).unwrap();
+
+        a.engine.wipe_cloud_data().unwrap();
+        let after = Config::load(a.home.path()).unwrap();
+        assert_eq!(after.device_id, before.device_id);
+        assert_eq!(after.provider_dir, before.provider_dir);
+        assert_eq!(after.roots.len(), 1);
+        assert_eq!(after.roots[0].slug, "proj-claude");
+        assert_eq!(after.roots[0].path, before.roots[0].path);
+    }
+
+    #[test]
+    fn wipe_cloud_data_reseeds_from_the_current_patterns() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.cfg.default_patterns = Some(vec!["CLAUDE.md".into(), "docs/".into()]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        add(&mut a);
+        assert_eq!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap()),
+            ["CLAUDE.md", "docs/a.md"]
+        );
+
+        a.engine.set_default_patterns(vec!["docs/".into()]).unwrap();
+        a.engine.wipe_cloud_data().unwrap();
+        assert_eq!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap()),
+            ["docs/a.md"]
+        );
+        assert_eq!(fs::read(a.root.path().join("CLAUDE.md")).unwrap(), b"one\n");
+    }
+
+    #[test]
+    fn wipe_cloud_data_clears_recovery_and_tmp() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        fs::create_dir_all(a.home.path().join("recovery/proj-claude-old")).unwrap();
+        fs::write(a.home.path().join("tmp/leftover.bundle"), b"x").unwrap();
+
+        a.engine.wipe_cloud_data().unwrap();
+        assert!(!a.home.path().join("recovery").exists());
+        // `Config::load` recreates an empty `tmp/` on the next entry point.
+        assert!(!a.home.path().join("tmp/leftover.bundle").exists());
+        assert!(a.home.path().join("config.json").is_file());
+    }
+
+    #[test]
+    fn wipe_cloud_data_refuses_a_symlinked_cloud_folder() {
+        let provider = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let base = a.engine.cloud.base.clone();
+        let target = elsewhere.path().join("dotlore");
+        fs::rename(&base, &target).unwrap();
+        std::os::unix::fs::symlink(&target, &base).unwrap();
+
+        assert!(a.engine.wipe_cloud_data().is_err());
+        assert!(target.join("proj-claude/manifest.json").is_file());
+        assert!(fs::symlink_metadata(&base)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(staging(&a).join(".git").is_dir());
+        assert_eq!(Config::load(a.home.path()).unwrap().roots.len(), 1);
+    }
+
+    #[test]
+    fn wipe_cloud_data_refuses_a_symlinked_state_folder_before_any_delete() {
+        let provider = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        fs::write(elsewhere.path().join("keep"), b"k").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), a.home.path().join("recovery")).unwrap();
+
+        assert!(a.engine.wipe_cloud_data().is_err());
+        assert!(elsewhere.path().join("keep").is_file());
+        assert!(staging(&a).join(".git").is_dir());
+        assert!(cloud_of(&a).read_manifest("proj-claude").is_some());
+    }
+
+    #[test]
+    fn wipe_cloud_data_refuses_without_a_provider() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let mut cfg = Config::load(a.home.path()).unwrap();
+        cfg.provider_dir = None;
+        cfg.save(a.home.path()).unwrap();
+
+        assert!(a.engine.wipe_cloud_data().is_err());
+        assert!(cloud_of(&a).read_manifest("proj-claude").is_some());
+        assert!(staging(&a).join(".git").is_dir());
     }
 }

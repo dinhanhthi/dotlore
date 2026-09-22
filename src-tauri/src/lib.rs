@@ -86,6 +86,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::import_installed_agents,
             commands::link_root,
             commands::remove_root,
+            commands::wipe_cloud_data,
             commands::recover_root,
             commands::list_linkable,
             commands::list_entries,
