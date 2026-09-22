@@ -4,24 +4,37 @@
 //! draws the generic application glyph for a binary that is not a bundled
 //! `.app`. On macOS the panel ignores comments, license, and website; the
 //! lines under the version are `credits`, and the line at the bottom is
-//! `copyright`.
+//! `copyright`. A plain credits string is left-aligned, so this item draws
+//! the panel itself and centers that block.
 
-use tauri::image::Image;
-use tauri::include_image;
-use tauri::menu::{AboutMetadata, MenuItemKind, PredefinedMenuItem};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{AnyThread, Message};
+use objc2_app_kit::{
+    NSAboutPanelOptionApplicationIcon, NSAboutPanelOptionApplicationName,
+    NSAboutPanelOptionApplicationVersion, NSAboutPanelOptionCredits, NSApplication, NSImage,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSTextAlignment,
+};
+use objc2_foundation::{
+    ns_string, MainThreadMarker, NSData, NSDictionary, NSMutableAttributedString, NSRange, NSSize,
+    NSString,
+};
+use tauri::menu::{MenuItem, MenuItemKind};
 use tauri::App;
 
 /// 128px so the panel draws a 128-point icon. AppKit does not scale it: the
 /// image's pixel size becomes the point size, and the 256px tray logo would
 /// fill the window.
-const LOGO: Image<'_> = include_image!("icons/128x128.png");
+const LOGO_PNG: &[u8] = include_bytes!("../icons/128x128.png");
+const LOGO_POINTS: f64 = 128.0;
 
-const DESCRIPTION: &str = "Sync your AI stuff and keep it away from your main codebase.";
+const ABOUT_ID: &str = "about";
+
 const GITHUB: &str = "github.com/dinhanhthi/dotlore";
 const LICENSE: &str = "MIT License";
 
 fn credits() -> String {
-    format!("{DESCRIPTION}\n\n{GITHUB}")
+    GITHUB.to_string()
 }
 
 /// Replace the default About item. The new item goes in first so a later
@@ -44,22 +57,87 @@ pub fn install(app: &App) -> tauri::Result<()> {
         return Ok(());
     }
 
-    let info = app.package_info();
-    let about = PredefinedMenuItem::about(
+    let name = app.package_info().name.clone();
+    let about = MenuItem::with_id(
         app.handle(),
-        None,
-        Some(AboutMetadata {
-            name: Some(info.name.clone()),
-            version: Some(info.version.to_string()),
-            copyright: Some(LICENSE.to_string()),
-            credits: Some(credits()),
-            icon: Some(LOGO.clone()),
-            ..Default::default()
-        }),
+        ABOUT_ID,
+        format!("About {name}"),
+        true,
+        None::<&str>,
     )?;
     app_menu.insert(&about, 0)?;
     app_menu.remove(&current)?;
+
+    app.on_menu_event(|app, event| {
+        if event.id().as_ref() == ABOUT_ID {
+            show(app);
+        }
+    });
     Ok(())
+}
+
+fn show(app: &tauri::AppHandle) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        eprintln!("dotlore: about: not on the main thread");
+        return;
+    };
+    let info = app.package_info();
+    present(mtm, &info.name, &info.version.to_string());
+}
+
+fn present(mtm: MainThreadMarker, name: &str, version: &str) {
+    let mut keys: Vec<&NSString> = Vec::new();
+    let mut objects: Vec<Retained<AnyObject>> = Vec::new();
+
+    keys.push(unsafe { NSAboutPanelOptionApplicationName });
+    objects.push(as_any(NSString::from_str(name)));
+
+    keys.push(unsafe { NSAboutPanelOptionApplicationVersion });
+    objects.push(as_any(NSString::from_str(version)));
+
+    keys.push(ns_string!("Copyright"));
+    objects.push(as_any(NSString::from_str(LICENSE)));
+
+    keys.push(unsafe { NSAboutPanelOptionCredits });
+    objects.push(as_any(centered(&credits())));
+
+    if let Some(icon) = logo() {
+        keys.push(unsafe { NSAboutPanelOptionApplicationIcon });
+        objects.push(as_any(icon));
+    }
+
+    let options = NSDictionary::from_retained_objects(&keys, &objects);
+    unsafe {
+        NSApplication::sharedApplication(mtm).orderFrontStandardAboutPanelWithOptions(&options);
+    }
+}
+
+/// Credits sit in the panel as an attributed string. Without a centered
+/// paragraph style, AppKit left-aligns the wrapped description.
+fn centered(text: &str) -> Retained<NSMutableAttributedString> {
+    let attributed = NSMutableAttributedString::from_nsstring(&NSString::from_str(text));
+    let style = NSMutableParagraphStyle::new();
+    style.setAlignment(NSTextAlignment::Center);
+    let len = attributed.length();
+    unsafe {
+        attributed.addAttribute_value_range(
+            NSParagraphStyleAttributeName,
+            &style,
+            NSRange::new(0, len),
+        );
+    }
+    attributed
+}
+
+fn logo() -> Option<Retained<NSImage>> {
+    let data = NSData::with_bytes(LOGO_PNG);
+    let image = NSImage::initWithData(NSImage::alloc(), &data)?;
+    image.setSize(NSSize::new(LOGO_POINTS, LOGO_POINTS));
+    Some(image)
+}
+
+fn as_any(obj: Retained<impl Message>) -> Retained<AnyObject> {
+    unsafe { Retained::cast_unchecked(obj) }
 }
 
 #[cfg(test)]
@@ -69,8 +147,8 @@ mod tests {
     #[test]
     fn the_about_panel_names_the_product_its_repo_and_its_license() {
         let text = credits();
-        assert!(text.starts_with(DESCRIPTION), "{text}");
-        assert!(text.ends_with(GITHUB), "{text}");
+        assert_eq!(text, GITHUB);
+        assert!(!text.contains("Sync your AI stuff"), "{text}");
         assert_eq!(LICENSE, "MIT License");
     }
 }
