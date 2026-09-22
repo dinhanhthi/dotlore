@@ -22,10 +22,13 @@
 #   BUMP_INFO_TAG=v0.2.0                               -> BROKEN-tag-ahead-of-file
 #   BUMP_INFO_TAG=v0.0.1                               -> already-bumped
 #   BUMP_INFO_TAG=                                     -> first-release
-#   The hook tag is synthetic: it is not a tag in this clone, so there is nothing
+#   The hook tag is usually not a tag in this clone, so there is normally nothing
 #   to diff against and the commit lists cover the whole history, with the range
-#   labelled TEST MODE. The state machine still uses the hook tag for the
-#   comparison — that is what the hook is for.
+#   labelled TEST MODE. Once the hook value happens to exist as a tag here — set
+#   BUMP_INFO_TAG=v0.1.0 after v0.1.0 has shipped and been fetched — the range is
+#   the real TAG..HEAD one, labelled as supplied by the hook. The state machine
+#   uses the hook tag for the comparison either way — that is what the hook is
+#   for.
 # Never set either during a real release.
 
 set -euo pipefail
@@ -146,11 +149,33 @@ else
     echo "published tag, and guessing would risk re-releasing an existing version."
     exit 1
   fi
-  # `^{}` lines are annotated-tag dereferences, not tag names.
+  # Every advertised tag is a candidate; the parser below is the only thing
+  # allowed to decide what is not a version tag, because it is the only place
+  # that both drops a candidate AND names it. A pre-filter here that dropped a
+  # `release-1.0` on shape alone removed it from the comparison WITHOUT naming
+  # it, so the dropped-tag block could not report it and `Latest published tag`
+  # was presented as covering every tag on origin when it did not.
+  #
+  # `^{}` lines are annotated-tag dereferences, not tag names: an annotated
+  # `v1.0.0` is advertised twice, as `refs/tags/v1.0.0` and as
+  # `refs/tags/v1.0.0^{}`. They are excluded explicitly, here, rather than by
+  # leaning on a name-shape filter below to hide them — leftover dereference
+  # lines would otherwise flood the dropped-tag warning with names that were
+  # never tags. `^` is not legal in a refname, so a line ending in `^{}` is
+  # unambiguous.
+  #
+  # The strip is anchored to the TAB that separates the object id from the ref
+  # name in `git ls-remote` output. It used to be `s|.*refs/tags/||`, and `.*` is
+  # greedy: a legal refname containing the literal substring `refs/tags/` — a tag
+  # `x/refs/tags/v9.9.9` is advertised as `refs/tags/x/refs/tags/v9.9.9` — was
+  # cut at its LAST occurrence, rewriting the name into a valid-looking `v9.9.9`.
+  # The whitelist then saw the mangled name, could not tell it apart from a real
+  # tag, and the report named a tag that does not exist on origin. With the tab
+  # anchor the same tag reaches the whitelist intact, its `/` becomes `?`, and it
+  # is dropped and named like any other tag that is not vX.Y.Z.
   TAG_CANDIDATES="$(printf '%s\n' "$REMOTE_REFS" \
-    | sed 's|.*refs/tags/||' \
-    | grep -E '^v[0-9]' \
-    | grep -v '\^{}' || true)"
+    | grep -v '\^{}$' \
+    | sed 's|^[^\t]*\trefs/tags/||' || true)"
   TAG_SOURCE="origin"
   TAG_KIND="origin"
 fi
@@ -166,10 +191,15 @@ TAG_CANDIDATES="$(printf '%s\n' "$TAG_CANDIDATES" | safe_tag_names)"
 # below, which accepts plain vX.Y.Z and nothing else). Python yields the newest
 # tag and the file-vs-tag comparison in the same pass.
 #
-# The tag list goes in as an argument, not on stdin: the heredoc below already
-# occupies stdin, so a piped list would be silently swallowed and every run
-# would report first-release.
-TAG_INFO="$(python3 - "$CARGO_TOML" "$TAG_CANDIDATES" "${BUMP_INFO_VERSION:-}" "$TAG_KIND" <<'PY'
+# The candidate list travels on STDIN, not in argv: it is one line per tag
+# advertised by origin, so its size is decided by whoever pushed tags, and a
+# remote carrying tens of thousands of them made this exec fail with
+# `Argument list too long` — no report at all, so nothing for the guide's
+# remediation loop to act on. `python3 -` is not usable here, because that form
+# reads the PROGRAM from stdin; the program is therefore held in a variable and
+# run with `python3 -c`, exactly like PRINT_COMMITS_PY below, which is the same
+# fix applied to the commit list.
+TAG_INFO_PY="$(cat <<'PY'
 import re, sys
 
 # ONE definition of X.Y.Z for this script, and the same shape bump.sh enforces at
@@ -185,7 +215,24 @@ TAG_RE = re.compile(r"^v(" + VERSION_RE.pattern + r")$")
 
 # Where the candidate list came from, so the error below can say whose value is
 # wrong: a BUMP_INFO_TAG value is a test hook, not a tag in any repository.
-CANDIDATE_SOURCE = sys.argv[4] if len(sys.argv) > 4 else "origin"
+CANDIDATE_SOURCE = sys.argv[3] if len(sys.argv) > 3 else "origin"
+
+# A candidate that was meant to be a version tag but is not a valid one is a
+# broken release tag: `v01.2.3`, `v0.0.1-test`. The guard below stops the run
+# only when NO candidate parsed as vX.Y.Z AND at least one of them was
+# version-shaped: there is then no version to compare against at all, so the
+# candidate is named as fatal rather than the run reporting a comparison taken
+# against nothing. It does NOT stop the run for every version-shaped-but-invalid
+# tag: on a mixed origin — `v0.1.0` alongside `v0.0.1-test` or `v01.2.3` —
+# `parsed` is non-empty, the run continues, the unusable tag is dropped and named
+# in the dropped-tag block below, and the comparison is taken against the tag
+# that did parse. This test is the same shape that used to run as a shell
+# pre-filter; keeping it here is what makes it possible for every OTHER candidate
+# to be reported instead of swallowed — a `release-1.0` is not version-shaped, so
+# it is dropped and named in the dropped-tag block and does not stop the release,
+# which is what the guide requires: a stray tag pushed by hand must not block
+# every future release.
+VERSION_SHAPED = re.compile(r"^v[0-9]")
 
 
 def key(version):
@@ -209,28 +256,52 @@ def cargo_version(path):
     return m.group(1)
 
 
-candidates = [t for t in (line.strip() for line in sys.argv[2].splitlines()) if t]
+# The candidates arrive on stdin, one per line, already sanitised. An undecodable
+# byte cannot survive the whitelist that produced them, but surrogateescape keeps
+# this read total anyway rather than a traceback.
+candidates = [
+    t
+    for t in (
+        line.strip()
+        for line in sys.stdin.buffer.read()
+        .decode("utf-8", "surrogateescape")
+        .split("\n")
+    )
+    if t
+]
 parsed = [(m.group(0), m.group(1)) for m in map(TAG_RE.match, candidates) if m]
-if candidates and not parsed:
-    if CANDIDATE_SOURCE == "hook":
-        sys.exit(
-            "Error: BUMP_INFO_TAG=%s is not vX.Y.Z (three numeric fields, no\n"
-            "leading zeros, no prerelease suffix). This value is a test hook and\n"
-            "is not read from any repository, so there is no tag to fix — set it\n"
-            "to a tag that could exist, or leave it unset for a real release."
-            % ", ".join(candidates)
-        )
+if not parsed and candidates and CANDIDATE_SOURCE == "hook":
+    sys.exit(
+        "Error: BUMP_INFO_TAG=%s is not vX.Y.Z (three numeric fields, no\n"
+        "leading zeros, no prerelease suffix). This value is a test hook and\n"
+        "is not read from any repository, so there is no tag to fix — set it\n"
+        "to a tag that could exist, or leave it unset for a real release."
+        % ", ".join(candidates)
+    )
+if not parsed and any(VERSION_SHAPED.match(c) for c in candidates):
     sys.exit(
         "Error: no candidate tag matched vX.Y.Z (three numeric fields, no\n"
         "leading zeros, no prerelease suffix): %s\n"
+        "Not one candidate was usable, and at least these were meant to be\n"
+        "versions, so there is no version to compare against at all — fix the\n"
+        "tag before releasing.\n"
         "Dotlore ships stable only, so a tag like this is not a state this script\n"
-        "can read — fix the tag before releasing." % ", ".join(candidates)
+        "can read.\n"
+        "This is fatal only because none of the candidates parsed: if any vX.Y.Z\n"
+        "tag had been among them, these would be listed as dropped instead and\n"
+        "the comparison would be taken against the one that did parse. Tags that\n"
+        "are not version-shaped at all are always dropped and named, never fatal."
+        % ", ".join(c for c in candidates if VERSION_SHAPED.match(c))
     )
+# No version tag at all: the state is first-release either way. Every candidate
+# that is not vX.Y.Z is named in the dropped-tag block below, including the
+# non-version-shaped ones that reach this point, so `Latest published tag:
+# (none)` is never presented as covering every tag on origin.
 
-# argv[3] is the BUMP_INFO_VERSION test hook. It has to be applied here, before
+# argv[2] is the BUMP_INFO_VERSION test hook. It has to be applied here, before
 # the comparison below — patching the version afterwards left the state computed
 # from the real file and reported BROKEN-tag-ahead-of-file.
-file_version = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else cargo_version(sys.argv[1])
+file_version = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else cargo_version(sys.argv[1])
 if not VERSION_RE.fullmatch(file_version):
     sys.exit(
         "Error: src-tauri/Cargo.toml version %r is not X.Y.Z (three numeric\n"
@@ -259,6 +330,9 @@ for candidate in candidates:
         print(candidate)
 PY
 )"
+
+TAG_INFO="$(printf '%s\n' "$TAG_CANDIDATES" \
+  | python3 -c "$TAG_INFO_PY" "$CARGO_TOML" "${BUMP_INFO_VERSION:-}" "$TAG_KIND")"
 
 LATEST_TAG="$(printf '%s\n' "$TAG_INFO" | sed -n 1p)"
 COMPARISON="$(printf '%s\n' "$TAG_INFO" | sed -n 2p)"
@@ -391,10 +465,13 @@ LIST_MAX=500
 # Byte ceiling for the payload handed to python3, applied in shell BEFORE python3
 # starts: at most LIST_MAX lines, and at most LINE_BYTES bytes each. The line cap
 # alone is not a size bound — one commit whose first paragraph is a megabyte is a
-# single line — and the transport itself is why it matters: execve rejects an
-# environment over ARG_MAX, so a payload that big used to kill python3 at
-# startup, and with `set -e -o pipefail` the script died mid-report with the
-# opening banner printed and the closing one missing.
+# single line. Size mattered back when the list travelled in the environment:
+# execve rejects an environment over ARG_MAX, so a payload that big used to kill
+# python3 at startup, before the list was moved onto a pipe — see `print_commits`
+# below — and with `set -e -o pipefail` the script died mid-report with the
+# opening banner printed and the closing one missing. Today the cap is a
+# readability bound, not an exec-safety one: the list is not an argument any
+# more, so it cannot hit ARG_MAX.
 LINE_BYTES=$((SUBJECT_MAX * 8))
 # The byte the shell prefixes to a line it had to cut. US (0x1F) cannot come from
 # a commit: it sits before the hash, and the hash is hex from git.
@@ -486,8 +563,10 @@ print_commits() {
     return
   fi
   # The payload is byte-bounded here, before the exec: at most LIST_MAX lines and
-  # LINE_BYTES bytes per line, so it never approaches ARG_MAX and the exec can
-  # never be the thing that fails. `cut -c` cannot do the second part — it counts
+  # LINE_BYTES bytes per line. That bound is about keeping the report readable,
+  # not about keeping the exec alive: the list travels on a pipe, and so does the
+  # tag candidate list above, so neither payload in this report is an argument
+  # and neither can hit ARG_MAX. `cut -c` cannot do the second part — it counts
   # characters rather than bytes, so a multi-byte subject would multiply the cap
   # by four — and it cannot say whether it cut. awk does it in the C locale, where
   # length() and substr() really are byte-based, and prefixes US to every line it
@@ -508,6 +587,42 @@ print_commits() {
     | OMITTED="$omitted" SUBJECT_MAX="$SUBJECT_MAX" LIST_MAX="$LIST_MAX" \
       python3 -c "$PRINT_COMMITS_PY" "$REPO_URL"
 }
+
+# ─── The dropped-tag list ─────────────────────────────────────────────────────
+#
+# Every dropped tag is named — that is what keeps the drop honest — but the names
+# are text from whoever pushed the tags, and origin decides how many of them
+# there are and how long each one is, so the enumeration is capped the way the
+# commit lists are: at most LIST_MAX names, at most LINE_BYTES bytes of them, and
+# at most SUBJECT_MAX characters for any one name. The COUNT printed above the
+# names is deliberately not capped — it is the number the warning is trusted for
+# — and every cut is marked, so a truncated list can never read as a complete
+# one: a name past SUBJECT_MAX is printed as a prefix followed by its own
+# '[truncated …]' note (the whole name is intact ASCII by now — safe_tag_names
+# replaced everything outside [A-Za-z0-9._+-] with '?', so the cut cannot land
+# inside a multi-byte character), and everything the count and byte budgets push
+# off the end is covered by the '(N more not shown)' at the end of the line. The
+# first name is always printed even if it would not fit on its own, so a run with
+# a dropped tag never shows the elision without showing a name. Empty in, nothing
+# out: a run with no dropped tags skips the whole block below, exactly as it did
+# before.
+DROPPED_TAG_LIST="$(printf '%s\n' "$UNUSABLE_TAGS" \
+  | LC_ALL=C awk -v max="$LIST_MAX" -v budget="$LINE_BYTES" -v name_max="$SUBJECT_MAX" '
+    $0 == "" { next }
+    {
+      name = $0
+      if (length(name) > name_max)
+        name = substr(name, 1, name_max) "[truncated — the name is longer than this report carries]"
+      add = length(name) + (n ? 2 : 0)   # ", " before every name but the first
+      if (n >= max || (n && used + add > budget)) exit
+      joined = joined (n ? ", " : "") name
+      used += add
+      n++
+    }
+    END { print n; print joined }')"
+DROPPED_TAGS_NAMED="$(printf '%s\n' "$DROPPED_TAG_LIST" | sed -n 1p)"
+DROPPED_TAG_NAMES="$(printf '%s\n' "$DROPPED_TAG_LIST" | sed -n 2p)"
+DROPPED_TAGS_ELIDED=$((DROPPED_TAGS - DROPPED_TAGS_NAMED))
 
 # ─── Framing the untrusted block ──────────────────────────────────────────────
 #
@@ -535,10 +650,18 @@ echo ""
 echo "Latest published tag:  ${LATEST_TAG:-(none)}"
 echo "Tag source:            $TAG_SOURCE"
 if [[ -n "$UNUSABLE_TAGS" ]]; then
+  # The count is exact; the names are capped and the elision is spelled out, so a
+  # truncated list can never read as a complete one.
+  DROPPED_TAG_ELISION=""
+  if ((DROPPED_TAGS_ELIDED > 0)); then
+    DROPPED_TAG_ELISION=" (${DROPPED_TAGS_ELIDED} more not shown)"
+  fi
   echo ""
   echo "  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo "  !! ${DROPPED_TAGS} tag(s) dropped from the comparison — not vX.Y.Z:"
-  echo "  !!   ${UNUSABLE_TAGS//$'\n'/, }"
+  echo "  !!   ${DROPPED_TAG_NAMES}${DROPPED_TAG_ELISION}"
+  echo "  !! The count is exact. The names are capped, and a trailing"
+  echo "  !! '(N more not shown)' says how many were left off the list."
   echo "  !! Names print with everything outside [A-Za-z0-9._+-] replaced by '?':"
   echo "  !! a tag name is text from whoever pushed it, sanitised like a subject."
   echo "  !! Dotlore ships stable only and bump.sh refuses to create one of these,"

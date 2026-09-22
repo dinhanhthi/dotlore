@@ -96,9 +96,11 @@ Requested level:       (none — decide from the commits below)
 
 `Commit range` names what the counts below were taken over: `v0.1.0..HEAD` on a
 normal run, `(entire history — first release)` when no tag exists at all, and —
-under the `BUMP_INFO_TAG` test hook, whose tag is not a tag in this clone — the
-whole history with an explicit `TEST MODE` label saying so. Any of those is a
-real range; a range the script could not resolve would show up as all-zero
+under the `BUMP_INFO_TAG` test hook — either the real `v0.1.0..HEAD` range with
+`(TEST MODE — tag supplied by BUMP_INFO_TAG)` after it, when the hook's tag does
+exist in this clone, or the whole history labelled `(TEST MODE — synthetic tag …
+is not in this clone; using the entire history)` when it does not. Any of those
+is a real range; a range the script could not resolve would show up as all-zero
 counts and `HAS APP CHANGES: no`, which is why it refuses to print one.
 
 ## Three things that will bite you
@@ -199,20 +201,49 @@ BUMP_INFO_TAG=v0.0.1 bash $B                           # already-bumped
 
 Every value above is a plain `vX.Y.Z`, because that is the only shape the tag
 list accepts: a suffixed value such as `v0.0.1-test` is refused outright, hook or
-not, and the message names it.
+not, and the message names it. (Alongside a real `vX.Y.Z` tag it is instead
+dropped from the comparison and named in the dropped-tag warning.)
 
-The hook tag is synthetic — it is not a tag in this clone — so there is no
-revision to diff against and the commit range cannot be taken over it. The script
-falls back to the whole history and says so on the `Commit range:` line:
+Each of those runs labels itself `TEST MODE`, but not on the same line, so do not
+go looking for one particular marker:
+
+| Hook you set        | Where the label is printed                                                                                                                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BUMP_INFO_VERSION` | the `NOTE: BUMP_INFO_VERSION override in effect (TEST MODE — not a real state).` line, at the top of the report                                                                                                            |
+| `BUMP_INFO_TAG`     | the `Tag source:` line — `BUMP_INFO_TAG override (TEST MODE — not a real release state)` — in every non-empty-hook run                                                                                                     |
+| `BUMP_INFO_TAG`     | *also* the `Commit range:` line — `(TEST MODE — synthetic tag <tag> is not in this clone; using the entire history)` if the hook tag is not in this clone, else `<tag>..HEAD  (TEST MODE — tag supplied by BUMP_INFO_TAG)` |
+| `BUMP_INFO_TAG=`    | the `Tag source:` line only — an empty hook value is `first-release`, so the `Commit range:` line is the ordinary `(entire history — first release)`, with no label                                                        |
+
+Of the four commands above, exactly one prints a `NOTE:` line —
+`BUMP_INFO_TAG=v0.1.0 BUMP_INFO_VERSION=0.1.0` — and that line is the only thing
+`BUMP_INFO_VERSION` adds. The other two tag-valued commands (`v0.2.0`, `v0.0.1`)
+print no `NOTE:` line, but they each still carry the label **twice**: the
+`Tag source:` line always has it, and so does the `Commit range:` line, in
+whichever of the two forms below applies. Only `BUMP_INFO_TAG=` prints a single
+marker: with no tag to diff against, its range line is the ordinary
+`(entire history — first release)`. Do not read `Tag source:` as the only marker
+unless the hook value is empty.
+
+The hook tag is synthetic *before v0.1.0 exists*: with no such tag in the clone
+there is no revision to diff against, so the commit range cannot be taken over it.
+The script falls back to the whole history and says so on the `Commit range:`
+line:
 
 ```
 Commit range:          (TEST MODE — synthetic tag v0.1.0 is not in this clone; using the entire history)
 ```
 
-So `HAS APP CHANGES` and the commit lists still describe real commits rather than
-counting to zero. The *state* is still decided by the hook tag — that is what the
-hook is for, and the `NOTE:` line at the top of the report says the run is not
-reality.
+Once `v0.1.0` **is** a tag in the clone — after it ships and a fetch brings it in
+— the same command takes the real-tag branch, and the range label changes form
+(the `Tag source:` line is labelled either way):
+
+```
+Commit range:          v0.1.0..HEAD  (TEST MODE — tag supplied by BUMP_INFO_TAG)
+```
+
+Either way `HAS APP CHANGES` and the commit lists describe real commits rather
+than counting to zero. The *state* is still decided by the hook tag — that is
+what the hook is for.
 
 ## Files
 
