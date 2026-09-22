@@ -14,13 +14,15 @@
   --muted-foreground: #71717a;
   --border: #e4e4e7;
   --ring: #a1a1aa;
+  --sun-display: inline-flex;
+  --moon-display: none;
   --radius: 0.625rem;
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --background: #09090b;
     --foreground: #fafafa;
@@ -34,7 +36,27 @@
     --muted-foreground: #a1a1aa;
     --border: #3f3f46;
     --ring: #71717a;
+    --sun-display: none;
+    --moon-display: inline-flex;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #09090b;
+  --foreground: #fafafa;
+  --card: #09090b;
+  --card-foreground: #fafafa;
+  --primary: #fafafa;
+  --primary-foreground: #18181b;
+  --secondary: #27272a;
+  --secondary-foreground: #fafafa;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+  --border: #3f3f46;
+  --ring: #71717a;
+  --sun-display: none;
+  --moon-display: inline-flex;
 }
 
 *,
@@ -81,6 +103,50 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.icon-btn svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.icon-sun {
+  display: var(--sun-display);
+}
+
+.icon-moon {
+  display: var(--moon-display);
 }
 
 .site-header nav,
