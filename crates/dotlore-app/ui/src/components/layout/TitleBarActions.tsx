@@ -1,15 +1,9 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { MoreHorizontal, Star, Trash2 } from "lucide-react";
+import { FolderOpen, Star, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { RemoveRootAlert } from "@/components/sidebar/RemoveRootAlert";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -90,26 +84,23 @@ export function TitleBarActions() {
       </Tooltip>
 
       {!fileOpen && (
-        <DropdownMenu>
-          <DropdownMenuTrigger
+        <Tooltip>
+          <TooltipTrigger
             render={
               <Button
                 variant="ghost"
                 size="icon-sm"
-                disabled={!active}
-                aria-label="More actions"
+                disabled={!active || !revealPath}
+                aria-label="Go to location"
+                onClick={reveal}
                 className="text-muted-foreground"
               />
             }
           >
-            <MoreHorizontal aria-hidden />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-44">
-            <DropdownMenuItem disabled={!revealPath} onClick={reveal}>
-              Go to location
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            <FolderOpen aria-hidden />
+          </TooltipTrigger>
+          <TooltipContent>Go to location</TooltipContent>
+        </Tooltip>
       )}
 
       <RemoveRootAlert
