@@ -1,5 +1,6 @@
 //! Dotlore's macOS menu-bar app.
 
+mod about;
 mod commands;
 mod login_item;
 mod state;
@@ -55,6 +56,7 @@ fn main() {
 
             app.manage(AppState::new(home, home_dir));
             app.state::<AppState>().start_runtime(app.handle());
+            about::install(app)?;
             tray::build(app)?;
             show_window(app.handle());
 
