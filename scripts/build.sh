@@ -59,8 +59,8 @@ if [ "$n" -eq "${#want[@]}" ]; then
 	tauri_args+=(--target universal-apple-darwin)
 fi
 
-# Scoped to this script. cargo-tauri otherwise inherits a workspace
-# CARGO_TARGET_DIR and writes the bundle under the repo-root target/.
+# Pin the target dir so an inherited CARGO_TARGET_DIR cannot move the
+# bundle off src-tauri/target/.
 export CARGO_TARGET_DIR="$root/src-tauri/target"
 
 (

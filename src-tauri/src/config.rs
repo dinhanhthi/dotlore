@@ -1,11 +1,11 @@
 //! On-disk configuration and tracked-root definitions.
 //!
 //! The state directory holds `config.json` (device identity, provider folder,
-//! tracked roots), a `tmp/` scratch dir and the `lock` file that keeps the
-//! app's daemon and a concurrently running CLI off the same staging repos.
+//! tracked roots), a `tmp/` scratch dir and the `lock` file that keeps
+//! concurrent engine entry points off the same staging repos.
 //! Every entry point takes `home` explicitly; [`default_home`] is the only
 //! place that decides where state lives from the environment, and only
-//! binaries call it. (`git::Git::command` reads `PATH`, to forward it into an
+//! `main.rs` calls it. (`git::Git::command` reads `PATH`, to forward it into an
 //! otherwise cleared child environment.)
 
 use std::collections::BTreeMap;

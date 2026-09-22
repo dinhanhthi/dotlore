@@ -23,7 +23,7 @@ const DOTLORE_SETTINGS = `{
 
 const DOTLORE_ARCH = `# Architecture
 
-\`dotlore-core\` drives the system git binary. Each tracked root gets a private
+The engine drives the system git binary. Each tracked root gets a private
 staging repo under Application Support.
 `;
 

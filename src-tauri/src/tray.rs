@@ -160,7 +160,7 @@ pub fn menu_labels(view: &TrayView) -> Vec<Option<String>> {
 
 /// Collapse an engine message to one bounded line.
 ///
-/// Unlike the CLI, this UI receives `RootStatus::Error` exactly as the engine
+/// The menu receives `RootStatus::Error` exactly as the engine
 /// produced it: several hundred characters of git stderr, embedding path
 /// names that came out of another device's bundle. AppKit lays a newline out
 /// inside the menu item rather than interpreting it, so this is a legibility

@@ -23,7 +23,6 @@ Dotlore tracks the AI-agent config your projects git-ignore and syncs it between
 - **Immutable bundles** — each Mac publishes its own git bundle; nothing in the cloud folder is rewritten or deleted.
 - **Conflicts without markers** — the newer commit wins on every device; the loser's bytes stay beside it as a sibling file.
 - **Desktop + menu bar** — one three-column window (sidebar, file tree, viewer/resolver) and a compact status item.
-- **CLI included** — `dotlore` ships inside the app bundle for `add`, `sync`, `status`, and `daemon`.
 
 ## 🔄 How it works
 
@@ -47,9 +46,9 @@ Overlapping edits resolve deterministically: the newer commit wins on **every** 
 
 | Layer    | Technology                                                                 |
 | -------- | -------------------------------------------------------------------------- |
-| Engine   | Rust workspace — `dotlore-core`, `dotlore-cli`, `dotlore-app`              |
+| Engine   | Rust in `src-tauri/` (package and binary `dotlore`)                        |
 | Git      | System `git` binary (no git library)                                       |
-| App      | Tauri 2 + React 19 + TypeScript + Vite                                     |
+| App      | Tauri 2; React 19 + TypeScript + Vite in `src/`                            |
 | UI       | Tailwind CSS v4, shadcn/ui                                                 |
 | Editor   | CodeMirror 6 (`@codemirror/merge` for conflicts)                           |
 | Login    | macOS `launchctl`                                                          |
@@ -58,40 +57,34 @@ Overlapping edits resolve deterministically: the newer commit wins on **every** 
 
 **Prerequisites:** [Rust](https://rustup.rs/) 1.89+ (uses `std::fs::File::lock`), [Node.js](https://nodejs.org/) 20+, [pnpm](https://pnpm.io/), the system `git`, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for macOS. If `git` is missing, Dotlore refuses to sync and points you at `xcode-select --install`.
 
-Set `DOTLORE_HOME` so a local run does not write to `~/Library/Application Support/dotlore/`. The directory is created on first use. Do not run `pnpm cli -- daemon` and `pnpm tauri dev` against the same home at once — they share a lock file.
+Set `DOTLORE_HOME` so a local run does not write to `~/Library/Application Support/dotlore/`. The directory is created on first use. Two copies of the app on the same home share a lock file.
 
 ```bash
 pnpm install
 
 export DOTLORE_HOME="$HOME/Downloads/dotlore"
-P=$(mktemp -d)
 
 pnpm tauri dev                    # desktop app (opens the window if provider is unset)
+pnpm ui:dev                       # frontend only, from src/
 pnpm mockapp:dev                  # browser UI preview (mocked backend) — http://localhost:38422
 
-pnpm cli -- provider "$P"
-pnpm cli -- add /path/to/folder --slug demo
-pnpm cli -- sync
-pnpm cli -- status
-pnpm cli -- daemon                # watch + poll until killed
-pnpm cli -- help
-
 pnpm test
+pnpm smoke:two-devices
 pnpm format:check
 ```
 
 ### 📦 Build
 
 ```bash
-pnpm build                        # → target/release/bundle/macos/Dotlore.app
+pnpm build                        # → src-tauri/target/release/bundle/macos/Dotlore.app
 # pnpm tauri build                # same thing
-open target/release/bundle/macos/Dotlore.app
+open src-tauri/target/release/bundle/macos/Dotlore.app
 ```
 
 To pass a sandbox home into the bundled binary (Finder's `open` does not forward env):
 
 ```bash
-DOTLORE_HOME="$HOME/Downloads/dotlore" target/release/bundle/macos/Dotlore.app/Contents/MacOS/dotlore-app
+DOTLORE_HOME="$HOME/Downloads/dotlore" src-tauri/target/release/bundle/macos/Dotlore.app/Contents/MacOS/dotlore
 ```
 
 ## 🌐 Website

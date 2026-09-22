@@ -555,9 +555,8 @@ mod tests {
         let engine = engine_at(home.path(), provider.path());
         let (tx, srx, h) = start(&engine);
 
-        // A second Engine on the same home is exactly what a CLI invocation
-        // is: it takes the home lock itself, and the daemon's in-memory config
-        // knows nothing about the root it registered.
+        // A second Engine on the same home takes the lock itself, and the
+        // daemon's in-memory config knows nothing about the root it registered.
         let mut cli = {
             let cfg = Config::load(home.path()).unwrap();
             Engine::new(home.path(), home.path(), cfg).unwrap()
@@ -572,10 +571,10 @@ mod tests {
         assert_eq!(
             status,
             vec![("live".to_string(), RootStatus::Synced)],
-            "the cycle did not reload the config the CLI wrote"
+            "the cycle did not reload the config the second engine wrote"
         );
 
-        // Same again for the provider: `dotlore provider <path>` commits the
+        // Same again for the provider: `configure_provider` commits the
         // transition under the home lock, and the daemon's next cycle must
         // pick up the new runtime rather than keep publishing to the old
         // folder. Reload needs no separate path because of this.

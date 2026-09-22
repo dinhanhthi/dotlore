@@ -86,11 +86,11 @@ impl Cloud {
     /// per slug.
     ///
     /// A directory name was written by another device, and every caller
-    /// prints it: `dotlore slugs` today, the Phase 5 list next. A name with a
-    /// control character is dropped rather than stripped — stripping would
-    /// print a slug that exists nowhere, and such a slug can never be linked
-    /// anyway (`Repo::open` accepts `[a-z0-9-]` only). This sits with the other
-    /// things `list_slugs` already skips silently: no manifest, non-UTF-8.
+    /// displays it. A name with a control character is dropped rather than
+    /// stripped — stripping would show a slug that exists nowhere, and such a
+    /// slug can never be linked anyway (`Repo::open` accepts `[a-z0-9-]` only).
+    /// This sits with the other things `list_slugs` already skips silently:
+    /// no manifest, non-UTF-8.
     pub fn list_slugs(&self) -> Vec<SlugInfo> {
         let mut out = Vec::new();
         if let Ok(entries) = fs::read_dir(&self.base) {
@@ -602,8 +602,8 @@ mod tests {
         );
     }
 
-    /// A slug directory name is another device's bytes, and `dotlore slugs`
-    /// prints the list straight to the terminal.
+    /// A slug directory name is another device's bytes, and the app lists
+    /// that name as-is.
     #[test]
     fn a_slug_name_with_control_characters_is_not_listed() {
         let td = TempDir::new().unwrap();

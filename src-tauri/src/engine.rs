@@ -1,6 +1,6 @@
 //! The sync cycle: add, link, sync, resolve, recover.
 //!
-//! This is the orchestration layer the CLI and the menu-bar app both call.
+//! This is the orchestration layer the desktop app calls.
 //! Nothing below it knows about configuration or locking: [`Engine`] takes the
 //! home lock exactly once per public entry point, reloads `config.json` under
 //! that lock, and then drives [`Repo`] / [`Cloud`] / [`conflict`] through

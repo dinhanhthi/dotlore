@@ -2405,7 +2405,7 @@ mod tests {
 
     /// A peer-chosen path outside this device's include-list must never reach
     /// the live root, and must not leak into an error message (the name is an
-    /// OSC-52 clipboard write — same payload `dotlore-cli` sanitises).
+    /// OSC-52 clipboard write — the error must not echo that path).
     #[test]
     fn an_out_of_list_entry_from_a_peer_never_reaches_the_live_root() {
         const POISON: &str = "\u{1b}]52;c;ZXZpbA==\u{7}x";

@@ -292,7 +292,7 @@ pub async fn resolve_conflict(
 
 /// Keep one side of a binary conflict from the held snapshot — never from
 /// the webview. Every sibling of that live path is discarded, same as
-/// `dotlore resolve`.
+/// resolving a text conflict.
 #[tauri::command]
 pub async fn resolve_binary(
     app: AppHandle,
