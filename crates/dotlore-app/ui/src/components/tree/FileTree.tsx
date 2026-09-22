@@ -29,7 +29,7 @@ import {
   syncNow,
   trackedFiles,
 } from "@/lib/ipc";
-import { useRoots, useSyncing } from "@/lib/roots";
+import { useRoots, useSyncing, useTrackLabel } from "@/lib/roots";
 import { buildTree, filterTree } from "@/lib/tree";
 import type { ConflictView, EntryView, TrackedFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -142,6 +142,8 @@ export function FileTree() {
   const { roots, selectedSlug, selectedRel, selectFile, openResolver, busy, seeding } =
     useRoots();
   const syncing = useSyncing();
+  const trackLabel = useTrackLabel();
+  const tracking = trackLabel !== null;
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
   const seedingItem = seeding.find((item) => item.slug === selectedSlug) ?? null;
 
@@ -286,21 +288,21 @@ export function FileTree() {
           <TrackedSummary files={files} />
           <div className="flex items-center gap-0.5">
             <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    className="text-muted-foreground"
-                    disabled={busy || !root.linked}
-                    aria-label="Add to track"
-                    onClick={() => setPickerOpen(true)}
-                  />
-                }
-              >
-                <Plus aria-hidden />
+              <TooltipTrigger render={<span className="inline-flex" />}>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="text-muted-foreground"
+                  disabled={busy || tracking || !root.linked}
+                  aria-label="Add to track"
+                  onClick={() => setPickerOpen(true)}
+                >
+                  <Plus aria-hidden />
+                </Button>
               </TooltipTrigger>
-              <TooltipContent>Add to track</TooltipContent>
+              <TooltipContent>
+                {tracking ? "A process is running" : "Add to track"}
+              </TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger
@@ -379,6 +381,7 @@ export function FileTree() {
             key={root.slug}
             slug={root.slug}
             entries={entries}
+            files={files}
             open={pickerOpen}
             onOpenChange={setPickerOpen}
             onMutated={refetch}

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 import {
   AlertDialog,
@@ -11,6 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,308 +24,396 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { errorMessage } from "@/lib/errors";
 import {
-  inspectEntry,
+  answerTrackConfirm,
+  applyTrackBatch,
   listEntryChildren,
-  trackEntry,
   untrackEntry,
 } from "@/lib/ipc";
-import { useRoots } from "@/lib/roots";
-import type { EntryView, InspectedEntryDto, PickerRow } from "@/lib/types";
+import { useRoots, useTrackConfirm } from "@/lib/roots";
+import type { EntryView, PickerRow, TrackedFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { formatBytes, untrackCopy } from "./entries";
 import {
-  fileTooLarge,
-  formatBytes,
-  parentRel,
-  untrackCopy,
-} from "./entries";
+  isShownTracked,
+  orderedPendingOps,
+  pickerStateAfterIdentityChange,
+  sortPickerRows,
+  stagePending,
+  type PendingMap,
+  type PickerKind,
+} from "./picker";
+
+/** Left inset shared with the middle-panel tree. */
+const TREE_INSET = "10px";
+/**
+ * One level: the `size-4` chevron plus the `gap-1.5` before the folder label.
+ * A child then starts where its parent's name starts.
+ */
+const TREE_LEVEL = "calc(1rem + 0.375rem)";
 
 type EntryPickerDialogProps = {
   slug: string;
   entries: EntryView[];
+  files: TrackedFile[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onMutated: () => void;
 };
 
-/** Reset browse + nested untrack whenever the dialog closes or the slug changes. */
-export function pickerStateAfterIdentityChange(): {
-  rel: string;
-  children: PickerRow[];
-  selected: PickerRow | null;
-  preview: InspectedEntryDto | null;
-  untrackTarget: EntryView | null;
-} {
-  return {
-    rel: "",
-    children: [],
-    selected: null,
-    preview: null,
-    untrackTarget: null,
-  };
+function asKind(kind: string): PickerKind {
+  return kind === "directory" ? "directory" : "file";
 }
 
 export function EntryPickerDialog({
   slug,
   entries,
+  files,
   open,
   onOpenChange,
   onMutated,
 }: EntryPickerDialogProps) {
-  const { busy, setBanner } = useRoots();
-  const [rel, setRel] = useState("");
-  const [children, setChildren] = useState<PickerRow[]>([]);
-  const [selected, setSelected] = useState<PickerRow | null>(null);
-  const [preview, setPreview] = useState<InspectedEntryDto | null>(null);
-  const [untrackTarget, setUntrackTarget] = useState<EntryView | null>(null);
+  const { setBanner } = useRoots();
+  const trackedRels = useMemo(
+    () => new Set(files.map((file) => file.rel)),
+    [files],
+  );
+  const [pending, setPending] = useState<PendingMap>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [childrenByRel, setChildrenByRel] = useState<Record<string, PickerRow[]>>(
+    {},
+  );
+  const [loadingRel, setLoadingRel] = useState<Record<string, boolean>>({});
+  const requestGen = useRef(0);
+  const applying = useRef(false);
 
   useEffect(() => {
     const next = pickerStateAfterIdentityChange();
-    setRel(next.rel);
-    setChildren(next.children);
-    setSelected(next.selected);
-    setPreview(next.preview);
-    setUntrackTarget(next.untrackTarget);
-  }, [open, slug]);
-
-  useEffect(() => {
-    if (!open) return;
+    setPending(next.pending);
+    setExpanded(next.expanded);
+    setChildrenByRel({});
+    setLoadingRel({});
+    applying.current = false;
+    if (!open) {
+      requestGen.current += 1;
+      return;
+    }
+    const gen = ++requestGen.current;
     let cancelled = false;
-    void listEntryChildren(slug, rel)
+    void listEntryChildren(slug, "")
       .then((rows) => {
-        if (cancelled) return;
-        setChildren(
-          rows.filter((row) => row.kind === "file" || row.kind === "directory"),
-        );
+        if (cancelled || gen !== requestGen.current) return;
+        setChildrenByRel({ "": sortPickerRows(rows) });
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (cancelled || gen !== requestGen.current) return;
+        setChildrenByRel({ "": [] });
         setBanner(errorMessage(err, "Something went wrong"));
       });
     return () => {
       cancelled = true;
     };
-  }, [open, slug, rel, setBanner]);
+  }, [open, slug, setBanner]);
 
-  const parent = parentRel(rel);
-  const oversizedFile = preview !== null && fileTooLarge(preview);
-
-  async function selectRow(row: PickerRow) {
-    setSelected(row);
-    try {
-      setPreview(await inspectEntry(slug, row.rel));
-    } catch (err) {
-      setPreview(null);
-      setBanner(errorMessage(err, "Something went wrong"));
-    }
+  function handleOpenChange(next: boolean) {
+    if (!next) requestGen.current += 1;
+    onOpenChange(next);
   }
 
-  async function submit() {
-    if (!selected || preview === null || oversizedFile || busy) return;
-    const confirmed =
-      preview.kind === "directory" && preview.confirmation_required
-        ? preview.bytes
-        : null;
-    try {
-      const result = await trackEntry(slug, selected.rel, confirmed);
-      if (result.outcome === "needs_confirmation") {
-        setPreview({
-          kind: "directory",
-          bytes: result.bytes,
-          folder_limit: result.folder_limit,
-          confirmation_required: true,
-          skipped_too_large: result.skipped_too_large,
-        });
-        return;
-      }
-      setSelected(null);
-      setPreview(null);
+  function stage(rel: string, kind: PickerKind, action: "track" | "untrack") {
+    setPending((current) =>
+      stagePending(current, rel, kind, action, entries, trackedRels),
+    );
+  }
+
+  function toggle(rel: string) {
+    const opening = !expanded[rel];
+    setExpanded((current) => ({ ...current, [rel]: opening }));
+    if (!opening || childrenByRel[rel]) return;
+    const gen = requestGen.current;
+    setLoadingRel((current) => ({ ...current, [rel]: true }));
+    void listEntryChildren(slug, rel)
+      .then((rows) => {
+        if (gen !== requestGen.current) return;
+        setChildrenByRel((current) => ({
+          ...current,
+          [rel]: sortPickerRows(rows),
+        }));
+      })
+      .catch((err) => {
+        if (gen !== requestGen.current) return;
+        setBanner(errorMessage(err, "Something went wrong"));
+        setExpanded((current) => ({ ...current, [rel]: false }));
+      })
+      .finally(() => {
+        if (gen !== requestGen.current) return;
+        setLoadingRel((current) => ({ ...current, [rel]: false }));
+      });
+  }
+
+  function apply() {
+    if (applying.current) return;
+    const ops = orderedPendingOps(pending);
+    if (ops.length === 0) return;
+    applying.current = true;
+    onOpenChange(false);
+    void applyTrackBatch(
+      slug,
+      ops.map((op) => ({ rel: op.rel, action: op.action })),
+    ).finally(() => {
       onMutated();
-    } catch {
-      // Banner is set by `run()`.
-    }
+    });
   }
+
+  const rootRows = childrenByRel[""];
+  const changeCount = Object.keys(pending).length;
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Add to track</DialogTitle>
+          <DialogDescription>
+            Mark files and folders to track or untrack. Nothing changes until
+            you apply.
+          </DialogDescription>
+        </DialogHeader>
+        <ScrollArea className="h-80 rounded-2xl border border-border">
+          {rootRows === undefined ? (
+            <div className="flex h-full items-center justify-center text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              <span className="sr-only">Loading files</span>
+            </div>
+          ) : rootRows.length === 0 ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground">
+              This folder is empty.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-0.5 px-1.5 py-1">
+              {rootRows.map((row) => (
+                <PickerNode
+                  key={row.rel}
+                  row={row}
+                  entries={entries}
+                  pending={pending}
+                  trackedRels={trackedRels}
+                  expanded={expanded}
+                  childrenByRel={childrenByRel}
+                  loadingRel={loadingRel}
+                  onToggle={toggle}
+                  onStage={stage}
+                />
+              ))}
+            </div>
+          )}
+        </ScrollArea>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => handleOpenChange(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            disabled={changeCount === 0}
+            onClick={apply}
+          >
+            Apply
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+type PickerNodeProps = {
+  row: PickerRow;
+  entries: EntryView[];
+  pending: PendingMap;
+  trackedRels: ReadonlySet<string>;
+  expanded: Record<string, boolean>;
+  childrenByRel: Record<string, PickerRow[]>;
+  loadingRel: Record<string, boolean>;
+  onToggle: (rel: string) => void;
+  onStage: (rel: string, kind: PickerKind, action: "track" | "untrack") => void;
+};
+
+function PickerNode({
+  row,
+  entries,
+  pending,
+  trackedRels,
+  expanded,
+  childrenByRel,
+  loadingRel,
+  onToggle,
+  onStage,
+}: PickerNodeProps) {
+  const kind = asKind(row.kind);
+  const tracked = isShownTracked(row.rel, kind, entries, pending, trackedRels);
+  const open = kind === "directory" && expanded[row.rel] === true;
+  const loading = loadingRel[row.rel] === true;
+  const nested = childrenByRel[row.rel];
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Add to track</DialogTitle>
-            <DialogDescription>
-              Choose a file or folder inside this project. The project root is
-              fixed.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2">
-              {parent !== null ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  onClick={() => {
-                    setRel(parent);
-                    setSelected(null);
-                    setPreview(null);
-                  }}
-                >
-                  Parent
-                </Button>
-              ) : null}
-              <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
-                {rel === "" ? "/" : rel}
-              </span>
-            </div>
-            <ScrollArea className="h-44 rounded-2xl border border-border">
-              <ul className="flex flex-col p-1">
-                {children.map((row) => (
-                  <li key={row.rel} className="flex items-center">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void selectRow(row);
-                      }}
-                      className={cn(
-                        "flex min-w-0 flex-1 items-center rounded-xl px-2 py-1.5 text-left text-sm",
-                        selected?.rel === row.rel
-                          ? "bg-muted"
-                          : "hover:bg-muted/70",
-                      )}
-                    >
-                      <span className="min-w-0 truncate">{row.name}</span>
-                      <span className="ml-auto pl-2 text-xs text-muted-foreground">
-                        {row.kind === "directory" ? "folder" : "file"}
-                      </span>
-                    </button>
-                    {row.kind === "directory" ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-xs"
-                        aria-label={`Open ${row.name}`}
-                        className="text-muted-foreground"
-                        onClick={() => {
-                          setRel(row.rel);
-                          setSelected(null);
-                          setPreview(null);
-                        }}
-                      >
-                        <ChevronRight aria-hidden />
-                      </Button>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </ScrollArea>
-            {preview && selected ? (
-              <PreviewBlock
-                selected={selected}
-                preview={preview}
-                oversizedFile={oversizedFile}
+      <div
+        className={cn(
+          "group relative flex h-8 w-full items-center gap-2 rounded-2xl pr-2",
+          "transition-colors duration-[var(--dur-short)] ease-[var(--ease-out)]",
+          "hover:bg-muted/70",
+        )}
+        style={{ paddingLeft: TREE_INSET }}
+      >
+        {kind === "directory" ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={open ? `Collapse ${row.name}` : `Expand ${row.name}`}
+            onClick={() => onToggle(row.rel)}
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-foreground"
+          >
+            {loading ? (
+              <Loader2
+                aria-hidden
+                className="size-4 shrink-0 animate-spin text-muted-foreground"
               />
-            ) : null}
-            {entries.length > 0 ? (
-              <div className="flex flex-col gap-1.5">
-                <p className="text-label text-muted-foreground">
-                  Tracked entries
-                </p>
-                <ul className="flex flex-col gap-1">
-                  {entries.map((entry) => (
-                    <li
-                      key={entry.key}
-                      className="flex items-center gap-2 rounded-xl px-2 py-1"
-                    >
-                      <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                        {entry.key}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="xs"
-                        className="text-destructive"
-                        disabled={busy}
-                        onClick={() => setUntrackTarget(entry)}
-                      >
-                        Untrack
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              disabled={busy || selected === null || preview === null || oversizedFile}
-              onClick={() => {
-                void submit();
-              }}
-            >
-              {preview?.confirmation_required ? "Confirm and add" : "Add"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <UntrackEntryDialog
-        slug={slug}
-        entry={untrackTarget}
-        open={untrackTarget !== null}
-        onOpenChange={(next) => {
-          if (!next) setUntrackTarget(null);
-        }}
-        onMutated={onMutated}
-      />
+            ) : open ? (
+              <ChevronDown
+                aria-hidden
+                className="size-4 shrink-0 text-muted-foreground"
+              />
+            ) : (
+              <ChevronRight
+                aria-hidden
+                className="size-4 shrink-0 text-muted-foreground"
+              />
+            )}
+            <span className="min-w-0 truncate text-sm">{row.name}</span>
+          </button>
+        ) : (
+          <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+            {row.name}
+          </span>
+        )}
+        <TrackMark
+          name={row.name}
+          tracked={tracked}
+          onClick={() => onStage(row.rel, kind, tracked ? "untrack" : "track")}
+        />
+      </div>
+      {open ? (
+        <div
+          className="relative flex w-full flex-col gap-0.5"
+          style={{ paddingLeft: TREE_LEVEL }}
+        >
+          <span
+            aria-hidden
+            className="pointer-events-none absolute -top-0.5 bottom-0 z-10 w-[0.5px] -translate-x-1/2 bg-foreground/15"
+            style={{ left: `calc(${TREE_INSET} + 0.5rem)` }}
+          />
+          {nested === undefined ? null : nested.length === 0 ? (
+            <p className="px-2 py-1 text-xs text-muted-foreground">Empty</p>
+          ) : (
+            nested.map((child) => (
+              <PickerNode
+                key={child.rel}
+                row={child}
+                entries={entries}
+                pending={pending}
+                trackedRels={trackedRels}
+                expanded={expanded}
+                childrenByRel={childrenByRel}
+                loadingRel={loadingRel}
+                onToggle={onToggle}
+                onStage={onStage}
+              />
+            ))
+          )}
+        </div>
+      ) : null}
     </>
   );
 }
 
-function PreviewBlock({
-  selected,
-  preview,
-  oversizedFile,
+function TrackMark({
+  name,
+  tracked,
+  onClick,
 }: {
-  selected: PickerRow;
-  preview: InspectedEntryDto;
-  oversizedFile: boolean;
+  name: string;
+  tracked: boolean;
+  onClick: () => void;
 }) {
-  const size = oversizedFile
-    ? (preview.skipped_too_large[0]?.bytes ?? preview.bytes)
-    : preview.bytes;
   return (
-    <div className="flex flex-col gap-1 text-sm">
-      <p>
-        <span className="font-mono">{selected.rel}</span>
-        {" — "}
-        {formatBytes(size)}
-        {preview.kind === "directory" ? (
-          <span className="text-muted-foreground">
-            {" "}
-            (limit {formatBytes(preview.folder_limit)})
-          </span>
-        ) : null}
-      </p>
-      {oversizedFile ? (
-        <p className="text-destructive">
-          This file exceeds the per-file limit and cannot be added.
-        </p>
-      ) : null}
-      {preview.confirmation_required && !oversizedFile ? (
-        <p>
-          This folder is over the add limit. Confirm to track it. Confirmation
-          is checked again if the folder grows.
-        </p>
-      ) : null}
-    </div>
+    <span className="group/mark ml-auto inline-grid w-[4.75rem] shrink-0 items-center justify-items-end">
+      <Badge
+        aria-hidden
+        variant="secondary"
+        className={cn(
+          "pointer-events-none col-start-1 row-start-1 font-normal transition-opacity",
+          tracked
+            ? "opacity-100 group-hover:opacity-0 group-focus-within/mark:opacity-0"
+            : "opacity-0",
+        )}
+      >
+        tracked
+      </Badge>
+      <Button
+        type="button"
+        variant={tracked ? "destructive" : "outline"}
+        size="xs"
+        aria-label={tracked ? `Untrack ${name}` : `Track ${name}`}
+        className={cn(
+          "relative z-10 col-start-1 row-start-1 transition-opacity",
+          "pointer-events-none opacity-0",
+          "group-hover:pointer-events-auto group-hover:opacity-100",
+          "group-focus-within/mark:pointer-events-auto group-focus-within/mark:opacity-100",
+          "focus-visible:pointer-events-auto focus-visible:opacity-100",
+        )}
+        onClick={onClick}
+      >
+        {tracked ? "untrack" : "track"}
+      </Button>
+    </span>
+  );
+}
+
+/** Paused inside a background track batch. Does not take the global busy lock. */
+export function TrackConfirmDialog() {
+  const confirm = useTrackConfirm();
+
+  return (
+    <AlertDialog
+      open={confirm !== null}
+      onOpenChange={(next) => {
+        if (!next) answerTrackConfirm(false);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Track {confirm?.rel ?? "folder"}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {confirm
+              ? `${confirm.rel} is ${formatBytes(confirm.bytes)} (limit ${formatBytes(confirm.folderLimit)}). This folder is over the add limit. Confirm to track it.`
+              : ""}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(event) => {
+              event.preventDefault();
+              answerTrackConfirm(true);
+            }}
+          >
+            Track
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 

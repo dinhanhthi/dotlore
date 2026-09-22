@@ -5,7 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roots";
 import type { RootRow } from "@/lib/types";
 
-import { pickerStateAfterIdentityChange } from "./EntryPickerDialog";
+import { pickerStateAfterIdentityChange } from "./picker";
 import {
   FileTree,
   treeAwaitingLoad,
@@ -128,13 +128,10 @@ describe("FileTree dialogs", () => {
     });
   });
 
-  it("clears nested picker untrack when the slug changes or the dialog closes", () => {
+  it("clears staged picker marks when the slug changes or the dialog closes", () => {
     expect(pickerStateAfterIdentityChange()).toEqual({
-      rel: "",
-      children: [],
-      selected: null,
-      preview: null,
-      untrackTarget: null,
+      pending: {},
+      expanded: {},
     });
   });
 

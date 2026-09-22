@@ -18,21 +18,63 @@ import type {
   TrackResultDto,
 } from "./types";
 
+/** A folder over the add limit, waiting for a yes/no while the batch is paused. */
+export type TrackConfirm = {
+  rel: string;
+  bytes: number;
+  folderLimit: number;
+};
+
 export type WorkSnapshot = {
   inflight: number;
   syncing: number;
   banner: string | null;
+  /** Background track/untrack apply. Does not count toward `inflight`. */
+  trackLabel: string | null;
+  trackConfirm: TrackConfirm | null;
 };
 
 let inflight = 0;
 let syncing = 0;
 let banner: string | null = null;
-let snapshot: WorkSnapshot = { inflight: 0, syncing: 0, banner: null };
+let trackLabel: string | null = null;
+let trackConfirm: TrackConfirm | null = null;
+let confirmResolve: ((yes: boolean) => void) | null = null;
+let snapshot: WorkSnapshot = {
+  inflight: 0,
+  syncing: 0,
+  banner: null,
+  trackLabel: null,
+  trackConfirm: null,
+};
 const listeners = new Set<() => void>();
 
 function emit(): void {
-  snapshot = { inflight, syncing, banner };
+  snapshot = { inflight, syncing, banner, trackLabel, trackConfirm };
   for (const listener of listeners) listener();
+}
+
+function setTrackLabel(label: string | null): void {
+  if (trackLabel === label) return;
+  trackLabel = label;
+  emit();
+}
+
+function waitForTrackConfirm(next: TrackConfirm): Promise<boolean> {
+  trackConfirm = next;
+  emit();
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+  });
+}
+
+/** Resolve the paused folder confirmation. A second call is a no-op. */
+export function answerTrackConfirm(yes: boolean): void {
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  trackConfirm = null;
+  emit();
+  resolve?.(yes);
 }
 
 export function subscribeWork(listener: () => void): () => void {
@@ -202,6 +244,90 @@ export function trackEntry(
 
 export function untrackEntry(slug: string, rel: string): Promise<EntryView[]> {
   return run(() => invoke("untrack_entry", { slug, rel }));
+}
+
+export type TrackBatchOp = {
+  rel: string;
+  action: "track" | "untrack";
+  confirmedFolderBytes?: number | null;
+};
+
+/**
+ * Apply staged track/untrack marks without the global busy lock.
+ * The footer reads `trackLabel` while this runs.
+ */
+export async function applyTrackBatch(
+  slug: string,
+  ops: TrackBatchOp[],
+): Promise<void> {
+  if (ops.length === 0 || trackLabel !== null || confirmResolve !== null) return;
+  setBanner(null);
+  setTrackLabel("Updating tracked files…");
+  const declined: string[] = [];
+  const stillOver: string[] = [];
+  let firstError: string | null = null;
+  try {
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i]!;
+      const verb = op.action === "track" ? "Tracking" : "Untracking";
+      const progress = ops.length > 1 ? ` (${i + 1} of ${ops.length})` : "";
+      setTrackLabel(`${verb} ${op.rel}…${progress}`);
+      try {
+        if (op.action === "untrack") {
+          await invoke("untrack_entry", { slug, rel: op.rel });
+          continue;
+        }
+        let result = await invoke<TrackResultDto>("track_entry", {
+          slug,
+          rel: op.rel,
+          confirmedFolderBytes: op.confirmedFolderBytes ?? null,
+        });
+        if (result.outcome === "needs_confirmation") {
+          setTrackLabel(`Confirm tracking ${op.rel}…${progress}`);
+          const yes = await waitForTrackConfirm({
+            rel: op.rel,
+            bytes: result.bytes,
+            folderLimit: result.folder_limit,
+          });
+          if (!yes) {
+            declined.push(op.rel);
+            continue;
+          }
+          result = await invoke<TrackResultDto>("track_entry", {
+            slug,
+            rel: op.rel,
+            confirmedFolderBytes: result.bytes,
+          });
+          if (result.outcome === "needs_confirmation") stillOver.push(op.rel);
+        }
+      } catch (err) {
+        firstError = errorMessage(err, "Something went wrong");
+        break;
+      }
+    }
+    if (firstError !== null) {
+      setBanner(firstError);
+    } else if (declined.length > 0 || stillOver.length > 0) {
+      const parts: string[] = [];
+      if (declined.length === 1) parts.push(`${declined[0]} was not tracked`);
+      else if (declined.length > 1) {
+        parts.push(`${declined.length} folders were not tracked`);
+      }
+      if (stillOver.length === 1) {
+        parts.push(`${stillOver[0]} is over the folder limit and was not tracked`);
+      } else if (stillOver.length > 1) {
+        parts.push(
+          `${stillOver.length} folders are over the limit and were not tracked`,
+        );
+      }
+      setBanner(parts.join(". "));
+    }
+  } finally {
+    confirmResolve = null;
+    trackConfirm = null;
+    trackLabel = null;
+    emit();
+  }
 }
 
 export function defaultPatterns(): Promise<string[]> {

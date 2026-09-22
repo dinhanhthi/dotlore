@@ -218,3 +218,21 @@ export function useSyncing(): boolean {
   );
   return count > 0;
 }
+
+/** Footer copy while a track/untrack batch runs. Null when idle. */
+export function useTrackLabel(): string | null {
+  return useSyncExternalStore(
+    subscribeWork,
+    () => getWorkSnapshot().trackLabel,
+    () => getWorkSnapshot().trackLabel,
+  );
+}
+
+/** Folder confirmation paused inside a track batch. Null when idle. */
+export function useTrackConfirm() {
+  return useSyncExternalStore(
+    subscribeWork,
+    () => getWorkSnapshot().trackConfirm,
+    () => getWorkSnapshot().trackConfirm,
+  );
+}

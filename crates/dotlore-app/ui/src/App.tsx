@@ -21,6 +21,7 @@ import { FileViewer } from "@/components/main/FileViewer";
 import { NoticeToasts } from "@/components/notices/NoticeToasts";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { ProviderSetup } from "@/components/setup/ProviderSetup";
+import { TrackConfirmDialog } from "@/components/tree/EntryPickerDialog";
 import { FileTree } from "@/components/tree/FileTree";
 import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -447,6 +448,7 @@ export function App() {
     <TooltipProvider delay={400}>
       <SidebarQueryProvider query={sidebarQuery} setQuery={setSidebarQuery}>
         <RootsContext.Provider value={value}>
+          <TrackConfirmDialog />
           <Toaster>
             <NoticeToasts banner={work.banner} gitMissing={state.gitMissing} />
             <Shell

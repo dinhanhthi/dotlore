@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { uniqueConflictRels } from "@/lib/conflicts";
 import { conflicts as fetchConflicts, syncNow } from "@/lib/ipc";
-import { useRoots, useSyncing, type SeedingRoot } from "@/lib/roots";
+import { useRoots, useSyncing, useTrackLabel, type SeedingRoot } from "@/lib/roots";
 import type { RootRow, RootStatus } from "@/lib/types";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -109,6 +109,7 @@ export function Footer() {
     openResolver,
   } = useRoots();
   const syncing = useSyncing();
+  const trackLabel = useTrackLabel();
   const status = aggregateStatus(providerDir, roots);
   const tracked = Object.values(trackedBySlug);
   const filesTracked = tracked.reduce((n, stats) => n + stats.files, 0);
@@ -161,8 +162,16 @@ export function Footer() {
 
   return (
     <footer className="flex h-11 items-center gap-4 border-t border-border px-3 text-[0.8rem] text-muted-foreground">
-      <div className="flex min-w-0 flex-1 items-center gap-2.5" aria-busy={busy}>
-        {seeding.length > 0 ? (
+      <div
+        className="flex min-w-0 flex-1 items-center gap-2.5"
+        aria-busy={busy || trackLabel !== null}
+      >
+        {trackLabel ? (
+          <>
+            <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+            <span className="truncate">{trackLabel}</span>
+          </>
+        ) : seeding.length > 0 ? (
           <>
             <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
             <span className="truncate">{addingLabel(seeding)}</span>
@@ -182,7 +191,7 @@ export function Footer() {
             aria-hidden
           />
         )}
-        {seeding.length === 0 && !busy && (
+        {!trackLabel && seeding.length === 0 && !busy && (
           <span className="truncate">{status.text}</span>
         )}
         <Tooltip>
