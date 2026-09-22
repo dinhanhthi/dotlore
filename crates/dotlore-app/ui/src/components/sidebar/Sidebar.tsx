@@ -239,7 +239,7 @@ export function Sidebar() {
       <div className="flex items-center gap-2 px-3 pt-3 pb-2">
         <SearchBar value={query} onChange={setQuery} />
       </div>
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+      <div className="sidebar-scroll min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         <div className="flex flex-col gap-0.5 px-1.5 pb-2">
         <SidebarItem
           label="All projects"
@@ -260,6 +260,7 @@ export function Sidebar() {
         <SidebarSection
           id="agents"
           title="Agents"
+          count={agents.length}
           collapsed={collapsed.includes("agents")}
           onToggle={() => toggleCollapsed("agents")}
           action={
