@@ -19,11 +19,12 @@ import { cn } from "@/lib/utils";
 
 const WORD_WRAP_KEY = "dotlore.wordWrap";
 
+/** Wrapped by default; only an explicit "0" turns it off. */
 function readWordWrap(): boolean {
   try {
-    return localStorage.getItem(WORD_WRAP_KEY) === "1";
+    return localStorage.getItem(WORD_WRAP_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 }
 
