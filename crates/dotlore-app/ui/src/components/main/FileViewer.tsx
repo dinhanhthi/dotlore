@@ -1,13 +1,39 @@
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { WrapText } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { FileHeaderActions } from "@/components/layout/RootActions";
+import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { viewerExtensions } from "@/lib/cm";
 import { readFile } from "@/lib/ipc";
 import { composeLivePath } from "@/lib/path";
 import { useRoots } from "@/lib/roots";
 import type { FileContent } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+const WORD_WRAP_KEY = "dotlore.wordWrap";
+
+function readWordWrap(): boolean {
+  try {
+    return localStorage.getItem(WORD_WRAP_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeWordWrap(on: boolean): void {
+  try {
+    localStorage.setItem(WORD_WRAP_KEY, on ? "1" : "0");
+  } catch {
+    // Quota or private-mode.
+  }
+}
 
 type FileViewerProps = {
   slug: string;
@@ -26,8 +52,20 @@ function errorMessage(error: unknown): string {
   return "Could not read file";
 }
 
-function ReadOnlyEditor({ rel, text }: { rel: string; text: string }) {
+function ReadOnlyEditor({
+  rel,
+  text,
+  wrap,
+}: {
+  rel: string;
+  text: string;
+  wrap: boolean;
+}) {
   const parentRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const wrapSlot = useRef(new Compartment());
+  const wrapRef = useRef(wrap);
+  wrapRef.current = wrap;
 
   useEffect(() => {
     const parent = parentRef.current;
@@ -35,14 +73,64 @@ function ReadOnlyEditor({ rel, text }: { rel: string; text: string }) {
     const view = new EditorView({
       state: EditorState.create({
         doc: text,
-        extensions: viewerExtensions(rel),
+        extensions: [
+          ...viewerExtensions(rel),
+          wrapSlot.current.of(wrapRef.current ? EditorView.lineWrapping : []),
+        ],
       }),
       parent,
     });
-    return () => view.destroy();
+    viewRef.current = view;
+    return () => {
+      viewRef.current = null;
+      view.destroy();
+    };
   }, [rel, text]);
 
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: wrapSlot.current.reconfigure(wrap ? EditorView.lineWrapping : []),
+    });
+  }, [wrap]);
+
   return <div ref={parentRef} className="min-h-0 flex-1 overflow-hidden" />;
+}
+
+function WordWrapButton({
+  pressed,
+  disabled,
+  onToggle,
+}: {
+  pressed: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            className={cn(
+              "text-muted-foreground",
+              pressed && "bg-muted text-foreground",
+            )}
+            disabled={disabled}
+            aria-label="Word wrap"
+            aria-pressed={pressed}
+            onClick={onToggle}
+          />
+        }
+      >
+        <WrapText className="size-3.5" aria-hidden />
+      </TooltipTrigger>
+      <TooltipContent>Word wrap</TooltipContent>
+    </Tooltip>
+  );
 }
 
 export function FileViewer({ slug, rel }: FileViewerProps) {
@@ -51,6 +139,7 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
 
   const [content, setContent] = useState<FileContent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wrap, setWrap] = useState(readWordWrap);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,7 +171,7 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
   } else if (content.binary) {
     body = <Message>{`Binary file — ${content.bytes_len} bytes`}</Message>;
   } else if (content.text !== null) {
-    body = <ReadOnlyEditor rel={rel} text={content.text} />;
+    body = <ReadOnlyEditor rel={rel} text={content.text} wrap={wrap} />;
   } else {
     body = <Message>Could not preview this file.</Message>;
   }
@@ -96,7 +185,20 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
         <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
           {content ? formatBytes(content.bytes_len) : ""}
         </span>
-        <FileHeaderActions path={livePath} />
+        <div className="flex shrink-0 items-center gap-0.5">
+          <WordWrapButton
+            pressed={wrap}
+            disabled={content?.text == null}
+            onToggle={() => {
+              setWrap((current) => {
+                const next = !current;
+                writeWordWrap(next);
+                return next;
+              });
+            }}
+          />
+          <FileHeaderActions path={livePath} />
+        </div>
       </header>
       {body}
     </div>
