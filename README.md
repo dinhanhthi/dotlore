@@ -55,7 +55,7 @@ Overlapping edits resolve deterministically: the newer commit wins on **every** 
 
 ## 🚀 Development
 
-**Prerequisites:** [Rust](https://rustup.rs/) 1.89+ (uses `std::fs::File::lock`), [Node.js](https://nodejs.org/) 20+, [pnpm](https://pnpm.io/), the system `git`, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for macOS. If `git` is missing, Dotlore refuses to sync and points you at `xcode-select --install`. The Dock icon for macOS 26 ships as a committed `src-tauri/icons/Assets.car`, so an ordinary build needs no Xcode: only `scripts/icon.sh`, which recompiles it and `icon.icns` from the `assets/logo.icon` Icon Composer document, wants Xcode 26 or newer.
+**Prerequisites:** [Rust](https://rustup.rs/) 1.89+ (uses `std::fs::File::lock`), [Node.js](https://nodejs.org/) 20+, [pnpm](https://pnpm.io/), the system `git`, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for macOS. If `git` is missing, Dotlore refuses to sync and points you at `xcode-select --install`. The Dock icon for macOS 26 ships as a committed `src-tauri/icons/Assets.car`, so an ordinary build needs no Xcode: only `scripts/icon.sh`, which recompiles it and `icon.icns` from the `src-tauri/icons/logo.icon` Icon Composer document, wants Xcode 26 or newer.
 
 `pnpm tauri dev` keeps its state in `~/Downloads/dotlore-dev` instead of `~/Library/Application Support/dotlore/`, so a dev run can sit beside a copy installed in `/Applications`. It prints the path it used, and an explicit `DOTLORE_HOME` overrides it. The directory is created on first use. Two copies sharing one home fight over a lock file, and the loser exits without a window.
 

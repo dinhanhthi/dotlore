@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 #
-# Regenerate the two committed icon artifacts from assets/logo.icon, the
-# Icon Composer document that is the single source for Dotlore's app icon:
+# Regenerate the two committed icon artifacts from src-tauri/icons/logo.icon,
+# the Icon Composer document that is the single source for Dotlore's app icon.
+# It sits beside its outputs rather than under assets/, which vite.config.ts
+# names as publicDir: everything there is copied into the built frontend and
+# embedded in the binary, and a build-only source has no business shipping
+# inside the app.
 #
 #   src-tauri/icons/Assets.car  — what macOS 26 draws, via CFBundleIconName
 #                                 (src-tauri/Info.plist) and bundle.resources.
@@ -36,8 +40,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source_icon="$root/assets/logo.icon"
 icons="$root/src-tauri/icons"
+source_icon="$icons/logo.icon"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/out"
