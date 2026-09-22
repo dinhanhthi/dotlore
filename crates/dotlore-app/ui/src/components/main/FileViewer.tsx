@@ -163,7 +163,7 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
   if (error) {
     body = <Message>{error}</Message>;
   } else if (!content) {
-    body = <Message>Loading…</Message>;
+    body = <FileContentSkeleton />;
   } else if (content.too_large) {
     body = (
       <Message>{`File too large to preview (${content.bytes_len} bytes)`}</Message>
@@ -201,6 +201,41 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
         </div>
       </header>
       {body}
+    </div>
+  );
+}
+
+const LINE_WIDTHS = [
+  "92%",
+  "78%",
+  "88%",
+  "64%",
+  "96%",
+  "71%",
+  "84%",
+  "55%",
+  "90%",
+  "68%",
+  "76%",
+  "48%",
+];
+
+function FileContentSkeleton() {
+  return (
+    <div
+      role="status"
+      aria-busy="true"
+      aria-label="Loading file"
+      className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-6 py-4"
+    >
+      {LINE_WIDTHS.map((width, index) => (
+        <div
+          key={index}
+          aria-hidden
+          className="h-3 motion-safe:animate-pulse rounded-2xl bg-muted"
+          style={{ width }}
+        />
+      ))}
     </div>
   );
 }
