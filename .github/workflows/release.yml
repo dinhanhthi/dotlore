@@ -371,6 +371,10 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          # Named, not inferred. gh would otherwise resolve the repo from the
+          # origin remote that actions/checkout configured — which works, but
+          # this job publishes the release and the inference is free to remove.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
