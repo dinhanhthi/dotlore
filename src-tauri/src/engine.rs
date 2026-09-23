@@ -646,7 +646,7 @@ impl Engine {
         let repo = self.repo_for(&self.root_cfg(slug)?)?;
         let names = cloud.device_names(slug);
         let mut out = Vec::new();
-        for c in conflict::list(&repo.git)? {
+        for c in open_conflicts(&repo)? {
             out.push(ConflictView {
                 loser_name: device_name(&names, &c.loser_id8),
                 loser_is_me: c.loser_id8 == repo.id8(),
@@ -1641,7 +1641,7 @@ fn root_status(repo: &Repo) -> Result<RootStatus> {
     if !repo.has_main() {
         return Ok(RootStatus::Pending);
     }
-    match conflict::list(&repo.git)?
+    match open_conflicts(repo)?
         .iter()
         .filter(|c| c.live != Path::new(crate::project::IGNORE_FILE))
         .count()
@@ -1649,6 +1649,19 @@ fn root_status(repo: &Repo) -> Result<RootStatus> {
         0 => Ok(RootStatus::Synced),
         n => Ok(RootStatus::Conflicts(n)),
     }
+}
+
+/// Conflicts whose live path is still in the include-list, plus the ignore
+/// file's. An untracked path keeps its staged blobs, siblings included, so
+/// they are left out rather than counted forever.
+fn open_conflicts(repo: &Repo) -> Result<Vec<conflict::Conflict>> {
+    let entries = repo.project_file()?.tracked();
+    Ok(conflict::list(&repo.git)?
+        .into_iter()
+        .filter(|c| {
+            c.live == Path::new(crate::project::IGNORE_FILE) || entries.contains_rel(&c.live)
+        })
+        .collect())
 }
 
 /// Local-only record that a remote commit's content is already in `main`.
@@ -3134,6 +3147,33 @@ mod tests {
             .resolve_conflict("proj-claude", &snap, &[sibling], &snap.live_bytes)
             .unwrap();
         assert_eq!(out, ResolveOutcome::Applied(RootStatus::Synced));
+        assert!(a.engine.conflicts("proj-claude").unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_untracked_files_conflict_is_not_counted() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.cfg.default_patterns = Some(vec!["CLAUDE.md".into(), "notes.md".into()]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "notes.md", b"mine\n");
+        add(&mut a);
+
+        let root = a.engine.root_cfg("proj-claude").unwrap();
+        let repo = a.engine.repo_for(&root).unwrap();
+        let sibling = PathBuf::from("notes.conflict-bbbbbbbb-abc1234.md");
+        fs::write(repo.staging.join(&sibling), b"theirs\n").unwrap();
+        repo.git.ok(&["add", "-A"]).unwrap();
+        repo.git.ok(&["commit", "-m", "conflict"]).unwrap();
+        assert_eq!(root_status(&repo).unwrap(), RootStatus::Conflicts(1));
+
+        assert_eq!(
+            a.engine
+                .untrack_entry("proj-claude", Path::new("notes.md"))
+                .unwrap(),
+            RootStatus::Synced
+        );
         assert!(a.engine.conflicts("proj-claude").unwrap().is_empty());
     }
 
