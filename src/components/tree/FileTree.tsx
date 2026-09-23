@@ -82,7 +82,13 @@ function conflictPathSet(views: ConflictView[]): Set<string> {
   return new Set(views.map((view) => String(view.live).replace(/\\/g, "/")));
 }
 
-function projectSizeLabel(files: TrackedFile[]): string {
+/**
+ * The footer line. An unlinked root never loads a file list, so counting its
+ * files would read as "this project is empty" rather than "nothing is being
+ * tracked here yet".
+ */
+export function projectSizeLabel(files: TrackedFile[], linked: boolean): string {
+  if (!linked) return "Not linked";
   const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
   const fileLabel = `${files.length} ${files.length === 1 ? "file" : "files"}`;
   return `${fileLabel} · ${formatBytes(totalBytes)}`;
@@ -320,6 +326,12 @@ export function FileTree() {
         {filtering && visibleTree.length === 0 ? (
           <p className="px-2 py-1.5 text-sm text-muted-foreground">No matches</p>
         ) : null}
+        {!root.linked ? (
+          <p className="px-2 py-1.5 text-sm text-muted-foreground">
+            This folder is in your cloud but not linked on this Mac. Use the
+            link button on its sidebar row to pick a local folder.
+          </p>
+        ) : null}
         {showAgentEmptyHint(root, files.length, filtering) ? (
           <p className="px-2 py-1.5 text-sm text-muted-foreground">
             Agent found on this Mac, but no files match its patterns. Use + to
@@ -351,7 +363,7 @@ export function FileTree() {
         </div>
       </div>
       <footer className="flex h-row shrink-0 items-center border-t border-border px-3 text-xs tabular-nums text-muted-foreground">
-        {projectSizeLabel(files)}
+        {projectSizeLabel(files, root.linked)}
       </footer>
       {root.linked ? (
         <>

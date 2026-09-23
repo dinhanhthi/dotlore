@@ -8,6 +8,7 @@ import type { RootRow } from "@/lib/types";
 import { pickerStateAfterIdentityChange } from "./picker";
 import {
   FileTree,
+  projectSizeLabel,
   showAgentEmptyHint,
   treeAwaitingLoad,
   treeDialogsAfterRootChange,
@@ -194,5 +195,17 @@ describe("FileTree agent empty hint", () => {
     expect(showAgentEmptyHint({ ...agent, linked: false }, 0, false)).toBe(false);
     expect(showAgentEmptyHint(agent, 0, true)).toBe(false);
     expect(showAgentEmptyHint(agent, 3, false)).toBe(false);
+  });
+});
+
+describe("projectSizeLabel", () => {
+  it("counts files for a linked root", () => {
+    expect(projectSizeLabel([{ rel: "a", bytes: 2048, state: "Synced" }], true)).toBe(
+      "1 file · 2.0 KB",
+    );
+  });
+
+  it("says Not linked instead of counting a list that was never loaded", () => {
+    expect(projectSizeLabel([], false)).toBe("Not linked");
   });
 });
