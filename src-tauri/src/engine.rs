@@ -583,8 +583,9 @@ impl Engine {
     /// The one scoped exception to "the cloud is immutable", reached only when
     /// the user asks for it. Never call it from a sync path. Every target is
     /// checked before the first delete: a symlink or a non-directory stops
-    /// the wipe with nothing removed. The home lock is dropped before the
-    /// re-adds because [`add_root`] locks again itself.
+    /// the wipe with nothing removed. The home lock is dropped before each
+    /// re-add because [`add_root`] locks again itself. A root that cannot be
+    /// added again is left unregistered and reported in `failed`.
     pub fn wipe_cloud_data(&mut self) -> Result<WipeReport> {
         let g = config::lock(&self.home)?;
         // `reload` already refuses a config without a provider folder.
@@ -607,13 +608,20 @@ impl Engine {
             fs::remove_dir_all(t).with_context(|| format!("deleting {}", t.display()))?;
         }
 
-        let roots = std::mem::take(&mut self.cfg.roots);
-        self.save(&g)?;
+        let roots = self.cfg.roots.clone();
         drop(g);
 
+        // Each root leaves the config only right before it is added again, so
+        // a crash mid-loop loses at most the root in flight; the rest stay
+        // registered and a second wipe picks them up.
         let mut readded = Vec::new();
         let mut failed = Vec::new();
         for root in roots {
+            let g = config::lock(&self.home)?;
+            self.reload(&g)?;
+            self.cfg.roots.retain(|r| r.slug != root.slug);
+            self.save(&g)?;
+            drop(g);
             match self.add_root(&root.path, Some(&root.slug)) {
                 Ok(_) => readded.push(root.slug),
                 Err(e) => failed.push((root.slug, format!("{e:#}"))),
@@ -3648,6 +3656,45 @@ mod tests {
         assert!(elsewhere.path().join("keep").is_file());
         assert!(staging(&a).join(".git").is_dir());
         assert!(cloud_of(&a).read_manifest("proj-claude").is_some());
+    }
+
+    #[test]
+    fn wipe_cloud_data_reports_a_root_it_could_not_add_again() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let gone = TempDir::new().unwrap();
+        fs::write(gone.path().join("CLAUDE.md"), b"two\n").unwrap();
+        a.engine.add_root(gone.path(), Some("gone")).unwrap();
+        let gone_path = gone.path().to_path_buf();
+        drop(gone);
+
+        let report = a.engine.wipe_cloud_data().unwrap();
+        assert_eq!(report.readded, vec!["proj-claude".to_string()]);
+        assert_eq!(report.failed.len(), 1, "{:?}", report.failed);
+        assert_eq!(report.failed[0].0, "gone");
+        assert!(!report.failed[0].1.is_empty());
+        let roots = Config::load(a.home.path()).unwrap().roots;
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].slug, "proj-claude");
+        assert!(!roots.iter().any(|r| r.path == gone_path));
+    }
+
+    #[test]
+    fn wipe_cloud_data_refuses_a_state_entry_that_is_not_a_directory() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let tmp = a.home.path().join("tmp");
+        fs::remove_dir_all(&tmp).unwrap();
+        fs::write(&tmp, b"not a dir").unwrap();
+
+        assert!(a.engine.wipe_cloud_data().is_err());
+        assert!(tmp.is_file());
+        assert!(cloud_of(&a).read_manifest("proj-claude").is_some());
+        assert!(staging(&a).join(".git").is_dir());
     }
 
     #[test]
