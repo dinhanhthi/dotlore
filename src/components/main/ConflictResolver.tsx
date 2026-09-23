@@ -1,6 +1,7 @@
 import { MergeView } from "@codemirror/merge";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { Maximize2, Minimize2 } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -87,6 +88,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
   const [discard, setDiscard] = useState<Record<string, boolean>>({});
   const [resultHeight, setResultHeight] = useState(RESULT_DEFAULT);
   const [seed, setSeed] = useState<{ key: string; text: string } | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
   const mergeParentRef = useRef<HTMLDivElement>(null);
   const resultParentRef = useRef<HTMLDivElement>(null);
@@ -142,11 +144,11 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
     const view = new MergeView({
       a: {
         doc: dto.live_text ?? "",
-        extensions: viewerExtensions(rel),
+        extensions: [...viewerExtensions(rel), EditorView.lineWrapping],
       },
       b: {
         doc: sibling?.text ?? "",
-        extensions: viewerExtensions(rel),
+        extensions: [...viewerExtensions(rel), EditorView.lineWrapping],
       },
       parent,
       highlightChanges: true,
@@ -248,31 +250,46 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
   const device = sibling?.device_name ?? "other device";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div
+      className={cn(
+        "flex min-h-0 flex-col",
+        expanded
+          ? "fixed top-titlebar right-0 bottom-0 left-0 z-40 bg-background"
+          : "h-full",
+      )}
+    >
       <header className="flex h-row shrink-0 items-center gap-2 border-b border-border px-pad-x">
         <span className="min-w-0 truncate font-mono text-xs" title={rel}>
           {rel}
         </span>
         <span className="shrink-0 text-muted-foreground">from {device}</span>
-        {dto && dto.siblings.length > 1 ? (
-          <div className="ml-auto flex min-w-0 items-center gap-1">
-            {dto.siblings.map((item, index) => (
-              <button
-                key={item.path}
-                type="button"
-                onClick={() => setSiblingIndex(index)}
-                className={cn(
-                  "h-6 shrink-0 rounded-4xl px-2.5 text-xs",
-                  index === siblingIndex
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {item.device_name}
-              </button>
-            ))}
-          </div>
-        ) : null}
+        <div className="ml-auto flex min-w-0 items-center gap-1">
+          {dto && dto.siblings.length > 1
+            ? dto.siblings.map((item, index) => (
+                <button
+                  key={item.path}
+                  type="button"
+                  onClick={() => setSiblingIndex(index)}
+                  className={cn(
+                    "h-6 shrink-0 rounded-4xl px-2.5 text-xs",
+                    index === siblingIndex
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {item.device_name}
+                </button>
+              ))
+            : null}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={expanded ? "Exit full window" : "Expand to full window"}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            {expanded ? <Minimize2 /> : <Maximize2 />}
+          </Button>
+        </div>
       </header>
 
       {notice ? (

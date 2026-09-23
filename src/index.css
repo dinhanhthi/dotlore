@@ -245,8 +245,11 @@
   overflow: auto;
 }
 
+/* The merge view scrolls as one unit: `@codemirror/merge` forces each inner
+   editor to `height: auto`, so the editor row must grow past the host instead
+   of being clamped to it — otherwise the overflow is clipped with no bar. */
 .cm-merge-host .cm-mergeViewEditors {
-  height: 100%;
+  min-height: 100%;
 }
 
 .cm-merge-host .cm-mergeViewEditor + .cm-mergeViewEditor {
