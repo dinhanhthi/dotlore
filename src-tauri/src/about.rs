@@ -12,8 +12,9 @@ use objc2::runtime::AnyObject;
 use objc2::{AnyThread, Message};
 use objc2_app_kit::{
     NSAboutPanelOptionApplicationIcon, NSAboutPanelOptionApplicationName,
-    NSAboutPanelOptionApplicationVersion, NSAboutPanelOptionCredits, NSApplication, NSImage,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSTextAlignment,
+    NSAboutPanelOptionApplicationVersion, NSAboutPanelOptionCredits, NSApplication, NSFont,
+    NSFontAttributeName, NSImage, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSTextAlignment,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSData, NSDictionary, NSMutableAttributedString, NSRange, NSSize,
@@ -114,18 +115,17 @@ fn present(mtm: MainThreadMarker, name: &str, version: &str) {
 }
 
 /// Credits sit in the panel as an attributed string. Without a centered
-/// paragraph style, AppKit left-aligns the wrapped description.
+/// paragraph style, AppKit left-aligns the wrapped description. The small
+/// system font keeps them below the name and version.
 fn centered(text: &str) -> Retained<NSMutableAttributedString> {
     let attributed = NSMutableAttributedString::from_nsstring(&NSString::from_str(text));
     let style = NSMutableParagraphStyle::new();
     style.setAlignment(NSTextAlignment::Center);
-    let len = attributed.length();
+    let font = NSFont::systemFontOfSize(NSFont::smallSystemFontSize());
+    let range = NSRange::new(0, attributed.length());
     unsafe {
-        attributed.addAttribute_value_range(
-            NSParagraphStyleAttributeName,
-            &style,
-            NSRange::new(0, len),
-        );
+        attributed.addAttribute_value_range(NSParagraphStyleAttributeName, &style, range);
+        attributed.addAttribute_value_range(NSFontAttributeName, &font, range);
     }
     attributed
 }

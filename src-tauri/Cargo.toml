@@ -28,6 +28,7 @@ objc2-app-kit = { version = "0.3.0", default-features = false, features = [
     "std",
     "NSApplication",
     "NSAttributedString",
+    "NSFont",
     "NSImage",
     "NSParagraphStyle",
     "NSText",
