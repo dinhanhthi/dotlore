@@ -480,6 +480,8 @@ const handlers: Record<
   icloud_dir: () => icloudPath(),
   list_gdrive_mounts: () => gdriveMounts(),
   login_item_enabled: () => store.loginItem,
+  update_available: () => null,
+  prompt_update: () => undefined,
   set_login_item: (args) => {
     store.loginItem = Boolean(args.on);
   },

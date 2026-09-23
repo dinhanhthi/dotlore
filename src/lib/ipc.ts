@@ -464,3 +464,35 @@ export function listenStatus(
     handler(event.payload);
   });
 }
+
+/** `dotlore://update-progress`, from `updater.rs`. */
+export type UpdateProgress =
+  | { phase: "downloading"; percent: number | null }
+  | { phase: "installing" }
+  | { phase: "idle" };
+
+/** The version the last update check found, or null. */
+export function updateAvailable(): Promise<string | null> {
+  return invoke("update_available");
+}
+
+/** Open the native install prompt for the update already found. */
+export function promptUpdate(): Promise<void> {
+  return invoke("prompt_update");
+}
+
+export function listenUpdate(
+  handler: (version: string | null) => void,
+): Promise<UnlistenFn> {
+  return listen<string | null>("dotlore://update", (event) => {
+    handler(event.payload);
+  });
+}
+
+export function listenUpdateProgress(
+  handler: (progress: UpdateProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<UpdateProgress>("dotlore://update-progress", (event) => {
+    handler(event.payload);
+  });
+}

@@ -1,5 +1,6 @@
 import { Moon, Sun } from "lucide-react";
 
+import { UpdateBadge } from "@/components/layout/UpdateBadge";
 import { SettingsPopover } from "@/components/settings/SettingsPopover";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,6 +40,7 @@ function ThemeToggle() {
 export function TitleBarActions() {
   return (
     <div className="flex shrink-0 items-center gap-0.5 pr-2">
+      <UpdateBadge />
       <ThemeToggle />
       <SettingsPopover />
     </div>

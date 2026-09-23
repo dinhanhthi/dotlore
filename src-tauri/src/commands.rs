@@ -36,6 +36,7 @@ use crate::project;
 use crate::login_item;
 use crate::state::{load_cfg, AppState, RootRow, StatusPayload};
 use crate::tray::one_line;
+use crate::updater;
 
 /// Inside `~`, where iCloud Drive's Documents folder lives.
 const ICLOUD: &str = "Library/Mobile Documents/com~apple~CloudDocs";
@@ -861,6 +862,18 @@ pub fn login_item_enabled(state: State<'_, AppState>) -> bool {
 #[tauri::command]
 pub fn set_login_item(state: State<'_, AppState>, on: bool) -> Result<(), String> {
     login_item::set(&state.home_dir, on).map_err(front_err)
+}
+
+/// The version the last update check found, if any.
+#[tauri::command]
+pub fn update_available(app: AppHandle) -> Option<String> {
+    updater::available_version(&app)
+}
+
+/// The title-bar badge: the same prompt the menu-bar row opens.
+#[tauri::command]
+pub fn prompt_update(app: AppHandle) {
+    updater::prompt_available(&app);
 }
 
 /// Run `Engine::resolve_conflict` on a blocking thread, then map

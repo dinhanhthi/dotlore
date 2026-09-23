@@ -63,8 +63,9 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             app.manage(AppState::new(home, home_dir));
             app.state::<AppState>().start_runtime(app.handle());
             about::install(app)?;
-            updater::install(app)?;
+            // The tray listens for `dotlore://update` before the first check runs.
             tray::build(app)?;
+            updater::install(app)?;
             show_window(app.handle());
 
             Ok(())
@@ -108,6 +109,8 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::icloud_dir,
             commands::login_item_enabled,
             commands::set_login_item,
+            commands::update_available,
+            commands::prompt_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while running Dotlore")
