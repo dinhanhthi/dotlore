@@ -75,6 +75,7 @@ export function Footer() {
     selectedSlug,
     resolvingRel,
     openResolver,
+    showConflicts,
   } = useRoots();
   const syncing = useSyncing();
   const trackLabel = useTrackLabel();
@@ -150,16 +151,25 @@ export function Footer() {
             <span className="truncate">Working…</span>
           </>
         ) : status.glyph === "warn" ? (
-          <span className={cn("shrink-0 leading-none", status.color)} aria-hidden>
-            ▲
-          </span>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="-ml-1.5 min-w-0 gap-2 px-1.5 font-normal"
+            aria-label={`${status.text} — show them`}
+            onClick={showConflicts}
+          >
+            <span className={cn("shrink-0 leading-none", status.color)} aria-hidden>
+              ▲
+            </span>
+            <span className="truncate">{status.text}</span>
+          </Button>
         ) : (
           <span
             className={cn("size-2.5 shrink-0 rounded-full", status.color)}
             aria-hidden
           />
         )}
-        {!trackLabel && seeding.length === 0 && !busy && (
+        {!trackLabel && seeding.length === 0 && !busy && status.glyph !== "warn" && (
           <span className="truncate">{status.text}</span>
         )}
         <Tooltip>
