@@ -1,7 +1,14 @@
 import { Chunk, MergeView } from "@codemirror/merge";
 import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { ChevronDown, ChevronUp, CircleHelp, Maximize2, Minimize2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  CircleHelp,
+  Loader2,
+  Maximize2,
+  Minimize2,
+} from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -631,7 +638,14 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
                 }}
                 disabled={locked || !dto || resolving}
               >
-                Resolve
+                {resolving ? (
+                  <>
+                    <Loader2 className="animate-spin" aria-hidden />
+                    Resolving…
+                  </>
+                ) : (
+                  "Resolve"
+                )}
               </Button>
             )
           ) : null}
