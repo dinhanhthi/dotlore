@@ -8,7 +8,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { setBanner, wipeCloudData } from "@/lib/ipc";
+import { BLOCKED, setBanner, wipeCloudData } from "@/lib/ipc";
 import { useRoots, useTaskLabel } from "@/lib/roots";
 
 type WipeCloudDataAlertProps = {
@@ -29,7 +29,7 @@ export function WipeCloudDataAlert({
     onOpenChange(false);
     try {
       const report = await wipeCloudData();
-      if (report === null) return;
+      if (report === BLOCKED) return;
       await refreshRoots();
       if (report.failed.length > 0) {
         const slugs = report.failed.map((f) => f.slug).join(", ");

@@ -26,6 +26,7 @@ import { errorMessage } from "@/lib/errors";
 import {
   answerTrackConfirm,
   applyTrackBatch,
+  BLOCKED,
   listEntryChildren,
   untrackEntry,
 } from "@/lib/ipc";
@@ -484,7 +485,7 @@ export function UntrackEntryDialog({
     if (entry === null || locked) return;
     try {
       onOpenChange(false);
-      if ((await untrackEntry(slug, entry.key.replace(/\/$/, ""))) === null) {
+      if ((await untrackEntry(slug, entry.key.replace(/\/$/, ""))) === BLOCKED) {
         return;
       }
       onMutated();

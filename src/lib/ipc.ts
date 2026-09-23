@@ -114,17 +114,26 @@ async function run<T>(op: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Returned by [`runTask`] when another task already holds the slot.
+ *
+ * A symbol, not `null`: Tauri serializes a command returning `()` as `null`,
+ * so a `null` sentinel makes a successful void write indistinguishable from
+ * a refused one and the caller skips its follow-up refresh.
+ */
+export const BLOCKED = Symbol("blocked");
+
+/**
  * Run a write in the background: the footer shows `label` with a spinner and
- * the rest of the window stays usable. Null when another task already holds
- * the slot.
+ * the rest of the window stays usable. [`BLOCKED`] when another task already
+ * holds the slot.
  */
 export async function runTask<T>(
   label: string,
   op: () => Promise<T>,
-): Promise<T | null> {
+): Promise<T | typeof BLOCKED> {
   if (taskLabel !== null || confirmResolve !== null) {
     setBanner("Wait for the current task to finish");
-    return null;
+    return BLOCKED;
   }
   setTaskLabel(label);
   try {
@@ -169,7 +178,7 @@ export function resolveConflict(
   rel: string,
   discardSiblings: string[],
   content: string,
-): Promise<ResolveResultDto | null> {
+): Promise<ResolveResultDto | typeof BLOCKED> {
   return runTask(`Resolving ${rel}…`, () =>
     invoke<ResolveResultDto>("resolve_conflict", {
       slug,
@@ -186,7 +195,7 @@ export function resolveBinary(
   rel: string,
   keep: "live" | "other",
   sibling?: string | null,
-): Promise<ResolveResultDto | null> {
+): Promise<ResolveResultDto | typeof BLOCKED> {
   return runTask(`Resolving ${rel}…`, () =>
     invoke<ResolveResultDto>("resolve_binary", {
       slug,
@@ -214,7 +223,7 @@ export function syncNow(): Promise<void> {
   });
 }
 
-export function setProvider(dir: string): Promise<void | null> {
+export function setProvider(dir: string): Promise<void | typeof BLOCKED> {
   return runTask("Switching cloud folder…", () =>
     invoke<void>("set_provider", { dir }),
   );
@@ -228,19 +237,19 @@ export function addRoot(path: string, slug?: string): Promise<string> {
   return invoke("add_root", { path, slug: slug ?? null });
 }
 
-export function importInstalledAgents(): Promise<ImportAgentsDto | null> {
+export function importInstalledAgents(): Promise<ImportAgentsDto | typeof BLOCKED> {
   return runTask("Looking for agent folders…", () =>
     invoke<ImportAgentsDto>("import_installed_agents"),
   );
 }
 
-export function linkRoot(slug: string, path: string): Promise<void | null> {
+export function linkRoot(slug: string, path: string): Promise<void | typeof BLOCKED> {
   return runTask(`Linking ${slug}…`, () =>
     invoke<void>("link_root", { slug, path }),
   );
 }
 
-export function removeRoot(slug: string): Promise<void | null> {
+export function removeRoot(slug: string): Promise<void | typeof BLOCKED> {
   return runTask(`Removing ${slug}…`, () =>
     invoke<void>("remove_root", { slug }),
   );
@@ -253,13 +262,13 @@ export type WipeReport = {
 
 export const WIPE_LABEL = "Wiping cloud data…";
 
-export function wipeCloudData(): Promise<WipeReport | null> {
+export function wipeCloudData(): Promise<WipeReport | typeof BLOCKED> {
   return runTask(WIPE_LABEL, () =>
     invoke<WipeReport>("wipe_cloud_data"),
   );
 }
 
-export function recoverRoot(slug: string): Promise<void | null> {
+export function recoverRoot(slug: string): Promise<void | typeof BLOCKED> {
   return runTask(`Rebuilding ${slug}…`, () =>
     invoke<void>("recover_root", { slug }),
   );
@@ -304,7 +313,7 @@ export function trackEntry(
 export function untrackEntry(
   slug: string,
   rel: string,
-): Promise<EntryView[] | null> {
+): Promise<EntryView[] | typeof BLOCKED> {
   return runTask(`Untracking ${rel}…`, () =>
     invoke<EntryView[]>("untrack_entry", { slug, rel }),
   );

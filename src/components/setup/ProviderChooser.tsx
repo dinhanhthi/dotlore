@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { errorMessage } from "@/lib/errors";
-import { icloudDir, listGdriveMounts, setProvider } from "@/lib/ipc";
+import { BLOCKED, icloudDir, listGdriveMounts, setProvider } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { useRoots } from "@/lib/roots";
 
@@ -50,7 +50,7 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
    */
   async function apply(dir: string) {
     onApplied?.();
-    if ((await setProvider(dir)) === null) return;
+    if ((await setProvider(dir)) === BLOCKED) return;
     applyProvider(dir);
   }
 

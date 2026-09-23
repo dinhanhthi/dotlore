@@ -14,7 +14,8 @@ import {
 } from "./SettingsPopover";
 import { WipeCloudDataAlert } from "./WipeCloudDataAlert";
 
-const { wipeCloudData, setBanner, clicks } = vi.hoisted(() => ({
+const { BLOCKED, wipeCloudData, setBanner, clicks } = vi.hoisted(() => ({
+  BLOCKED: Symbol("blocked"),
   wipeCloudData: vi.fn(
     async (): Promise<{
       readded: string[];
@@ -66,6 +67,7 @@ vi.mock("@/components/ui/alert-dialog", async () => {
 });
 
 vi.mock("@/lib/ipc", () => ({
+  BLOCKED,
   wipeCloudData,
   setBanner,
   WIPE_LABEL: "Wiping cloud data…",
@@ -334,7 +336,10 @@ describe("Wipe cloud data", () => {
 
   it("does not refresh when the task slot is taken", async () => {
     wipeCloudData.mockResolvedValueOnce(
-      null as unknown as { readded: string[]; failed: { slug: string; error: string }[] },
+      BLOCKED as unknown as {
+        readded: string[];
+        failed: { slug: string; error: string }[];
+      },
     );
     const refreshRoots = vi.fn(async () => {});
     renderAlert({ refreshRoots });

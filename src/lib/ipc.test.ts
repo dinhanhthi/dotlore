@@ -9,7 +9,14 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { getWorkSnapshot, listLinkable, runTask, trackedFiles } from "./ipc";
+import {
+  BLOCKED,
+  getWorkSnapshot,
+  listLinkable,
+  removeRoot,
+  runTask,
+  trackedFiles,
+} from "./ipc";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -65,9 +72,20 @@ describe("runTask", () => {
     const first = runTask("Rebuilding x…", async () => {
       return await runTask("Wiping cloud data…", second);
     });
-    await expect(first).resolves.toBeNull();
+    await expect(first).resolves.toBe(BLOCKED);
     expect(second).not.toHaveBeenCalled();
     expect(getWorkSnapshot().banner).toBe("Wait for the current task to finish");
     expect(getWorkSnapshot().taskLabel).toBeNull();
+  });
+
+  /**
+   * Tauri serializes a command returning `()` as `null`, so a `null` refusal
+   * sentinel made a successful void write look refused and every caller
+   * skipped its follow-up refresh.
+   */
+  it("does not mistake a command's null payload for a refusal", async () => {
+    invokeMock.mockResolvedValue(null);
+    await expect(removeRoot("dotlore")).resolves.not.toBe(BLOCKED);
+    expect(invokeMock).toHaveBeenCalledWith("remove_root", { slug: "dotlore" });
   });
 });

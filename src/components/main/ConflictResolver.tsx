@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { Button } from "@/components/ui/button";
 import { editorExtensions, viewerExtensions } from "@/lib/cm";
 import {
+  BLOCKED,
   closeResolution,
   openResolution,
   resolveBinary,
@@ -214,7 +215,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
     setResolving(true);
     try {
       const result = await resolveConflict(slug, rel, discardSiblings, content);
-      if (result === null) return;
+      if (result === BLOCKED) return;
       await applyOutcome(result);
     } catch {
       // Banner is set by `runTask()`.
@@ -234,7 +235,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
         keep,
         keep === "other" ? (sibling?.path ?? null) : null,
       );
-      if (result === null) return;
+      if (result === BLOCKED) return;
       await applyOutcome(result);
     } catch {
       // Banner is set by `runTask()`.

@@ -29,6 +29,7 @@ import { uniqueConflictRels } from "@/lib/conflicts";
 import { errorMessage } from "@/lib/errors";
 import {
   addRoot,
+  BLOCKED,
   conflicts as fetchConflicts,
   gitMissing as fetchGitMissing,
   getWorkSnapshot,
@@ -65,7 +66,8 @@ async function importAgentsWhenReady(dir: string | null): Promise<void> {
   if (dir === null) return;
   try {
     const report = await importInstalledAgents();
-    const first = report?.failed[0];
+    if (report === BLOCKED) return;
+    const first = report.failed[0];
     if (first) setBanner(first.message);
   } catch {
     // `runTask` already stored the command error for the toast.

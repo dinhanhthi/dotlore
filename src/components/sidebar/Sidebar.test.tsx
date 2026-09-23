@@ -20,6 +20,7 @@ const { importInstalledAgents, setBanner, refreshClicks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/ipc", () => ({
+  BLOCKED: Symbol("blocked"),
   importInstalledAgents,
   setBanner,
   subscribeWork: () => () => {},

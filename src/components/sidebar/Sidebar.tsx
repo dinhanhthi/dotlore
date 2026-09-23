@@ -8,7 +8,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { importInstalledAgents, linkRoot, recoverRoot, setBanner } from "@/lib/ipc";
+import { BLOCKED, importInstalledAgents, linkRoot, recoverRoot, setBanner } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { compareRoots } from "@/lib/order";
 import { conflictCount, conflictTotal, useRoots } from "@/lib/roots";
@@ -161,7 +161,7 @@ export function Sidebar() {
     try {
       try {
         const report = await importInstalledAgents();
-        if (report === null) return;
+        if (report === BLOCKED) return;
         const first = report.failed[0];
         if (first) setBanner(first.message);
       } catch {
@@ -177,7 +177,7 @@ export function Sidebar() {
   async function handleRecover(slug: string) {
     if (locked) return;
     try {
-      if ((await recoverRoot(slug)) === null) return;
+      if ((await recoverRoot(slug)) === BLOCKED) return;
       await refreshRoots();
     } catch {
       // Banner is set by `runTask()`.
@@ -189,7 +189,7 @@ export function Sidebar() {
     const path = await pickLocalPath();
     if (path === null) return;
     try {
-      if ((await linkRoot(slug, path)) === null) return;
+      if ((await linkRoot(slug, path)) === BLOCKED) return;
       await refreshRoots();
       selectRoot(slug);
     } catch {

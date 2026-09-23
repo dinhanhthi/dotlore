@@ -8,7 +8,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { removeRoot } from "@/lib/ipc";
+import { BLOCKED, removeRoot } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
 
 type RemoveRootAlertProps = {
@@ -31,7 +31,7 @@ export function RemoveRootAlert({
     if (slug === null || locked) return;
     onOpenChange(false);
     try {
-      if ((await removeRoot(slug)) === null) return;
+      if ((await removeRoot(slug)) === BLOCKED) return;
       await refreshRoots();
     } catch {
       // Banner is set by `runTask()`.
