@@ -237,7 +237,10 @@ export function Footer() {
         </div>
       ) : (
         <div className="shrink-0 tabular-nums">
-          {roots.length} roots · {filesTracked} files tracked ·{" "}
+          {roots.length === allRoots.length
+            ? `${roots.length} roots`
+            : `${roots.length} of ${allRoots.length} roots linked`}{" "}
+          · {filesTracked} files tracked ·{" "}
           {formatBytes(bytesTracked)} · {conflicts} conflicts
         </div>
       )}

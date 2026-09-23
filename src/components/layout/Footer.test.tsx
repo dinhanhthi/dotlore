@@ -94,7 +94,13 @@ describe("conflict entry point", () => {
     const html = wrap(<Footer />, { roots: [row("a", { kind: "Synced" }), unlinked] });
     expect(html).toContain("Synced");
     expect(html).not.toContain("Pending");
-    expect(html).toContain("1 roots");
+    expect(html).toContain("1 of 2 roots linked");
+  });
+
+  it("shows a plain root count when every root is linked", () => {
+    const html = wrap(<Footer />, { roots: [row("a", { kind: "Synced" }), row("b", { kind: "Synced" })] });
+    expect(html).toContain("2 roots ·");
+    expect(html).not.toContain("linked");
   });
 
   it("shows a loading state instead of the status while roots are loading", () => {
