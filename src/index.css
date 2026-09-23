@@ -190,6 +190,12 @@
   transition-timing-function: var(--ease-out);
 }
 
+/* WKWebView repaints a rotating inline SVG every frame and pixel-snaps its
+   bounding box, so spinners wobble off-center. Its own layer rotates cleanly. */
+.animate-spin {
+  will-change: transform;
+}
+
 /* Classic 6px bars, flush with the panel edge. The outer side of the thumb is
    square so it sits on the border; scrollbar-width/scrollbar-color paint an
    inset thumb inside a wider track. */
