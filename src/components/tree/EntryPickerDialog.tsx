@@ -464,6 +464,7 @@ export function TrackConfirmDialog() {
 type UntrackEntryDialogProps = {
   slug: string;
   entry: EntryView | null;
+  entries: EntryView[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onMutated: () => void;
@@ -472,6 +473,7 @@ type UntrackEntryDialogProps = {
 export function UntrackEntryDialog({
   slug,
   entry,
+  entries,
   open,
   onOpenChange,
   onMutated,
@@ -499,7 +501,7 @@ export function UntrackEntryDialog({
             Untrack {entry?.key ?? "entry"}?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {entry ? untrackCopy(entry) : ""}
+            {entry ? untrackCopy(entry, entries) : ""}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

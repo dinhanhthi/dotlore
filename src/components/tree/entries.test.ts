@@ -49,20 +49,20 @@ describe("parentRel", () => {
 
 describe("untrackCopy", () => {
   it("says the entry is removed on every Mac and files stay on disk", () => {
-    const text = untrackCopy(claude);
+    const text = untrackCopy(claude, [claude]);
     expect(text).toMatch(/every Mac/);
     expect(text).toMatch(/stay on disk/);
   });
 
   it("says an inherited path is excluded from its covering folder", () => {
-    const text = untrackCopy(readme);
+    const text = untrackCopy(readme, [readme]);
     expect(text).toContain("docs/");
     expect(text.toLowerCase()).toContain("excluded");
     expect(text.toLowerCase()).toContain("stops syncing");
   });
 
   it("promises files stop syncing only when nothing else covers them", () => {
-    expect(untrackCopy(claude).toLowerCase()).toContain("stop syncing");
+    expect(untrackCopy(claude, [claude]).toLowerCase()).toContain("stop syncing");
   });
 });
 
@@ -85,6 +85,25 @@ describe("untrackTarget", () => {
       kind: "directory",
       covering: ["docs/"],
     });
+  });
+
+  it("targets a folder that only holds explicit entries", () => {
+    const json: EntryView = { key: "plugins/a.json", kind: "file", covering: [] };
+    expect(untrackTarget("plugins", "folder", [json])).toEqual({
+      key: "plugins/",
+      kind: "directory",
+      covering: [],
+    });
+  });
+
+  it("describes a folder target as removing the entries under it", () => {
+    const json: EntryView = { key: "plugins/a.json", kind: "file", covering: [] };
+    const target = untrackTarget("plugins", "folder", [json])!;
+    expect(untrackCopy(target, [json])).toContain("Every include entry under plugins/");
+  });
+
+  it("returns null for a folder with no entry at or under it", () => {
+    expect(untrackTarget("other", "folder", [docs])).toBeNull();
   });
 });
 

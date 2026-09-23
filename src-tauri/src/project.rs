@@ -579,6 +579,7 @@ impl ProjectFile {
     pub fn untrack_as(&mut self, rel: &Path, as_directory: Option<bool>) -> Result<()> {
         if let Some(key) = self.explicit_key(rel) {
             if self.entries[&key].state == State::Removed {
+                self.tombstone_children(rel);
                 return Ok(());
             }
             self.tombstone(key);
@@ -597,10 +598,29 @@ impl ProjectFile {
             self.tombstone(key);
             return Ok(());
         }
+        if self.tombstone_children(rel) {
+            return Ok(());
+        }
         bail!(
             "cannot untrack {}: not an explicit include entry",
             rel.display()
         );
+    }
+
+    /// Tombstone every tracked key under `rel`. False when there is none.
+    fn tombstone_children(&mut self, rel: &Path) -> bool {
+        let base = path_key(rel);
+        let children: Vec<String> = self
+            .tracked()
+            .keys
+            .into_iter()
+            .filter(|k| !base.is_empty() && is_under(k, &base))
+            .collect();
+        let found = !children.is_empty();
+        for key in children {
+            self.tombstone(key);
+        }
+        found
     }
 
     fn tombstone(&mut self, key: String) {
@@ -895,6 +915,31 @@ mod tests {
         assert!(list.contains_rel(Path::new("docs/other.md")));
         file.untrack(Path::new("docs/foo.md")).unwrap();
         assert_eq!(file.entries["docs/foo.md"].state, State::Removed);
+    }
+
+    #[test]
+    fn untracking_a_folder_of_explicit_entries_tombstones_each_entry() {
+        let mut file = pf(&[
+            ("plugins/a.json", 1, State::Tracked),
+            ("plugins/sub/", 1, State::Tracked),
+            ("plugins.md", 1, State::Tracked),
+        ]);
+        file.untrack_as(Path::new("plugins"), Some(true)).unwrap();
+        assert_eq!(file.entries["plugins/a.json"].state, State::Removed);
+        assert_eq!(file.entries["plugins/sub/"].state, State::Removed);
+        assert_eq!(file.entries["plugins.md"].state, State::Tracked);
+        assert!(!file.entries.contains_key("plugins/"));
+    }
+
+    #[test]
+    fn untracking_a_removed_folder_still_tombstones_its_explicit_entries() {
+        let mut file = pf(&[
+            ("plugins/", 2, State::Removed),
+            ("plugins/a.json", 1, State::Tracked),
+        ]);
+        file.untrack_as(Path::new("plugins"), Some(true)).unwrap();
+        assert_eq!(file.entries["plugins/a.json"].state, State::Removed);
+        assert_eq!(file.entries["plugins/"].state, State::Removed);
     }
 
     #[test]

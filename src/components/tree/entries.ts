@@ -31,15 +31,21 @@ export function parentRel(rel: string): string | null {
   return index === -1 ? "" : rel.slice(0, index);
 }
 
-export function untrackCopy(entry: EntryView): string {
+export function untrackCopy(entry: EntryView, entries: EntryView[]): string {
   const stay = "Files stay on disk.";
   if (entry.covering.length > 0) {
     return `This path stops syncing on every Mac. ${stay} ${entry.key} is excluded from ${entry.covering.join(", ")}.`;
   }
+  if (!entries.some((listed) => listed.key === entry.key)) {
+    return `Every include entry under ${entry.key} is removed on every Mac. ${stay} Files under this folder will stop syncing.`;
+  }
   return `The include entry ${entry.key} is removed on every Mac. ${stay} Files under this entry will stop syncing.`;
 }
 
-/** Explicit entry, or a synthesized hole-punch target for an inherited path. */
+/**
+ * Explicit entry, a synthesized hole-punch target for an inherited path, or a
+ * folder target that removes every explicit entry under it.
+ */
 export function untrackTarget(
   path: string,
   kind: "file" | "folder",
@@ -48,7 +54,13 @@ export function untrackTarget(
   const explicit = explicitEntry(path, entries);
   if (explicit) return explicit;
   const covering = coveringEntry(path, entries);
-  if (!covering) return null;
+  if (!covering) {
+    const base = path.replace(/\/$/, "");
+    if (kind !== "folder" || !entries.some((entry) => entry.key.startsWith(`${base}/`))) {
+      return null;
+    }
+    return { key: `${base}/`, kind: "directory", covering: [] };
+  }
   return {
     key: kind === "folder" ? `${path.replace(/\/$/, "")}/` : path,
     kind: kind === "folder" ? "directory" : "file",

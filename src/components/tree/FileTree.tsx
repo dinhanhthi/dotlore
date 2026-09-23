@@ -368,6 +368,7 @@ export function FileTree() {
             key={`untrack-${root.slug}`}
             slug={root.slug}
             entry={untrackTarget}
+            entries={entries}
             open={untrackTarget !== null}
             onOpenChange={(next) => {
               if (!next) setUntrackTarget(null);
