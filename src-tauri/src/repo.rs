@@ -361,6 +361,30 @@ impl Repo {
         Ok(devices)
     }
 
+    /// Whether a bundle still in the cloud carries `commit`: one of ours, or
+    /// one from a device whose fetched head contains it.
+    fn cloud_carries(&self, cloud: &Cloud, key: &str, commit: &str) -> Result<bool> {
+        if cloud.has_bundles(&self.slug, &self.my_id)? {
+            return Ok(true);
+        }
+        let prefix = format!("refs/remotes/{key}/");
+        let refs = self
+            .git
+            .ok(&["for-each-ref", "--format=%(refname) %(objectname)", &prefix])?;
+        for (r, head) in refs.lines().filter_map(|l| l.split_once(' ')) {
+            let Some(d) = r
+                .strip_prefix(&prefix)
+                .and_then(|d| d.strip_suffix("/main"))
+            else {
+                continue;
+            };
+            if self.git.is_ancestor(commit, head) && cloud.has_bundles(&self.slug, d)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Bundle `main` into the provider folder, unless it is already there.
     ///
     /// The sequence number is reserved durably *before* the cloud is touched,
@@ -372,7 +396,13 @@ impl Repo {
         };
         let key = provider_key(cloud);
         let sent_ref = format!("refs/dotlore/sent/{key}");
-        let sent = self.git.rev(&sent_ref);
+        // A provider folder that lost our bundles (a Google account removed
+        // and added again comes back at the same path) must get the whole
+        // history again, not an increment on bundles nobody can read.
+        let sent = match self.git.rev(&sent_ref) {
+            Some(s) if self.cloud_carries(cloud, &key, &s)? => Some(s),
+            _ => None,
+        };
         if sent.as_deref() == Some(main.as_str()) {
             return Ok(None);
         }

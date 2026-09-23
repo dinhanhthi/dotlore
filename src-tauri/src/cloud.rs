@@ -13,7 +13,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 /// Per-slug metadata, written once by the device that creates the slug.
@@ -219,6 +219,30 @@ impl Cloud {
             .map(|b| b.seq)
             .max()
             .unwrap_or(0)
+    }
+
+    /// Whether `device` has any bundle for `slug`, iCloud stubs included: an
+    /// evicted bundle is still in the cloud, a wiped one is not. Only a
+    /// missing directory or an empty listing is "none"; any other read error
+    /// is returned, since the caller republishes everything on `false`.
+    pub fn has_bundles(&self, slug: &str, device: &str) -> Result<bool> {
+        let dir = checked(&self.slug_dir(slug)?.join("devices"), device)?;
+        let files = match fs::read_dir(&dir) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e).with_context(|| format!("listing {}", dir.display())),
+        };
+        Ok(files.flatten().any(|f| {
+            let Ok(name) = f.file_name().into_string() else {
+                return false;
+            };
+            let name = name
+                .strip_prefix('.')
+                .and_then(|n| n.strip_suffix(".icloud"))
+                .unwrap_or(&name);
+            name.strip_suffix(".bundle")
+                .is_some_and(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_digit()))
+        }))
     }
 
     /// Install `src` as `<seq:06>.bundle` without ever replacing an existing

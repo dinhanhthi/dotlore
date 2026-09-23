@@ -1210,6 +1210,26 @@ impl Engine {
         if !root_present(&root.path) {
             return Ok(RootStatus::RootMissing);
         }
+        // An unmounted cloud folder (a Google account signed out) must not be
+        // recreated as a plain local folder the provider never uploads.
+        let provider = cloud.base.parent().unwrap_or(&cloud.base);
+        if !provider.is_dir() {
+            bail!("provider folder {} is missing", provider.display());
+        }
+        // The cloud lost this slug under us: list it again so other devices
+        // can link it; `publish` then sends the whole history.
+        if repo.has_main() && !cloud.has_bundles(&root.slug, &self.cfg.device_id)? {
+            cloud.write_manifest_once(&Manifest {
+                slug: root.slug.clone(),
+                display_name: root
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| root.slug.clone()),
+                is_agent: root.is_agent(&self.home_dir),
+            })?;
+            cloud.write_device_name_once(&root.slug, &self.cfg.device_id, &self.cfg.device_name)?;
+        }
 
         let key = provider_key(cloud);
         let pending = match repo.pending_tx(conflict::resolve_index)? {
@@ -2723,6 +2743,104 @@ mod tests {
             RootStatus::RootMissing
         );
         assert!(!path.exists(), "the deleted root was recreated");
+    }
+
+    /// A Google account removed and added again brings the provider folder
+    /// back at the same path without our bundles: `sent` must not be trusted.
+    #[test]
+    fn a_provider_folder_that_lost_our_bundles_is_republished_whole() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let cloud = cloud_of(&a);
+        let a_id = "a".repeat(32);
+        let before = cloud.max_seq("proj-claude", &a_id);
+
+        fs::remove_dir_all(&cloud.base).unwrap();
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert!(cloud.read_manifest("proj-claude").is_some());
+        assert!(cloud.has_bundles("proj-claude", &a_id).unwrap());
+
+        // Numbering carries on from local state, never reusing a seq.
+        let seqs: Vec<u64> = cloud
+            .list_bundles("proj-claude")
+            .iter()
+            .map(|b| b.seq)
+            .collect();
+        assert!(seqs.iter().all(|s| *s > before), "{seqs:?}");
+
+        let mut b = device(provider.path(), 'b');
+        let b_root = b.root.path().to_path_buf();
+        b.engine.link_root("proj-claude", &b_root).unwrap();
+        assert_eq!(fs::read(b_root.join("CLAUDE.md")).unwrap(), b"one\n");
+    }
+
+    #[test]
+    fn an_evicted_own_bundle_is_not_republished() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let dir = cloud_of(&a)
+            .slug_dir("proj-claude")
+            .unwrap()
+            .join("devices")
+            .join("a".repeat(32));
+        fs::rename(dir.join("000001.bundle"), dir.join(".000001.bundle.icloud")).unwrap();
+
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert!(cloud_of(&a).list_bundles("proj-claude").is_empty());
+    }
+
+    /// A listing that fails is not a listing that came back empty: the
+    /// cloud is immutable, so a spurious full republish could never be undone.
+    #[test]
+    fn an_unreadable_own_device_folder_is_an_error_not_a_republish() {
+        use std::os::unix::fs::PermissionsExt;
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let dir = cloud_of(&a)
+            .slug_dir("proj-claude")
+            .unwrap()
+            .join("devices")
+            .join("a".repeat(32));
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        let status = a.engine.sync_root("proj-claude").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(status, RootStatus::Error(_)), "{status:?}");
+        let seqs: Vec<u64> = cloud_of(&a)
+            .list_bundles("proj-claude")
+            .iter()
+            .map(|b| b.seq)
+            .collect();
+        assert_eq!(seqs, vec![1]);
+    }
+
+    #[test]
+    fn a_missing_provider_folder_is_an_error_and_is_not_recreated() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let provider_dir = cloud_of(&a).base.parent().unwrap().to_path_buf();
+
+        fs::remove_dir_all(&provider_dir).unwrap();
+        write(&a, "CLAUDE.md", b"two\n");
+        match a.engine.sync_root("proj-claude").unwrap() {
+            RootStatus::Error(e) => assert!(e.contains("is missing"), "{e}"),
+            other => panic!("expected an error, got {other:?}"),
+        }
+        assert!(!provider_dir.exists());
     }
 
     #[test]
