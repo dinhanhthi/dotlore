@@ -1,3 +1,30 @@
+## v0.2.0 (2026-09-23)
+
+### Conflicts
+
+- A dedicated Conflicts view, reachable from the sidebar and the footer status, lists every unresolved conflict across projects.
+- A collapsed sidebar section header flags conflicts inside it, so they are never hidden by collapsing the list.
+- The two sides of a conflict are labeled "on this Mac" and "from cloud", with a vertical divider between them and the conflict status colour tinting the icons. [#85f007b9](https://github.com/dinhanhthi/dotlore/commit/85f007b9) [#01d9d0a3](https://github.com/dinhanhthi/dotlore/commit/01d9d0a3) [#235de343](https://github.com/dinhanhthi/dotlore/commit/235de343) [#e91d89c7](https://github.com/dinhanhthi/dotlore/commit/e91d89c7) [#42f1fb81](https://github.com/dinhanhthi/dotlore/commit/42f1fb81) [#022997a1](https://github.com/dinhanhthi/dotlore/commit/022997a1) [#88130dc4](https://github.com/dinhanhthi/dotlore/commit/88130dc4)
+
+### Settings
+
+- A "Wipe cloud data" button in Settings, behind a confirm dialog, clears the cloud folder and re-seeds every root. [#bdaa1e0d](https://github.com/dinhanhthi/dotlore/commit/bdaa1e0d) [#df0f9e55](https://github.com/dinhanhthi/dotlore/commit/df0f9e55) [#bd05db67](https://github.com/dinhanhthi/dotlore/commit/bd05db67) [#fde915e5](https://github.com/dinhanhthi/dotlore/commit/fde915e5) [#2316b327](https://github.com/dinhanhthi/dotlore/commit/2316b327)
+- The cloud folder is picked through a provider and account dropdown instead of a raw path. [#a2f4f3e7](https://github.com/dinhanhthi/dotlore/commit/a2f4f3e7)
+- Seed list controls sit on one compact row with the hint below. [#9f4ba5ae](https://github.com/dinhanhthi/dotlore/commit/9f4ba5ae)
+- Default seed patterns for agents were trimmed down. [#3c07839a](https://github.com/dinhanhthi/dotlore/commit/3c07839a) [#224f5d0a](https://github.com/dinhanhthi/dotlore/commit/224f5d0a)
+
+### Desktop app
+
+- Wipe, provider switch, agent import, and other slow writes now run as footer tasks instead of freezing the window. [#3891cc98](https://github.com/dinhanhthi/dotlore/commit/3891cc98) [#2316b327](https://github.com/dinhanhthi/dotlore/commit/2316b327)
+- Dropdowns close as soon as an item is picked. [#913a7e50](https://github.com/dinhanhthi/dotlore/commit/913a7e50)
+- Spinning icons stay centered while rotating. [#e1a22252](https://github.com/dinhanhthi/dotlore/commit/e1a22252)
+- Dark-mode editor background and text colours are softer. [#15427d35](https://github.com/dinhanhthi/dotlore/commit/15427d35)
+- The Dock icon is drawn from an Icon Composer document. [#089657d8](https://github.com/dinhanhthi/dotlore/commit/089657d8) [#55362da1](https://github.com/dinhanhthi/dotlore/commit/55362da1)
+
+### Platform
+
+- A dev run gets its own state directory. [#1132822c](https://github.com/dinhanhthi/dotlore/commit/1132822c)
+
 ## v0.1.0 (2026-09-22)
 
 First release. Dotlore tracks the AI-agent config your projects git-ignore and syncs it between your own Macs through a cloud folder you already sync.
