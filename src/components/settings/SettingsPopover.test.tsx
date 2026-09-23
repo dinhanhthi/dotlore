@@ -10,6 +10,7 @@ import {
   SettingsNeverList,
   SettingsPanel,
   SettingsPatterns,
+  SettingsSync,
 } from "./SettingsPopover";
 import { WipeCloudDataAlert } from "./WipeCloudDataAlert";
 
@@ -122,7 +123,7 @@ function wrap(
 }
 
 describe("SettingsPanel", () => {
-  it("has General, Patterns, and Never-list tabs, not a popover", () => {
+  it("has General, Sync, Patterns, and Never-list tabs, not a popover", () => {
     const html = wrap(
       <Dialog open>
         <SettingsPanel />
@@ -132,20 +133,32 @@ describe("SettingsPanel", () => {
     expect(html).toContain("what new folders track");
     expect(html).toContain('role="tablist"');
     expect(html).toMatch(/role="tab"[^>]*>General</);
+    expect(html).toMatch(/role="tab"[^>]*>Sync</);
     expect(html).toMatch(/role="tab"[^>]*>Patterns</);
     expect(html).toMatch(/role="tab"[^>]*>Never-list</);
     expect(html).not.toContain('data-slot="popover-content"');
   });
 
-  it("shows general config on the General tab", () => {
+  it("shows only appearance and login on the General tab", () => {
     const html = wrap(
       <Dialog open>
         <SettingsPanel />
       </Dialog>,
     );
-    expect(html).toContain("Cloud folder");
     expect(html).toContain("Appearance");
     expect(html).toContain("Start at login");
+    expect(html).not.toContain('aria-label="Change cloud folder"');
+    expect(html).not.toContain("Max file size");
+    expect(html).not.toContain("Preferences");
+    expect(html).not.toContain("Size limits");
+  });
+});
+
+describe("SettingsSync", () => {
+  it("holds the cloud folder and the size limits", () => {
+    const html = wrap(<SettingsSync onChangeFolder={() => {}} />);
+    expect(html).toContain("Cloud folder");
+    expect(html).toContain("Wipe cloud data");
     expect(html).toContain("Max file size");
     expect(html).toContain("Max folder size when adding");
     expect(html).toContain("every sync");
@@ -270,11 +283,7 @@ describe("Wipe cloud data", () => {
   }
 
   it("renders an icon-only Wipe button left of the folder button, and the dialog copy", () => {
-    const html = wrap(
-      <Dialog open>
-        <SettingsPanel />
-      </Dialog>,
-    );
+    const html = wrap(<SettingsSync onChangeFolder={() => {}} />);
     expect(html).not.toContain("Wipe cloud data…");
     expect(clicks.get("Wipe cloud data")).toBeTypeOf("function");
     const wipeAt = html.indexOf('aria-label="Wipe cloud data"');
@@ -365,21 +374,14 @@ describe("Wipe cloud data", () => {
   });
 
   it("hides the button when there is no provider dir", () => {
-    const html = wrap(
-      <Dialog open>
-        <SettingsPanel />
-      </Dialog>,
-      { providerDir: null },
-    );
+    const html = wrap(<SettingsSync onChangeFolder={() => {}} />, {
+      providerDir: null,
+    });
     expect(html).not.toContain('aria-label="Wipe cloud data"');
   });
 
   it("makes Change an icon-only button right of the folder button", () => {
-    const html = wrap(
-      <Dialog open>
-        <SettingsPanel />
-      </Dialog>,
-    );
+    const html = wrap(<SettingsSync onChangeFolder={() => {}} />);
     expect(html).not.toContain("Change…");
     expect(clicks.get("Change cloud folder")).toBeTypeOf("function");
     expect(html.indexOf('aria-label="Change cloud folder"')).toBeGreaterThan(

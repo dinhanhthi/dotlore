@@ -47,6 +47,7 @@ import { useTheme } from "@/lib/theme";
 
 const SETTINGS_TABS = [
   { id: "general", label: "General" },
+  { id: "sync", label: "Sync" },
   { id: "patterns", label: "Patterns" },
   { id: "never", label: "Never-list" },
 ] as const;
@@ -316,7 +317,8 @@ export function SettingsNeverList() {
   );
 }
 
-function SettingsGeneral({
+/** Cloud folder and the limits every sync enforces. */
+export function SettingsSync({
   onChangeFolder,
 }: {
   onChangeFolder: () => void;
@@ -324,35 +326,13 @@ function SettingsGeneral({
   const { providerDir, locked } = useRoots();
   const taskLabel = useTaskLabel();
   const wiping = taskLabel === WIPE_LABEL;
-  const [loginOn, setLoginOn] = useState(false);
   const [wipeOpen, setWipeOpen] = useState(false);
-  const [theme, setTheme] = useTheme();
-
-  useEffect(() => {
-    void loginItemEnabled()
-      .then(setLoginOn)
-      .catch(() => {
-        setLoginOn(false);
-      });
-  }, []);
-
-  async function toggleLogin(on: boolean) {
-    if (locked) return;
-    const previous = loginOn;
-    setLoginOn(on);
-    try {
-      await setLoginItem(on);
-    } catch {
-      setLoginOn(previous);
-    }
-  }
 
   const folder = providerDir === null ? "No folder" : tildePath(providerDir);
 
   return (
     <div className="flex flex-col gap-6">
       <section className="flex flex-col gap-2">
-        <h3 className="text-label text-muted-foreground">Cloud</h3>
         <div className="rounded-2xl bg-muted/40 p-3 ring-1 ring-foreground/5">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
@@ -428,46 +408,73 @@ function SettingsGeneral({
         </div>
         <WipeCloudDataAlert open={wipeOpen} onOpenChange={setWipeOpen} />
       </section>
-      <section className="flex flex-col gap-3">
-        <h3 className="text-label text-muted-foreground">Preferences</h3>
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-sm">Appearance</span>
-          <div className="flex rounded-4xl border border-border p-0.5">
-            <Button
-              type="button"
-              variant={theme === "light" ? "secondary" : "ghost"}
-              size="xs"
-              aria-pressed={theme === "light"}
-              onClick={() => setTheme("light")}
-            >
-              Light
-            </Button>
-            <Button
-              type="button"
-              variant={theme === "dark" ? "secondary" : "ghost"}
-              size="xs"
-              aria-pressed={theme === "dark"}
-              onClick={() => setTheme("dark")}
-            >
-              Dark
-            </Button>
-          </div>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <label htmlFor="start-at-login" className="text-sm">
-            Start at login
-          </label>
-          <Switch
-            id="start-at-login"
-            checked={loginOn}
-            disabled={locked}
-            onCheckedChange={(on) => {
-              void toggleLogin(on);
-            }}
-          />
-        </div>
-      </section>
       <SettingsLimits />
+    </div>
+  );
+}
+
+export function SettingsGeneral() {
+  const { locked } = useRoots();
+  const [loginOn, setLoginOn] = useState(false);
+  const [theme, setTheme] = useTheme();
+
+  useEffect(() => {
+    void loginItemEnabled()
+      .then(setLoginOn)
+      .catch(() => {
+        setLoginOn(false);
+      });
+  }, []);
+
+  async function toggleLogin(on: boolean) {
+    if (locked) return;
+    const previous = loginOn;
+    setLoginOn(on);
+    try {
+      await setLoginItem(on);
+    } catch {
+      setLoginOn(previous);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm">Appearance</span>
+        <div className="flex rounded-4xl border border-border p-0.5">
+          <Button
+            type="button"
+            variant={theme === "light" ? "secondary" : "ghost"}
+            size="xs"
+            aria-pressed={theme === "light"}
+            onClick={() => setTheme("light")}
+          >
+            Light
+          </Button>
+          <Button
+            type="button"
+            variant={theme === "dark" ? "secondary" : "ghost"}
+            size="xs"
+            aria-pressed={theme === "dark"}
+            onClick={() => setTheme("dark")}
+          >
+            Dark
+          </Button>
+        </div>
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        <label htmlFor="start-at-login" className="text-sm">
+          Start at login
+        </label>
+        <Switch
+          id="start-at-login"
+          checked={loginOn}
+          disabled={locked}
+          onCheckedChange={(on) => {
+            void toggleLogin(on);
+          }}
+        />
+      </div>
     </div>
   );
 }
@@ -491,7 +498,7 @@ export function SettingsPanel({
         <div
           role="tablist"
           aria-label="Settings sections"
-          className="grid grid-cols-3 rounded-4xl border border-border p-0.5"
+          className="grid grid-cols-4 rounded-4xl border border-border p-0.5"
         >
           {SETTINGS_TABS.map(({ id, label }) => (
             <Button
@@ -513,7 +520,7 @@ export function SettingsPanel({
       </DialogHeader>
       <div
         className={
-          tab === "general"
+          tab === "general" || tab === "sync"
             ? "h-[28rem] overflow-y-auto px-6 pt-5 pb-7"
             : "flex h-[28rem] min-h-0 flex-col overflow-hidden px-6 pt-5 pb-7"
         }
@@ -524,7 +531,15 @@ export function SettingsPanel({
             id="settings-panel-general"
             aria-labelledby="settings-tab-general"
           >
-            <SettingsGeneral onChangeFolder={onChangeFolder ?? (() => {})} />
+            <SettingsGeneral />
+          </div>
+        ) : tab === "sync" ? (
+          <div
+            role="tabpanel"
+            id="settings-panel-sync"
+            aria-labelledby="settings-tab-sync"
+          >
+            <SettingsSync onChangeFolder={onChangeFolder ?? (() => {})} />
           </div>
         ) : tab === "patterns" ? (
           <div
