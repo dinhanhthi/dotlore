@@ -17,6 +17,15 @@ HOME_DIR="$DOTLORE_HOME"
 WEBKIT_DIR="$HOME/Library/WebKit/dotlore"
 WEBKIT_BUNDLE_DIR="$HOME/Library/WebKit/dev.dinhanhthi.dotlore"
 PLIST="$HOME/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist"
+# macOS keys these by the bundle identifier, not by DOTLORE_HOME, so they
+# outlive a state-directory wipe and make the next launch look used.
+BUNDLE_ID="dev.dinhanhthi.dotlore"
+BUNDLE_PATHS=(
+	"$HOME/Library/Application Support/$BUNDLE_ID"
+	"$HOME/Library/Caches/$BUNDLE_ID"
+	"$HOME/Library/Preferences/$BUNDLE_ID.plist"
+	"$HOME/Library/Saved Application State/$BUNDLE_ID.savedState"
+)
 CFG="$HOME_DIR/config.json"
 
 YES=0
@@ -118,6 +127,9 @@ consider "$HOME_DIR/recovery"
 consider "$HOME_DIR/adding"
 consider "$WEBKIT_DIR"
 consider "$WEBKIT_BUNDLE_DIR"
+for path in "${BUNDLE_PATHS[@]}"; do
+	consider "$path"
+done
 
 if [ "$YES" -eq 1 ]; then
 	launchctl bootout "gui/$(id -u)/dev.dinhanhthi.dotlore" >/dev/null 2>&1 || true
