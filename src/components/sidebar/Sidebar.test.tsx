@@ -184,3 +184,58 @@ describe("Sidebar conflicts entry", () => {
     expect(html).toContain('aria-label="3 conflicts"');
   });
 });
+
+describe("Sidebar unlinked toggle", () => {
+  const row = {
+    path: "/Users/x/root",
+    status: { kind: "Synced" as const },
+  };
+  const roots = [
+    { ...row, slug: "linked-agent", name: "Linked agent", is_agent: true, linked: true },
+    { ...row, slug: "remote-agent", name: "Remote agent", is_agent: true, linked: false },
+    { ...row, slug: "linked-project", name: "Linked project", is_agent: false, linked: true },
+    { ...row, slug: "remote-project", name: "Remote project", is_agent: false, linked: false },
+  ];
+
+  function stubHidden(ids: string[]) {
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) =>
+        key === "dotlore.sidebar.hideUnlinked" ? JSON.stringify(ids) : null,
+      setItem: () => {},
+    });
+  }
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows every root and an unpressed toggle per section by default", () => {
+    const { html } = renderSidebar({ roots });
+    for (const name of ["Linked agent", "Remote agent", "Linked project", "Remote project"]) {
+      expect(html).toContain(name);
+    }
+    expect(html).toMatch(
+      /<button(?=[^>]*aria-label="Hide unlinked agents")[^>]*aria-pressed="false"/,
+    );
+    expect(html).toMatch(
+      /<button(?=[^>]*aria-label="Hide unlinked projects")[^>]*aria-pressed="false"/,
+    );
+  });
+
+  it("hides unlinked rows only in the section whose toggle is on", () => {
+    stubHidden(["agents"]);
+    const { html } = renderSidebar({ roots });
+    expect(html).not.toContain("Remote agent");
+    expect(html).toContain("Linked agent");
+    expect(html).toContain("Remote project");
+    expect(html).toMatch(
+      /<button(?=[^>]*aria-label="Show unlinked agents")[^>]*aria-pressed="true"/,
+    );
+  });
+
+  it("omits the toggle from a section with no unlinked rows", () => {
+    const { html } = renderSidebar({ roots: roots.filter((item) => item.linked) });
+    expect(html).not.toContain("unlinked agents");
+    expect(html).not.toContain("unlinked projects");
+  });
+});

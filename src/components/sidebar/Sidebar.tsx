@@ -1,6 +1,14 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
-import { LayoutGrid, Plus, RefreshCw, Star, TriangleAlert } from "lucide-react";
+import {
+  Eye,
+  EyeOff,
+  LayoutGrid,
+  Plus,
+  RefreshCw,
+  Star,
+  TriangleAlert,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -24,10 +32,11 @@ import { SidebarItem } from "./SidebarItem";
 import { SidebarSection } from "./SidebarSection";
 
 const COLLAPSED_KEY = "dotlore.sidebar.collapsed";
+const HIDE_UNLINKED_KEY = "dotlore.sidebar.hideUnlinked";
 
-function readCollapsed(): string[] {
+function readIds(key: string): string[] {
   try {
-    const raw = localStorage.getItem(COLLAPSED_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -37,9 +46,9 @@ function readCollapsed(): string[] {
   }
 }
 
-function writeCollapsed(ids: string[]): void {
+function writeIds(key: string, ids: string[]): void {
   try {
-    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(ids));
+    localStorage.setItem(key, JSON.stringify(ids));
   } catch {
     // Quota or private-mode — keep the in-memory list.
   }
@@ -74,6 +83,37 @@ function AddSectionButton({
   );
 }
 
+function UnlinkedToggle({
+  noun,
+  hidden,
+  onToggle,
+}: {
+  noun: string;
+  hidden: boolean;
+  onToggle: () => void;
+}) {
+  const label = `${hidden ? "Show" : "Hide"} unlinked ${noun}`;
+  const Icon = hidden ? EyeOff : Eye;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={label}
+            aria-pressed={hidden}
+            onClick={onToggle}
+          />
+        }
+      >
+        <Icon aria-hidden />
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function Sidebar() {
   const {
     roots,
@@ -96,7 +136,12 @@ export function Sidebar() {
   const conflicts = conflictTotal(roots);
   const [refreshingAgents, setRefreshingAgents] = useState(false);
   const refreshing = refreshingAgents || loadingRoots;
-  const [collapsed, setCollapsed] = useState<string[]>(() => readCollapsed());
+  const [collapsed, setCollapsed] = useState<string[]>(() =>
+    readIds(COLLAPSED_KEY),
+  );
+  const [hideUnlinked, setHideUnlinked] = useState<string[]>(() =>
+    readIds(HIDE_UNLINKED_KEY),
+  );
   const [pendingAdd, setPendingAdd] = useState<{
     path: string;
     slug: string;
@@ -108,7 +153,17 @@ export function Sidebar() {
       const next = current.includes(id)
         ? current.filter((item) => item !== id)
         : [...current, id];
-      writeCollapsed(next);
+      writeIds(COLLAPSED_KEY, next);
+      return next;
+    });
+  }, []);
+
+  const toggleHideUnlinked = useCallback((id: string) => {
+    setHideUnlinked((current) => {
+      const next = current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id];
+      writeIds(HIDE_UNLINKED_KEY, next);
       return next;
     });
   }, []);
@@ -121,7 +176,14 @@ export function Sidebar() {
     setCollapsed((current) => {
       if (!current.includes(sectionId)) return current;
       const next = current.filter((id) => id !== sectionId);
-      writeCollapsed(next);
+      writeIds(COLLAPSED_KEY, next);
+      return next;
+    });
+    if (row.linked) return;
+    setHideUnlinked((current) => {
+      if (!current.includes(sectionId)) return current;
+      const next = current.filter((id) => id !== sectionId);
+      writeIds(HIDE_UNLINKED_KEY, next);
       return next;
     });
   }, [focusRequest, roots]);
@@ -143,12 +205,20 @@ export function Sidebar() {
     };
     panel.addEventListener("transitionend", onEnd);
     return () => panel.removeEventListener("transitionend", onEnd);
-  }, [focusRequest, collapsed]);
+  }, [focusRequest, collapsed, hideUnlinked]);
 
   const starred = new Set(starredSlugs);
   const visible = roots.filter((row) => matchesRootQuery(row, query));
-  const agents = visible.filter((row) => row.is_agent).sort(compareRoots);
-  const projects = visible.filter((row) => !row.is_agent).sort(compareRoots);
+  const allAgents = visible.filter((row) => row.is_agent);
+  const allProjects = visible.filter((row) => !row.is_agent);
+  const agentsHaveUnlinked = allAgents.some((row) => !row.linked);
+  const projectsHaveUnlinked = allProjects.some((row) => !row.linked);
+  const agents = allAgents
+    .filter((row) => row.linked || !hideUnlinked.includes("agents"))
+    .sort(compareRoots);
+  const projects = allProjects
+    .filter((row) => row.linked || !hideUnlinked.includes("projects"))
+    .sort(compareRoots);
 
   async function startAdd() {
     if (locked) return;
@@ -278,11 +348,13 @@ export function Sidebar() {
           onToggle={() => toggleCollapsed("agents")}
           action={
             <div className="flex items-center">
-              <AddSectionButton
-                label="Add agent"
-                disabled={locked || loadingRoots}
-                onPick={() => void startAdd()}
-              />
+              {agentsHaveUnlinked && (
+                <UnlinkedToggle
+                  noun="agents"
+                  hidden={hideUnlinked.includes("agents")}
+                  onToggle={() => toggleHideUnlinked("agents")}
+                />
+              )}
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -303,6 +375,11 @@ export function Sidebar() {
                 </TooltipTrigger>
                 <TooltipContent>Refresh agents</TooltipContent>
               </Tooltip>
+              <AddSectionButton
+                label="Add agent"
+                disabled={locked || loadingRoots}
+                onPick={() => void startAdd()}
+              />
             </div>
           }
         >
@@ -316,11 +393,20 @@ export function Sidebar() {
           collapsed={collapsed.includes("projects")}
           onToggle={() => toggleCollapsed("projects")}
           action={
-            <AddSectionButton
-              label="Add project"
-              disabled={locked || loadingRoots}
-              onPick={() => void startAdd()}
-            />
+            <div className="flex items-center">
+              {projectsHaveUnlinked && (
+                <UnlinkedToggle
+                  noun="projects"
+                  hidden={hideUnlinked.includes("projects")}
+                  onToggle={() => toggleHideUnlinked("projects")}
+                />
+              )}
+              <AddSectionButton
+                label="Add project"
+                disabled={locked || loadingRoots}
+                onPick={() => void startAdd()}
+              />
+            </div>
           }
         >
           {projects.map((row) => renderRoot(row, `sidebar-root-${row.slug}`))}
