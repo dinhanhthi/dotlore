@@ -90,10 +90,12 @@ export function Sidebar() {
     refreshRoots,
     locked,
     seeding,
+    loadingRoots,
   } = useRoots();
   const { query, setQuery } = useSidebarQuery();
   const conflicts = conflictTotal(roots);
-  const [refreshing, setRefreshing] = useState(false);
+  const [refreshingAgents, setRefreshingAgents] = useState(false);
+  const refreshing = refreshingAgents || loadingRoots;
   const [collapsed, setCollapsed] = useState<string[]>(() => readCollapsed());
   const [pendingAdd, setPendingAdd] = useState<{
     path: string;
@@ -157,7 +159,7 @@ export function Sidebar() {
 
   async function refreshAgents() {
     if (locked || refreshing) return;
-    setRefreshing(true);
+    setRefreshingAgents(true);
     try {
       try {
         const report = await importInstalledAgents();
@@ -170,7 +172,7 @@ export function Sidebar() {
       }
       await refreshRoots();
     } finally {
-      setRefreshing(false);
+      setRefreshingAgents(false);
     }
   }
 
@@ -278,7 +280,7 @@ export function Sidebar() {
             <div className="flex items-center">
               <AddSectionButton
                 label="Add agent"
-                disabled={locked}
+                disabled={locked || loadingRoots}
                 onPick={() => void startAdd()}
               />
               <Tooltip>
@@ -316,7 +318,7 @@ export function Sidebar() {
           action={
             <AddSectionButton
               label="Add project"
-              disabled={locked}
+              disabled={locked || loadingRoots}
               onPick={() => void startAdd()}
             />
           }

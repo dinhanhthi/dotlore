@@ -88,6 +88,13 @@ describe("conflict entry point", () => {
     expect([...clicks.keys()].some((k) => k.includes("show them"))).toBe(false);
   });
 
+  it("shows a loading state instead of the status while roots are loading", () => {
+    const html = wrap(<Footer />, { loadingRoots: true });
+    expect(html).toContain("Loading projects…");
+    expect(html).not.toContain("Nothing tracked");
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Sync now")[^>]*\sdisabled=""/);
+  });
+
   it("no longer puts a conflict button in the title bar", () => {
     wrap(<TitleBarActions />, {
       roots: [row("a", { kind: "Conflicts", detail: 1 })],

@@ -135,6 +135,7 @@ export function App() {
   const [state, setState] = useState<RootsState>(() => ({
     ...emptyRootsState,
     starredSlugs: readStarred(),
+    loadingRoots: true,
   }));
   const [sidebarQuery, setSidebarQuery] = useState("");
   const [ready, setReady] = useState(false);
@@ -231,7 +232,9 @@ export function App() {
       await importAgentsWhenReady(providerDir);
       if (cancelled) return;
       await refreshCombined();
-      if (!cancelled) setReady(true);
+      if (cancelled) return;
+      setState((current) => ({ ...current, loadingRoots: false }));
+      setReady(true);
     })();
 
     const unlisten = listenStatus((payload) => {
@@ -391,7 +394,12 @@ export function App() {
 
   const applyProvider = useCallback((dir: string) => {
     discoveryErrorRef.current = null;
-    setState((current) => ({ ...current, providerDir: dir, error: null }));
+    setState((current) => ({
+      ...current,
+      providerDir: dir,
+      error: null,
+      loadingRoots: true,
+    }));
     void (async () => {
       const providerDir = await fetchProviderDir().catch(
         (): string | null => dir,
@@ -403,6 +411,7 @@ export function App() {
       }));
       await importAgentsWhenReady(resolved);
       await refreshCombined();
+      setState((current) => ({ ...current, loadingRoots: false }));
     })();
   }, [refreshCombined]);
 

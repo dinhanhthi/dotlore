@@ -46,6 +46,8 @@ export type RootsState = {
   focusRequest: FocusRequest | null;
   /** Adds in flight. Does not disable the rest of the app. */
   seeding: SeedingRoot[];
+  /** Startup or a new cloud folder: agent import plus the first root listing. */
+  loadingRoots: boolean;
 };
 
 export type RootsContextValue = RootsState & {
@@ -88,6 +90,7 @@ export const emptyRootsState: RootsState = {
   view: "root",
   focusRequest: null,
   seeding: [],
+  loadingRoots: false,
 };
 
 /** Unresolved conflicts in one root. */

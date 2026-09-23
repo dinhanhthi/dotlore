@@ -150,6 +150,16 @@ describe("Sidebar agents refresh", () => {
     const { html } = renderSidebar({ locked: false });
     expect(html).not.toMatch(REFRESH_DISABLED);
   });
+
+  it("spins and disables the section buttons while roots are loading", () => {
+    const { html } = renderSidebar({ loadingRoots: true });
+    expect(html).toMatch(REFRESH_DISABLED);
+    expect(html).toMatch(
+      /<button(?=[^>]*aria-label="Refresh agents")[^>]*aria-busy="true"/,
+    );
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Add agent")[^>]*\sdisabled=""/);
+    expect(html).toMatch(/<button(?=[^>]*aria-label="Add project")[^>]*\sdisabled=""/);
+  });
 });
 
 describe("Sidebar conflicts entry", () => {

@@ -72,6 +72,7 @@ export function Footer() {
     error,
     busy,
     seeding,
+    loadingRoots,
     selectedSlug,
     resolvingRel,
     openResolver,
@@ -133,7 +134,7 @@ export function Footer() {
     <footer className="flex h-11 items-center gap-4 border-t border-border px-3 text-[0.8rem] text-muted-foreground">
       <div
         className="flex min-w-0 flex-1 items-center gap-2.5"
-        aria-busy={busy || taskLabel !== null}
+        aria-busy={busy || loadingRoots || taskLabel !== null}
       >
         {taskLabel ? (
           <>
@@ -144,6 +145,11 @@ export function Footer() {
           <>
             <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
             <span className="truncate">{addingLabel(seeding)}</span>
+          </>
+        ) : loadingRoots ? (
+          <>
+            <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+            <span className="truncate">Loading projects…</span>
           </>
         ) : busy ? (
           <>
@@ -169,7 +175,7 @@ export function Footer() {
             aria-hidden
           />
         )}
-        {!taskLabel && seeding.length === 0 && !busy && status.glyph !== "warn" && (
+        {!taskLabel && seeding.length === 0 && !loadingRoots && !busy && status.glyph !== "warn" && (
           <span className="truncate">{status.text}</span>
         )}
         <Tooltip>
@@ -179,7 +185,7 @@ export function Footer() {
                 variant="ghost"
                 size="icon-xs"
                 className="text-muted-foreground"
-                disabled={busy || syncing || providerDir === null}
+                disabled={busy || syncing || loadingRoots || providerDir === null}
                 aria-busy={syncing || undefined}
                 aria-label="Sync now"
                 onClick={() => {
