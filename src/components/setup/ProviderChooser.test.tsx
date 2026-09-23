@@ -41,6 +41,7 @@ function wrap(
     openResolver: () => {},
     openFirstConflict: () => {},
     closeResolver: () => {},
+    setResolverDirty: () => {},
     showAllProjects: () => {},
     showStarred: () => {},
     showConflicts: () => {},

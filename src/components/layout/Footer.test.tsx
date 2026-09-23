@@ -45,6 +45,7 @@ function wrap(node: React.ReactNode, overrides: Partial<RootsContextValue> = {})
     openResolver: () => {},
     openFirstConflict: () => {},
     closeResolver: () => {},
+    setResolverDirty: () => {},
     showAllProjects: () => {},
     showStarred: () => {},
     showConflicts: () => {},

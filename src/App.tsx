@@ -16,6 +16,7 @@ import { Footer } from "@/components/layout/Footer";
 import { Shell } from "@/components/layout/Shell";
 import { AllProjects } from "@/components/main/AllProjects";
 import { ConflictResolver } from "@/components/main/ConflictResolver";
+import { DiscardChangesAlert } from "@/components/main/DiscardChangesAlert";
 import { EmptyState } from "@/components/main/EmptyState";
 import { FileViewer } from "@/components/main/FileViewer";
 import { NoticeToasts } from "@/components/notices/NoticeToasts";
@@ -42,6 +43,7 @@ import {
   subscribeWork,
   trackedFiles,
 } from "@/lib/ipc";
+import { type LeaveTarget, shouldPromptLeave } from "@/lib/leave-guard";
 import {
   applyRootDiscovery,
   emptyRootsState,
@@ -144,6 +146,17 @@ export function App() {
   const discoveryErrorRef = useRef<string | null>(null);
   const rootsRef = useRef(state.roots);
   rootsRef.current = state.roots;
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const dirtyRef = useRef(false);
+  const [pendingLeave, setPendingLeave] = useState<{
+    rel: string;
+    run: () => void;
+  } | null>(null);
+  const leaveNameRef = useRef("");
+  if (pendingLeave) {
+    leaveNameRef.current = pendingLeave.rel.split("/").pop() ?? pendingLeave.rel;
+  }
   const seedingSlugs = useRef(new Set<string>());
   const work = useSyncExternalStore(
     subscribeWork,
@@ -252,42 +265,66 @@ export function App() {
     };
   }, [refreshCombined]);
 
+  const setResolverDirty = useCallback((dirty: boolean) => {
+    dirtyRef.current = dirty;
+  }, []);
+
+  /** Ask before a user action closes a resolver with unsaved Result changes. */
+  const guardLeave = useCallback(
+    (run: () => void, target: LeaveTarget = { kind: "other" }) => {
+      const current = stateRef.current;
+      const rel = current.resolvingRel;
+      if (rel !== null && shouldPromptLeave(current, dirtyRef.current, target)) {
+        setPendingLeave({ rel, run });
+        return;
+      }
+      run();
+    },
+    [],
+  );
+
   const selectRoot = useCallback((slug: string, options?: SelectRootOptions) => {
-    setState((current) => ({
-      ...current,
-      view: "root",
-      selectedSlug: slug,
-      selectedRel: current.selectedSlug === slug ? current.selectedRel : null,
-      resolvingRel: current.selectedSlug === slug ? current.resolvingRel : null,
-      focusRequest: options?.focusSidebar
-        ? { slug, seq: (current.focusRequest?.seq ?? 0) + 1 }
-        : current.focusRequest,
-    }));
-  }, []);
-
-  const selectFile = useCallback((rel: string) => {
-    setState((current) => {
-      if (!isLinked(current.roots, current.selectedSlug)) return current;
-      return {
-        ...current,
-        selectedRel: rel,
-        resolvingRel: null,
-      };
-    });
-  }, []);
-
-  const openResolver = useCallback((slug: string, rel: string) => {
-    setState((current) => {
-      if (!isLinked(current.roots, slug)) return current;
-      return {
+    const apply = () =>
+      setState((current) => ({
         ...current,
         view: "root",
         selectedSlug: slug,
-        selectedRel: rel,
-        resolvingRel: rel,
-      };
-    });
-  }, []);
+        selectedRel: current.selectedSlug === slug ? current.selectedRel : null,
+        resolvingRel: current.selectedSlug === slug ? current.resolvingRel : null,
+        focusRequest: options?.focusSidebar
+          ? { slug, seq: (current.focusRequest?.seq ?? 0) + 1 }
+          : current.focusRequest,
+      }));
+    guardLeave(apply, { kind: "selectRoot", slug });
+  }, [guardLeave]);
+
+  const selectFile = useCallback((rel: string) => {
+    guardLeave(() =>
+      setState((current) => {
+        if (!isLinked(current.roots, current.selectedSlug)) return current;
+        return {
+          ...current,
+          selectedRel: rel,
+          resolvingRel: null,
+        };
+      }),
+    );
+  }, [guardLeave]);
+
+  const openResolver = useCallback((slug: string, rel: string) => {
+    const apply = () =>
+      setState((current) => {
+        if (!isLinked(current.roots, slug)) return current;
+        return {
+          ...current,
+          view: "root",
+          selectedSlug: slug,
+          selectedRel: rel,
+          resolvingRel: rel,
+        };
+      });
+    guardLeave(apply, { kind: "openResolver", slug, rel });
+  }, [guardLeave]);
 
   const openFirstConflict = useCallback((slug: string) => {
     if (!isLinked(rootsRef.current, slug)) {
@@ -310,35 +347,43 @@ export function App() {
   }, [openResolver, selectRoot]);
 
   const closeResolver = useCallback(() => {
-    setState((current) => ({
-      ...current,
-      resolvingRel: null,
-    }));
-  }, []);
+    guardLeave(() =>
+      setState((current) => ({
+        ...current,
+        resolvingRel: null,
+      })),
+    );
+  }, [guardLeave]);
 
   const showAllProjects = useCallback(() => {
-    setState((current) => ({
-      ...current,
-      view: "all",
-      resolvingRel: null,
-    }));
-  }, []);
+    guardLeave(() =>
+      setState((current) => ({
+        ...current,
+        view: "all",
+        resolvingRel: null,
+      })),
+    );
+  }, [guardLeave]);
 
   const showStarred = useCallback(() => {
-    setState((current) => ({
-      ...current,
-      view: "starred",
-      resolvingRel: null,
-    }));
-  }, []);
+    guardLeave(() =>
+      setState((current) => ({
+        ...current,
+        view: "starred",
+        resolvingRel: null,
+      })),
+    );
+  }, [guardLeave]);
 
   const showConflicts = useCallback(() => {
-    setState((current) => ({
-      ...current,
-      view: "conflicts",
-      resolvingRel: null,
-    }));
-  }, []);
+    guardLeave(() =>
+      setState((current) => ({
+        ...current,
+        view: "conflicts",
+        resolvingRel: null,
+      })),
+    );
+  }, [guardLeave]);
 
   const toggleStar = useCallback((slug: string) => {
     const starredSlugs = toggleStarred(slug);
@@ -359,17 +404,22 @@ export function App() {
       try {
         const created = await addRoot(path, slug);
         await refreshCombined();
-        setState((current) => {
-          const stillHere = current.selectedSlug === slug || current.selectedSlug === created;
-          if (!stillHere) return current;
-          return {
-            ...current,
-            view: "root",
-            selectedSlug: created,
-            selectedRel: null,
-            resolvingRel: null,
-          };
-        });
+        const isHere = (selected: string | null) =>
+          selected === slug || selected === created;
+        if (isHere(stateRef.current.selectedSlug)) {
+          guardLeave(() =>
+            setState((current) => {
+              if (!isHere(current.selectedSlug)) return current;
+              return {
+                ...current,
+                view: "root",
+                selectedSlug: created,
+                selectedRel: null,
+                resolvingRel: null,
+              };
+            }),
+          );
+        }
       } catch (err) {
         setBanner(errorMessage(err, "Could not add project"));
         setState((current) => {
@@ -389,7 +439,7 @@ export function App() {
         }));
       }
     },
-    [refreshCombined],
+    [guardLeave, refreshCombined],
   );
 
   const applyProvider = useCallback((dir: string) => {
@@ -426,6 +476,7 @@ export function App() {
       openResolver,
       openFirstConflict,
       closeResolver,
+      setResolverDirty,
       showAllProjects,
       showStarred,
       showConflicts,
@@ -446,6 +497,7 @@ export function App() {
       openResolver,
       openFirstConflict,
       closeResolver,
+      setResolverDirty,
       showAllProjects,
       showStarred,
       showConflicts,
@@ -464,6 +516,18 @@ export function App() {
       <SidebarQueryProvider query={sidebarQuery} setQuery={setSidebarQuery}>
         <RootsContext.Provider value={value}>
           <TrackConfirmDialog />
+          <DiscardChangesAlert
+            open={pendingLeave !== null}
+            fileName={leaveNameRef.current}
+            onCancel={() => setPendingLeave(null)}
+            onDiscard={() => {
+              if (!pendingLeave) return;
+              dirtyRef.current = false;
+              const run = pendingLeave.run;
+              setPendingLeave(null);
+              run();
+            }}
+          />
           <Toaster>
             <NoticeToasts banner={work.banner} gitMissing={state.gitMissing} />
             <Shell
