@@ -10,6 +10,10 @@ import {
   UntrackEntryDialog,
 } from "@/components/tree/EntryPickerDialog";
 import { formatBytes } from "@/components/tree/entries";
+import {
+  QuickResolveDialog,
+  type QuickResolveTarget,
+} from "@/components/tree/QuickResolveDialog";
 import { TreeNode } from "@/components/tree/TreeNode";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +21,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { conflictLiveRel } from "@/lib/conflicts";
 import {
   conflicts as fetchConflicts,
   listEntries,
@@ -31,6 +36,7 @@ import { cn } from "@/lib/utils";
 
 const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024;
 const EMPTY_CONFLICTS = new Set<string>();
+const EMPTY_CONFLICT_VIEWS = new Map<string, ConflictView[]>();
 
 type TreeSnapshot = {
   slug: string | null;
@@ -38,6 +44,7 @@ type TreeSnapshot = {
   files: TrackedFile[];
   listed: EntryView[];
   conflicts: Set<string>;
+  conflictViews: Map<string, ConflictView[]>;
   maxFileBytes: number;
 };
 
@@ -82,6 +89,15 @@ function conflictPathSet(views: ConflictView[]): Set<string> {
   return new Set(views.map((view) => String(view.live).replace(/\\/g, "/")));
 }
 
+function conflictViewMap(views: ConflictView[]): Map<string, ConflictView[]> {
+  const map = new Map<string, ConflictView[]>();
+  for (const view of views) {
+    const rel = conflictLiveRel(view);
+    map.set(rel, [...(map.get(rel) ?? []), view]);
+  }
+  return map;
+}
+
 /**
  * The footer line. An unlinked root never loads a file list, so counting its
  * files would read as "this project is empty" rather than "nothing is being
@@ -115,8 +131,17 @@ function TreeSeeding({ name }: { name: string }) {
 }
 
 export function FileTree() {
-  const { roots, selectedSlug, selectedRel, selectFile, openResolver, busy, seeding } =
-    useRoots();
+  const {
+    roots,
+    selectedSlug,
+    selectedRel,
+    selectFile,
+    openResolver,
+    busy,
+    seeding,
+    locked,
+    resolvingRel,
+  } = useRoots();
   const syncing = useSyncing();
   const taskLabel = useTaskLabel();
   const tracking = taskLabel !== null;
@@ -129,6 +154,7 @@ export function FileTree() {
   );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [untrackTarget, setUntrackTarget] = useState<EntryView | null>(null);
+  const [quickTarget, setQuickTarget] = useState<QuickResolveTarget | null>(null);
   const [query, setQuery] = useState("");
   const loadId = useRef({ slug: selectedSlug, linked: !!root?.linked });
 
@@ -140,6 +166,7 @@ export function FileTree() {
         files: [] as TrackedFile[],
         listed: [] as EntryView[],
         conflicts: new Set<string>(),
+        conflictViews: new Map<string, ConflictView[]>(),
         maxFileBytes: DEFAULT_MAX_FILE_BYTES,
       };
     }
@@ -153,6 +180,7 @@ export function FileTree() {
       files: listedFiles,
       listed,
       conflicts: conflictPathSet(views),
+      conflictViews: conflictViewMap(views),
       maxFileBytes: maxMb * 1024 * 1024,
     };
   }, [selectedSlug, root?.linked, seedingItem]);
@@ -164,6 +192,7 @@ export function FileTree() {
         files: TrackedFile[];
         listed: EntryView[];
         conflicts: Set<string>;
+        conflictViews: Map<string, ConflictView[]>;
         maxFileBytes: number;
       },
     ) => {
@@ -174,6 +203,7 @@ export function FileTree() {
         files: next.files,
         listed: next.listed,
         conflicts: next.conflicts,
+        conflictViews: next.conflictViews,
         maxFileBytes: next.maxFileBytes,
       });
     },
@@ -192,6 +222,7 @@ export function FileTree() {
     const next = treeDialogsAfterRootChange();
     setPickerOpen(next.pickerOpen);
     setUntrackTarget(next.untrackTarget);
+    setQuickTarget(null);
     setQuery("");
   }, [selectedSlug, root?.linked]);
 
@@ -213,6 +244,8 @@ export function FileTree() {
   const files = treeReady && snapshot ? snapshot.files : [];
   const entries = treeReady && snapshot ? snapshot.listed : [];
   const conflictSet = treeReady && snapshot ? snapshot.conflicts : EMPTY_CONFLICTS;
+  const conflictViewsByRel =
+    treeReady && snapshot ? snapshot.conflictViews : EMPTY_CONFLICT_VIEWS;
   const maxFileBytes = treeReady && snapshot ? snapshot.maxFileBytes : DEFAULT_MAX_FILE_BYTES;
 
   const tree = useMemo(() => (awaiting ? [] : buildTree(files)), [awaiting, files]);
@@ -240,6 +273,30 @@ export function FileTree() {
       }));
     },
     [filtering, isOpen, selectedSlug],
+  );
+
+  const conflictViews = useCallback(
+    (rel: string) => conflictViewsByRel.get(rel),
+    [conflictViewsByRel],
+  );
+
+  const quickResolveDisabled = useCallback(
+    // The backend holds one resolution snapshot; quick-resolving any file
+    // would replace the open resolver's snapshot, so block it while one is open.
+    (_rel: string) => locked || resolvingRel !== null,
+    [locked, resolvingRel],
+  );
+
+  const onQuickResolve = useCallback(
+    (rel: string, keep: "live" | "other", siblingRel?: string) => {
+      const views = conflictViewsByRel.get(rel);
+      if (!views) return;
+      const device = views.find(
+        (view) => view.sibling.replace(/\\/g, "/") === siblingRel,
+      )?.loserName;
+      setQuickTarget({ rel, keep, siblingRel, device, views });
+    },
+    [conflictViewsByRel],
   );
 
   if (seedingItem) {
@@ -328,13 +385,13 @@ export function FileTree() {
         ) : null}
         {!root.linked ? (
           <p className="px-2 py-1.5 text-sm text-muted-foreground">
-            This folder is in your cloud but not linked on this Mac. Use the
+            This folder is in your cloud but not linked on this machine. Use the
             link button on its sidebar row to pick a local folder.
           </p>
         ) : null}
         {showAgentEmptyHint(root, files.length, filtering) ? (
           <p className="px-2 py-1.5 text-sm text-muted-foreground">
-            Agent found on this Mac, but no files match its patterns. Use + to
+            Agent found on this machine, but no files match its patterns. Use + to
             add or edit patterns.
           </p>
         ) : null}
@@ -358,6 +415,9 @@ export function FileTree() {
             onUntrack={setUntrackTarget}
             rootPath={root.path}
             maxFileBytes={maxFileBytes}
+            conflictViews={conflictViews}
+            onQuickResolve={onQuickResolve}
+            quickResolveDisabled={quickResolveDisabled}
           />
         ))}
         </div>
@@ -386,6 +446,16 @@ export function FileTree() {
               if (!next) setUntrackTarget(null);
             }}
             onMutated={refetch}
+          />
+          <QuickResolveDialog
+            key={`quick-${root.slug}`}
+            slug={root.slug}
+            target={quickTarget}
+            open={quickTarget !== null}
+            onOpenChange={(next) => {
+              if (!next) setQuickTarget(null);
+            }}
+            onResolved={refetch}
           />
         </>
       ) : null}

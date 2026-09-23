@@ -48,9 +48,9 @@ describe("parentRel", () => {
 });
 
 describe("untrackCopy", () => {
-  it("says the entry is removed on every Mac and files stay on disk", () => {
+  it("says the entry is removed on every machine and files stay on disk", () => {
     const text = untrackCopy(claude, [claude]);
-    expect(text).toMatch(/every Mac/);
+    expect(text).toMatch(/every machine/);
     expect(text).toMatch(/stay on disk/);
   });
 
