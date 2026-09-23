@@ -34,9 +34,13 @@ vi.mock("@/components/ui/button", async () => {
   return {
     ...actual,
     Button: (props: ComponentProps<typeof actual.Button>) => {
-      if (typeof props.children === "string" && props.onClick) {
+      const key =
+        typeof props.children === "string"
+          ? props.children
+          : props["aria-label"];
+      if (typeof key === "string" && props.onClick) {
         clicks.set(
-          props.children,
+          key,
           props.onClick as (event: {
             preventDefault: () => void;
           }) => void | Promise<void>,
@@ -204,14 +208,18 @@ describe("Wipe cloud data", () => {
     return { html, onOpenChange };
   }
 
-  it("renders a clickable Wipe cloud data… button and the dialog copy", () => {
+  it("renders an icon-only Wipe button left of the folder button, and the dialog copy", () => {
     const html = wrap(
       <Dialog open>
         <SettingsPanel />
       </Dialog>,
     );
-    expect(html).toContain("Wipe cloud data…");
-    expect(clicks.get("Wipe cloud data…")).toBeTypeOf("function");
+    expect(html).not.toContain("Wipe cloud data…");
+    expect(clicks.get("Wipe cloud data")).toBeTypeOf("function");
+    const wipeAt = html.indexOf('aria-label="Wipe cloud data"');
+    const folderAt = html.indexOf('aria-label="Go to location"');
+    expect(wipeAt).toBeGreaterThan(-1);
+    expect(wipeAt).toBeLessThan(folderAt);
 
     const { html: alert } = renderAlert();
     expect(alert).toContain("Wipe all synced data?");
@@ -273,6 +281,19 @@ describe("Wipe cloud data", () => {
       </Dialog>,
       { providerDir: null },
     );
-    expect(html).not.toContain("Wipe cloud data…");
+    expect(html).not.toContain('aria-label="Wipe cloud data"');
+  });
+
+  it("makes Change an icon-only button right of the folder button", () => {
+    const html = wrap(
+      <Dialog open>
+        <SettingsPanel />
+      </Dialog>,
+    );
+    expect(html).not.toContain("Change…");
+    expect(clicks.get("Change cloud folder")).toBeTypeOf("function");
+    expect(html.indexOf('aria-label="Change cloud folder"')).toBeGreaterThan(
+      html.indexOf('aria-label="Go to location"'),
+    );
   });
 });

@@ -1,4 +1,4 @@
-import { ChevronDown, Settings } from "lucide-react";
+import { ChevronDown, Pencil, Settings, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
@@ -363,10 +363,42 @@ function SettingsGeneral({
               )}
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
+              {providerDir !== null && (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        className="text-destructive hover:text-destructive"
+                        disabled={busy}
+                        aria-label="Wipe cloud data"
+                        onClick={() => setWipeOpen(true)}
+                      />
+                    }
+                  >
+                    <Trash2 className="size-3.5" aria-hidden />
+                  </TooltipTrigger>
+                  <TooltipContent>Wipe cloud data</TooltipContent>
+                </Tooltip>
+              )}
               <RevealInFinderButton path={providerDir} />
-              <Button variant="secondary" size="xs" onClick={onChangeFolder}>
-                Change…
-              </Button>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="text-muted-foreground"
+                      aria-label="Change cloud folder"
+                      onClick={onChangeFolder}
+                    />
+                  }
+                >
+                  <Pencil className="size-3.5" aria-hidden />
+                </TooltipTrigger>
+                <TooltipContent>Change cloud folder</TooltipContent>
+              </Tooltip>
             </div>
           </div>
           <Tooltip>
@@ -385,17 +417,6 @@ function SettingsGeneral({
             </TooltipContent>
           </Tooltip>
         </div>
-        {providerDir !== null && (
-          <Button
-            variant="ghost"
-            size="xs"
-            className="self-start text-destructive hover:text-destructive"
-            disabled={busy}
-            onClick={() => setWipeOpen(true)}
-          >
-            Wipe cloud data…
-          </Button>
-        )}
         <WipeCloudDataAlert open={wipeOpen} onOpenChange={setWipeOpen} />
       </section>
       <section className="flex flex-col gap-3">
