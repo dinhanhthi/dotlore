@@ -11,6 +11,7 @@
   --secondary: #f4f4f5;
   --secondary-foreground: #18181b;
   --muted: #f4f4f5;
+  --code-bg: #e9e9ec;
   --muted-foreground: #71717a;
   --border: #e4e4e7;
   --ring: #a1a1aa;
@@ -33,6 +34,7 @@
     --secondary: #27272a;
     --secondary-foreground: #fafafa;
     --muted: #27272a;
+  --code-bg: #27272a;
     --muted-foreground: #a1a1aa;
     --border: #3f3f46;
     --ring: #71717a;
@@ -52,6 +54,7 @@
   --secondary: #27272a;
   --secondary-foreground: #fafafa;
   --muted: #27272a;
+  --code-bg: #27272a;
   --muted-foreground: #a1a1aa;
   --border: #3f3f46;
   --ring: #71717a;
@@ -70,6 +73,10 @@ html {
 }
 
 body {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
   margin: 0;
   background: var(--background);
   color: var(--foreground);
@@ -94,17 +101,29 @@ a {
 .page {
   max-width: 40rem;
   margin-inline: auto;
-  padding: 2.5rem 1.25rem 3.5rem;
+  padding: 0 1.25rem 2.5rem;
 }
 
 .site-header {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.site-main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.site-header-inner {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding-bottom: 1.25rem;
-  border-bottom: 1px solid var(--border);
+  max-width: 40rem;
+  margin-inline: auto;
+  padding: 0.625rem 1.25rem;
 }
 
 .icon-btn {
@@ -241,6 +260,12 @@ a {
   line-height: 1;
 }
 
+.brand-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -295,6 +320,9 @@ code {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
   font-size: 0.84em;
+  padding: 0.125em 0.375em;
+  border-radius: 0.3rem;
+  background: var(--code-bg);
 }
 
 section {
@@ -338,13 +366,16 @@ section h2,
   font-size: 0.875rem;
 }
 
-.site-footer,
-footer {
-  margin-top: 2.5rem;
-  padding-top: 1.25rem;
+.site-footer {
   border-top: 1px solid var(--border);
   color: var(--muted-foreground);
   font-size: 0.875rem;
+}
+
+.site-footer-inner {
+  max-width: 40rem;
+  margin-inline: auto;
+  padding: 0.625rem 1.25rem;
 }
 
 .site-footer a {

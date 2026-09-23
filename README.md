@@ -59,6 +59,7 @@ pnpm format:check
 
 > [!TIP]
 > `pnpm tauri dev` stores its state in `~/Downloads/dotlore-dev` (override with `DOTLORE_HOME`), so it can run beside an installed copy.
+> That also gives it its own device identity, so point it at a separate cloud folder — see [A dev run has its own state directory](CONTRIBUTING.md#a-dev-run-has-its-own-state-directory).
 
 ### 📦 Build
 
@@ -68,7 +69,7 @@ export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
 pnpm build              # → src-tauri/target/release/bundle/{macos/Dotlore.app, dmg/*.dmg}
 ```
 
-The signing key is required because the build also produces signed updater artifacts.
+The signing key is required because the build also produces signed updater artifacts. `pnpm tauri dev` does not need it.
 
 ## 🌐 Website
 
