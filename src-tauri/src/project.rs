@@ -90,18 +90,10 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
             "scripts/",
             "output-styles/",
             "workflows/",
-            "themes/"
+            "themes/",
         ],
     ),
-    (
-        "codex",
-        &[
-            "config.toml",
-            "AGENTS.md",
-            "rules/",
-            "prompts/",
-        ],
-    ),
+    ("codex", &["config.toml", "AGENTS.md", "rules/", "prompts/"]),
     (
         "cursor",
         &[
@@ -109,17 +101,12 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
             "AGENTS.md",
             "rules/",
             "agents/",
-            "commands/"
+            "commands/",
         ],
     ),
     (
         "gemini",
-        &[
-            "settings.json",
-            "GEMINI.md",
-            "commands/",
-            "agents/"
-        ],
+        &["settings.json", "GEMINI.md", "commands/", "agents/"],
     ),
     (
         "opencode",
@@ -136,21 +123,13 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
     ),
     (
         "continue",
-        &[
-            "config.yaml",
-            "rules/",
-            "assistants/",
-            "prompts/",
-        ],
+        &["config.yaml", "rules/", "assistants/", "prompts/"],
     ),
     (
         "junie",
         &["AGENTS.md", "guidelines.md", "playbook.md", "rules/"],
     ),
-    (
-        "kiro",
-        &["settings/", "steering/", "agents/"],
-    ),
+    ("kiro", &["settings/", "steering/", "agents/"]),
     ("roo", &["rules/"]),
     ("cline", &["rules/"]),
     ("windsurf", &["memories/global_rules.md"]),
