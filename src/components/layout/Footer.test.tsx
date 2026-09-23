@@ -89,6 +89,14 @@ describe("conflict entry point", () => {
     expect([...clicks.keys()].some((k) => k.includes("show them"))).toBe(false);
   });
 
+  it("ignores cloud-only projects this device has not linked", () => {
+    const unlinked: RootRow = { ...row("b", { kind: "Pending" }), path: "", linked: false };
+    const html = wrap(<Footer />, { roots: [row("a", { kind: "Synced" }), unlinked] });
+    expect(html).toContain("Synced");
+    expect(html).not.toContain("Pending");
+    expect(html).toContain("1 roots");
+  });
+
   it("shows a loading state instead of the status while roots are loading", () => {
     const html = wrap(<Footer />, { loadingRoots: true });
     expect(html).toContain("Loading projects…");

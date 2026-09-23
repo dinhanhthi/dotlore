@@ -66,7 +66,7 @@ function aggregateStatus(
 
 export function Footer() {
   const {
-    roots,
+    roots: allRoots,
     providerDir,
     trackedBySlug,
     error,
@@ -78,6 +78,8 @@ export function Footer() {
     openResolver,
     showConflicts,
   } = useRoots();
+  // Cloud-only projects are optional on this device, not waiting to sync.
+  const roots = allRoots.filter((row) => row.linked);
   const syncing = useSyncing();
   const taskLabel = useTaskLabel();
   const status = aggregateStatus(providerDir, roots);
