@@ -22,6 +22,14 @@ const { importInstalledAgents, setBanner, refreshClicks } = vi.hoisted(() => ({
 vi.mock("@/lib/ipc", () => ({
   importInstalledAgents,
   setBanner,
+  subscribeWork: () => () => {},
+  getWorkSnapshot: () => ({
+    inflight: 0,
+    syncing: 0,
+    banner: null,
+    taskLabel: null,
+    trackConfirm: null,
+  }),
   linkRoot: vi.fn(),
   recoverRoot: vi.fn(),
   addRoot: vi.fn(),
@@ -64,6 +72,7 @@ function renderSidebar(overrides: Partial<RootsContextValue> = {}) {
     addProject: async () => {},
     inflight: 0,
     busy: false,
+    locked: false,
     banner: null,
     setBanner: () => {},
     ...overrides,

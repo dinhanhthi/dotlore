@@ -94,10 +94,12 @@ export function setBanner(message: string | null): void {
   emit();
 }
 
-/** Count in-flight writes; on failure, set the command-error banner. */
+/**
+ * Count in-flight writes; on failure, set the command-error banner. A banner a
+ * finished task left behind is not cleared here — the toast dismisses itself.
+ */
 async function run<T>(op: () => Promise<T>): Promise<T> {
   inflight += 1;
-  banner = null;
   emit();
   try {
     return await op();
@@ -120,8 +122,10 @@ export async function runTask<T>(
   label: string,
   op: () => Promise<T>,
 ): Promise<T | null> {
-  if (taskLabel !== null || confirmResolve !== null) return null;
-  setBanner(null);
+  if (taskLabel !== null || confirmResolve !== null) {
+    setBanner("Wait for the current task to finish");
+    return null;
+  }
   setTaskLabel(label);
   try {
     return await op();
@@ -165,9 +169,14 @@ export function resolveConflict(
   rel: string,
   discardSiblings: string[],
   content: string,
-): Promise<ResolveResultDto> {
-  return run(() =>
-    invoke("resolve_conflict", { slug, rel, discardSiblings, content }),
+): Promise<ResolveResultDto | null> {
+  return runTask(`Resolving ${rel}…`, () =>
+    invoke<ResolveResultDto>("resolve_conflict", {
+      slug,
+      rel,
+      discardSiblings,
+      content,
+    }),
   );
 }
 
@@ -177,9 +186,14 @@ export function resolveBinary(
   rel: string,
   keep: "live" | "other",
   sibling?: string | null,
-): Promise<ResolveResultDto> {
-  return run(() =>
-    invoke("resolve_binary", { slug, rel, keep, sibling: sibling ?? null }),
+): Promise<ResolveResultDto | null> {
+  return runTask(`Resolving ${rel}…`, () =>
+    invoke<ResolveResultDto>("resolve_binary", {
+      slug,
+      rel,
+      keep,
+      sibling: sibling ?? null,
+    }),
   );
 }
 
@@ -220,8 +234,10 @@ export function importInstalledAgents(): Promise<ImportAgentsDto | null> {
   );
 }
 
-export function linkRoot(slug: string, path: string): Promise<void> {
-  return run(() => invoke("link_root", { slug, path }));
+export function linkRoot(slug: string, path: string): Promise<void | null> {
+  return runTask(`Linking ${slug}…`, () =>
+    invoke<void>("link_root", { slug, path }),
+  );
 }
 
 export function removeRoot(slug: string): Promise<void> {
@@ -233,14 +249,18 @@ export type WipeReport = {
   failed: { slug: string; error: string }[];
 };
 
+export const WIPE_LABEL = "Wiping cloud data…";
+
 export function wipeCloudData(): Promise<WipeReport | null> {
-  return runTask("Wiping cloud data…", () =>
+  return runTask(WIPE_LABEL, () =>
     invoke<WipeReport>("wipe_cloud_data"),
   );
 }
 
-export function recoverRoot(slug: string): Promise<void> {
-  return run(() => invoke("recover_root", { slug }));
+export function recoverRoot(slug: string): Promise<void | null> {
+  return runTask(`Rebuilding ${slug}…`, () =>
+    invoke<void>("recover_root", { slug }),
+  );
 }
 
 export function listLinkable(): Promise<LinkableRow[]> {
@@ -279,8 +299,13 @@ export function trackEntry(
   );
 }
 
-export function untrackEntry(slug: string, rel: string): Promise<EntryView[]> {
-  return run(() => invoke("untrack_entry", { slug, rel }));
+export function untrackEntry(
+  slug: string,
+  rel: string,
+): Promise<EntryView[] | null> {
+  return runTask(`Untracking ${rel}…`, () =>
+    invoke<EntryView[]>("untrack_entry", { slug, rel }),
+  );
 }
 
 export type TrackBatchOp = {

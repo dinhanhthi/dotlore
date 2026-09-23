@@ -24,10 +24,10 @@ export function RemoveRootAlert({
   open,
   onOpenChange,
 }: RemoveRootAlertProps) {
-  const { refreshRoots, busy } = useRoots();
+  const { refreshRoots, locked } = useRoots();
 
   async function confirm() {
-    if (slug === null || busy) return;
+    if (slug === null || locked) return;
     try {
       await removeRoot(slug);
       await refreshRoots();
@@ -47,10 +47,10 @@ export function RemoveRootAlert({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={locked}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
-            disabled={busy || slug === null}
+            disabled={locked || slug === null}
             onClick={(event) => {
               event.preventDefault();
               void confirm();

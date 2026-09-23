@@ -77,7 +77,8 @@ function errorMessage(error: unknown): string {
 }
 
 export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) {
-  const { busy, refreshRoots } = useRoots();
+  const { locked, refreshRoots } = useRoots();
+  const [resolving, setResolving] = useState(false);
   const [dto, setDto] = useState<ResolutionDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -210,29 +211,35 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
     const discardSiblings = dto.siblings
       .filter((item) => discard[item.path] !== false)
       .map((item) => item.path);
+    setResolving(true);
     try {
-      await applyOutcome(
-        await resolveConflict(slug, rel, discardSiblings, content),
-      );
+      const result = await resolveConflict(slug, rel, discardSiblings, content);
+      if (result === null) return;
+      await applyOutcome(result);
     } catch {
-      // Banner is set by `run()`.
+      // Banner is set by `runTask()`.
+    } finally {
+      setResolving(false);
     }
   }
 
   async function handleBinary(keep: "live" | "other") {
     if (!dto || !dto.binary) return;
     if (keep === "other" && !sibling) return;
+    setResolving(true);
     try {
-      await applyOutcome(
-        await resolveBinary(
-          slug,
-          rel,
-          keep,
-          keep === "other" ? (sibling?.path ?? null) : null,
-        ),
+      const result = await resolveBinary(
+        slug,
+        rel,
+        keep,
+        keep === "other" ? (sibling?.path ?? null) : null,
       );
+      if (result === null) return;
+      await applyOutcome(result);
     } catch {
-      // Banner is set by `run()`.
+      // Banner is set by `runTask()`.
+    } finally {
+      setResolving(false);
     }
   }
 
@@ -292,7 +299,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
               device="this device"
               bytes={dto.live_bytes_len}
               actionLabel="Keep LIVE"
-              disabled={busy}
+              disabled={locked}
               onKeep={() => {
                 void handleBinary("live");
               }}
@@ -302,7 +309,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
               device={device}
               bytes={sibling?.bytes_len ?? 0}
               actionLabel="Keep OTHER"
-              disabled={busy || !sibling}
+              disabled={locked || !sibling}
               onKeep={() => {
                 void handleBinary("other");
               }}
@@ -366,7 +373,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
           </p>
         )}
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={resolving}>
             Cancel
           </Button>
           {!dto?.binary ? (
@@ -375,7 +382,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
               onClick={() => {
                 void handleResolve();
               }}
-              disabled={busy || !dto}
+              disabled={locked || !dto}
             >
               Resolve
             </Button>

@@ -476,16 +476,18 @@ export function UntrackEntryDialog({
   onOpenChange,
   onMutated,
 }: UntrackEntryDialogProps) {
-  const { busy } = useRoots();
+  const { locked } = useRoots();
 
   async function confirm() {
-    if (entry === null || busy) return;
+    if (entry === null || locked) return;
     try {
-      await untrackEntry(slug, entry.key.replace(/\/$/, ""));
-      onMutated();
       onOpenChange(false);
+      if ((await untrackEntry(slug, entry.key.replace(/\/$/, ""))) === null) {
+        return;
+      }
+      onMutated();
     } catch {
-      // Banner is set by `run()`.
+      // Banner is set by `runTask()`.
     }
   }
 
@@ -501,10 +503,10 @@ export function UntrackEntryDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={locked}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
-            disabled={busy || entry === null}
+            disabled={locked || entry === null}
             onClick={(event) => {
               event.preventDefault();
               void confirm();

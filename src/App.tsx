@@ -432,6 +432,7 @@ export function App() {
       addProject,
       inflight: work.inflight,
       busy: work.inflight > 0,
+      locked: work.inflight > 0 || work.taskLabel !== null,
       banner: work.banner,
       setBanner,
     }),

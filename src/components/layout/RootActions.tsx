@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 import { RevealInFinderButton } from "./RevealInFinderButton";
 
 function useSelectedRoot() {
-  const { roots, selectedSlug, view, starredSlugs, toggleStar, busy, seeding } =
+  const { roots, selectedSlug, view, starredSlugs, toggleStar, locked, seeding } =
     useRoots();
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
   const active = view === "root" && root !== null;
@@ -29,7 +29,7 @@ function useSelectedRoot() {
   const seedingThis =
     selectedSlug !== null && seeding.some((item) => item.slug === selectedSlug);
   const revealPath = root?.path ? root.path : null;
-  const removeDisabled = !active || busy || seedingThis;
+  const removeDisabled = !active || locked || seedingThis;
   return {
     root,
     active,

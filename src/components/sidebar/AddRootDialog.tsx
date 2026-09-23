@@ -25,7 +25,7 @@ export function AddRootDialog({
   open,
   onOpenChange,
 }: AddRootDialogProps) {
-  const { addProject, busy } = useRoots();
+  const { addProject, locked } = useRoots();
   const [slug, setSlug] = useState(defaultSlug);
   const [closing, setClosing] = useState(false);
 
@@ -67,7 +67,7 @@ export function AddRootDialog({
             onChange={(event) => setSlug(event.target.value)}
             autoComplete="off"
             spellCheck={false}
-            disabled={busy || closing}
+            disabled={locked || closing}
           />
           <DialogFooter>
             <Button

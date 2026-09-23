@@ -69,6 +69,8 @@ export type RootsContextValue = RootsState & {
   addProject: (path: string, slug: string) => Promise<void>;
   inflight: number;
   busy: boolean;
+  /** A write is in flight: the global lock, or a background footer task. */
+  locked: boolean;
   banner: string | null;
   setBanner: (message: string | null) => void;
 };

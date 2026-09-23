@@ -39,6 +39,7 @@ import {
   setMaxFileMb,
   setMaxSeedFolderMb,
   setPatternCatalog,
+  WIPE_LABEL,
   type PatternCatalog,
 } from "@/lib/ipc";
 import { useRoots, useTaskLabel } from "@/lib/roots";
@@ -61,9 +62,9 @@ async function commitMb(
   write: (mb: number) => Promise<void>,
   read: () => Promise<number>,
   setLocal: (mb: number) => void,
-  busy: boolean,
+  locked: boolean,
 ) {
-  if (busy) return;
+  if (locked) return;
   const mb = Math.round(raw);
   if (!Number.isFinite(mb) || mb <= 0) {
     void read()
@@ -82,7 +83,7 @@ async function commitMb(
 }
 
 function SettingsLimits() {
-  const { busy } = useRoots();
+  const { locked } = useRoots();
   const [fileMb, setFileMb] = useState(50);
   const [folderMb, setFolderMb] = useState(200);
 
@@ -114,10 +115,10 @@ function SettingsLimits() {
                 step={1}
                 className="w-24"
                 value={fileMb}
-                disabled={busy}
+                disabled={locked}
                 onChange={(event) => setFileMb(Number(event.target.value))}
                 onBlur={() => {
-                  void commitMb(fileMb, setMaxFileMb, maxFileMb, setFileMb, busy);
+                  void commitMb(fileMb, setMaxFileMb, maxFileMb, setFileMb, locked);
                 }}
               />
               <span className="text-xs text-muted-foreground">MB</span>
@@ -140,7 +141,7 @@ function SettingsLimits() {
                 step={1}
                 className="w-24"
                 value={folderMb}
-                disabled={busy}
+                disabled={locked}
                 onChange={(event) => setFolderMb(Number(event.target.value))}
                 onBlur={() => {
                   void commitMb(
@@ -148,7 +149,7 @@ function SettingsLimits() {
                     setMaxSeedFolderMb,
                     maxSeedFolderMb,
                     setFolderMb,
-                    busy,
+                    locked,
                   );
                 }}
               />
@@ -168,7 +169,7 @@ function SettingsLimits() {
 
 /** Global seed include-list for new projects and agent folders. */
 export function SettingsPatterns() {
-  const { busy } = useRoots();
+  const { locked } = useRoots();
   const [catalogs, setCatalogs] = useState<PatternCatalog[]>([]);
   const [selectedId, setSelectedId] = useState("projects");
   const [lines, setLines] = useState<string[]>([]);
@@ -199,7 +200,7 @@ export function SettingsPatterns() {
   }
 
   async function commit(next: string[]) {
-    if (busy) return;
+    if (locked) return;
     const catalogId = selectedId;
     try {
       await setPatternCatalog(catalogId, next);
@@ -233,7 +234,7 @@ export function SettingsPatterns() {
       id="default-patterns"
       hint="Applies to folders added from now on. Folders already added keep their list."
       lines={lines}
-      disabled={busy}
+      disabled={locked}
       addPlaceholder="Add a pattern"
       onCommit={(next) => {
         void commit(next);
@@ -246,7 +247,7 @@ export function SettingsPatterns() {
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={busy}
+                disabled={locked}
                 className="shrink-0 text-xs"
               />
             }
@@ -278,7 +279,7 @@ export function SettingsPatterns() {
 
 /** Global seed never-list for new projects and agent folders. */
 export function SettingsNeverList() {
-  const { busy } = useRoots();
+  const { locked } = useRoots();
   const [lines, setLines] = useState<string[]>([]);
 
   useEffect(() => {
@@ -290,7 +291,7 @@ export function SettingsNeverList() {
   }, []);
 
   async function commit(next: string[]) {
-    if (busy) return;
+    if (locked) return;
     try {
       await setDefaultIgnore(`${next.join("\n")}\n`);
       setLines(next);
@@ -306,7 +307,7 @@ export function SettingsNeverList() {
       id="default-ignore"
       hint="Applies to projects and agent folders added from now on."
       lines={lines}
-      disabled={busy}
+      disabled={locked}
       addPlaceholder="Add an entry"
       onCommit={(next) => {
         void commit(next);
@@ -320,8 +321,9 @@ function SettingsGeneral({
 }: {
   onChangeFolder: () => void;
 }) {
-  const { providerDir, busy } = useRoots();
-  const cloudBusy = useTaskLabel() !== null;
+  const { providerDir, locked } = useRoots();
+  const taskLabel = useTaskLabel();
+  const wiping = taskLabel === WIPE_LABEL;
   const [loginOn, setLoginOn] = useState(false);
   const [wipeOpen, setWipeOpen] = useState(false);
   const [theme, setTheme] = useTheme();
@@ -335,7 +337,7 @@ function SettingsGeneral({
   }, []);
 
   async function toggleLogin(on: boolean) {
-    if (busy) return;
+    if (locked) return;
     const previous = loginOn;
     setLoginOn(on);
     try {
@@ -373,13 +375,13 @@ function SettingsGeneral({
                         variant="ghost"
                         size="icon-xs"
                         className="text-destructive hover:text-destructive"
-                        disabled={busy || cloudBusy}
+                        disabled={locked}
                         aria-label="Wipe cloud data"
                         onClick={() => setWipeOpen(true)}
                       />
                     }
                   >
-                    {cloudBusy ? (
+                    {wiping ? (
                       <Loader2 className="size-3.5 animate-spin" aria-hidden />
                     ) : (
                       <Trash2 className="size-3.5" aria-hidden />
@@ -396,7 +398,7 @@ function SettingsGeneral({
                       variant="ghost"
                       size="icon-xs"
                       className="text-muted-foreground"
-                      disabled={busy || cloudBusy}
+                      disabled={locked}
                       aria-label="Change cloud folder"
                       onClick={onChangeFolder}
                     />
@@ -458,7 +460,7 @@ function SettingsGeneral({
           <Switch
             id="start-at-login"
             checked={loginOn}
-            disabled={busy}
+            disabled={locked}
             onCheckedChange={(on) => {
               void toggleLogin(on);
             }}

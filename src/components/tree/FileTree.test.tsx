@@ -48,6 +48,7 @@ function renderTree(row: RootRow): string {
     refreshRoots: async () => {},
     inflight: 0,
     busy: false,
+    locked: false,
     banner: null,
     setBanner: () => {},
     addProject: async () => {},
@@ -105,6 +106,7 @@ describe("FileTree seeding", () => {
       addProject: async () => {},
       inflight: 0,
       busy: false,
+      locked: false,
       banner: null,
       setBanner: () => {},
     };

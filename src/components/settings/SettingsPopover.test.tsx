@@ -67,6 +67,7 @@ vi.mock("@/components/ui/alert-dialog", async () => {
 vi.mock("@/lib/ipc", () => ({
   wipeCloudData,
   setBanner,
+  WIPE_LABEL: "Wiping cloud data…",
   subscribeWork: () => () => {},
   getWorkSnapshot: () => ({
     inflight: 0,
@@ -109,6 +110,7 @@ function wrap(
     refreshRoots: async () => {},
     inflight: 0,
     busy: false,
+    locked: false,
     banner: null,
     setBanner: () => {},
     addProject: async () => {},
@@ -319,6 +321,19 @@ describe("Wipe cloud data", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(wipeCloudData).toHaveBeenCalledOnce();
     finish({ readded: [], failed: [] });
+  });
+
+  it("does not refresh when the task slot is taken", async () => {
+    wipeCloudData.mockResolvedValueOnce(
+      null as unknown as { readded: string[]; failed: { slug: string; error: string }[] },
+    );
+    const refreshRoots = vi.fn(async () => {});
+    renderAlert({ refreshRoots });
+
+    await clickWipe();
+
+    expect(refreshRoots).not.toHaveBeenCalled();
+    expect(setBanner).not.toHaveBeenCalled();
   });
 
   it("banners the projects that could not be rebuilt", async () => {

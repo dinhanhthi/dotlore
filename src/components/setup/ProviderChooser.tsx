@@ -31,17 +31,17 @@ function mountName(path: string): string {
 }
 
 type ProviderChooserProps = {
-  /** Called after `set_provider` succeeds and local state is updated. */
+  /** Called as soon as a folder is chosen, before `set_provider` runs. */
   onApplied?: () => void;
 };
 
 export function ProviderChooser({ onApplied }: ProviderChooserProps) {
-  const { applyProvider, busy, setBanner } = useRoots();
+  const { applyProvider, locked: appLocked, setBanner } = useRoots();
   const [provider, setProviderChoice] = useState<Provider | null>(null);
   const [mounts, setMounts] = useState<string[] | null>(null);
   const [account, setAccount] = useState<string | null>(null);
   const [localBusy, setLocalBusy] = useState(false);
-  const locked = busy || localBusy;
+  const locked = appLocked || localBusy;
 
   /**
    * Closes first, then writes: `set_provider` runs as a footer task, so the

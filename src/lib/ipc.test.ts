@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { listLinkable, trackedFiles } from "./ipc";
+import { getWorkSnapshot, listLinkable, runTask, trackedFiles } from "./ipc";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -39,5 +39,35 @@ describe("listLinkable", () => {
     ];
     invokeMock.mockResolvedValue(rows);
     await expect(listLinkable()).resolves.toEqual(rows);
+  });
+});
+
+describe("runTask", () => {
+  it("carries the label while it runs and clears it afterwards", async () => {
+    let seen: string | null = null;
+    await runTask("Wiping cloud data…", async () => {
+      seen = getWorkSnapshot().taskLabel;
+    });
+    expect(seen).toBe("Wiping cloud data…");
+    expect(getWorkSnapshot().taskLabel).toBeNull();
+  });
+
+  it("clears the label when the task throws", async () => {
+    await expect(
+      runTask("Linking x…", () => Promise.reject(new Error("boom"))),
+    ).rejects.toThrow("boom");
+    expect(getWorkSnapshot().taskLabel).toBeNull();
+    expect(getWorkSnapshot().banner).toBe("boom");
+  });
+
+  it("refuses a second task while one holds the slot, and does not run it", async () => {
+    const second = vi.fn(async () => "ran");
+    const first = runTask("Rebuilding x…", async () => {
+      return await runTask("Wiping cloud data…", second);
+    });
+    await expect(first).resolves.toBeNull();
+    expect(second).not.toHaveBeenCalled();
+    expect(getWorkSnapshot().banner).toBe("Wait for the current task to finish");
+    expect(getWorkSnapshot().taskLabel).toBeNull();
   });
 });

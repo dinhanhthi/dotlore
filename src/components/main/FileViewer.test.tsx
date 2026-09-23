@@ -39,6 +39,7 @@ function renderViewer(): string {
     refreshRoots: async () => {},
     inflight: 0,
     busy: false,
+    locked: false,
     banner: null,
     setBanner: () => {},
     addProject: async () => {},

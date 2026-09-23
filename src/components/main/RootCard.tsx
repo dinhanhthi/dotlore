@@ -65,7 +65,7 @@ export function RootCard({ row }: RootCardProps) {
     selectRoot,
     openFirstConflict,
     toggleStar,
-    busy,
+    locked,
     seeding,
   } = useRoots();
   const starred = starredSlugs.includes(row.slug);
@@ -168,7 +168,7 @@ export function RootCard({ row }: RootCardProps) {
                   type="button"
                   variant="ghost"
                   size="icon-xs"
-                  disabled={busy || seedingThis}
+                  disabled={locked || seedingThis}
                   aria-label="Remove from Dotlore"
                   onClick={() => setRemoveOpen(true)}
                   className="text-muted-foreground hover:text-destructive"

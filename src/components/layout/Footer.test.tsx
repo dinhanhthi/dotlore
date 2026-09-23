@@ -53,6 +53,7 @@ function wrap(node: React.ReactNode, overrides: Partial<RootsContextValue> = {})
     refreshRoots: async () => {},
     inflight: 0,
     busy: false,
+    locked: false,
     banner: null,
     setBanner: () => {},
     addProject: async () => {},

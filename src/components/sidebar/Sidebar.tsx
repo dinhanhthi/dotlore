@@ -88,7 +88,7 @@ export function Sidebar() {
     showConflicts,
     toggleStar,
     refreshRoots,
-    busy,
+    locked,
     seeding,
   } = useRoots();
   const { query, setQuery } = useSidebarQuery();
@@ -149,22 +149,23 @@ export function Sidebar() {
   const projects = visible.filter((row) => !row.is_agent).sort(compareRoots);
 
   async function startAdd() {
-    if (busy) return;
+    if (locked) return;
     const path = await pickLocalPath();
     if (path === null) return;
     setPendingAdd({ path, slug: defaultSlug(path) });
   }
 
   async function refreshAgents() {
-    if (busy || refreshing) return;
+    if (locked || refreshing) return;
     setRefreshing(true);
     try {
       try {
         const report = await importInstalledAgents();
-        const first = report?.failed[0];
+        if (report === null) return;
+        const first = report.failed[0];
         if (first) setBanner(first.message);
       } catch {
-        // Banner is set by `run()`.
+        // Banner is set by `runTask()`.
         return;
       }
       await refreshRoots();
@@ -174,25 +175,25 @@ export function Sidebar() {
   }
 
   async function handleRecover(slug: string) {
-    if (busy) return;
+    if (locked) return;
     try {
-      await recoverRoot(slug);
+      if ((await recoverRoot(slug)) === null) return;
       await refreshRoots();
     } catch {
-      // Banner is set by `run()`.
+      // Banner is set by `runTask()`.
     }
   }
 
   async function handleLink(slug: string) {
-    if (busy) return;
+    if (locked) return;
     const path = await pickLocalPath();
     if (path === null) return;
     try {
-      await linkRoot(slug, path);
+      if ((await linkRoot(slug, path)) === null) return;
       await refreshRoots();
       selectRoot(slug);
     } catch {
-      // Banner is set by `run()`.
+      // Banner is set by `runTask()`.
     }
   }
 
@@ -224,7 +225,7 @@ export function Sidebar() {
               }
             : undefined
         }
-        writeDisabled={busy || seeding.some((item) => item.slug === row.slug)}
+        writeDisabled={locked || seeding.some((item) => item.slug === row.slug)}
         onRecover={
           row.status.kind === "Error" ? () => void handleRecover(row.slug) : undefined
         }
@@ -277,7 +278,7 @@ export function Sidebar() {
             <div className="flex items-center">
               <AddSectionButton
                 label="Add agent"
-                disabled={busy}
+                disabled={locked}
                 onPick={() => void startAdd()}
               />
               <Tooltip>
@@ -288,7 +289,7 @@ export function Sidebar() {
                       size="icon-xs"
                       aria-label="Refresh agents"
                       aria-busy={refreshing || undefined}
-                      disabled={busy || refreshing}
+                      disabled={locked || refreshing}
                       onClick={() => void refreshAgents()}
                     />
                   }
@@ -315,7 +316,7 @@ export function Sidebar() {
           action={
             <AddSectionButton
               label="Add project"
-              disabled={busy}
+              disabled={locked}
               onPick={() => void startAdd()}
             />
           }
