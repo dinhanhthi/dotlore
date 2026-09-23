@@ -1180,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn default_ignore_allows_only_the_selected_claude_plugin_json_files() {
+    fn claude_seed_skips_plugins_but_the_default_ignore_does_not_block_them() {
         let td = tempfile::TempDir::new().unwrap();
         let home = td.path();
         let claude = home.join(".claude");
@@ -1197,10 +1197,11 @@ mod tests {
         let pats = patterns_for(&root, home, &cfg);
         let (file, _) = seed(&claude, &pats, DEFAULT_NEVER_IGNORE, Limits::default()).unwrap();
         let keys = tracked_keys(&file);
-        assert!(keys.contains(&"plugins/installed_plugins.json".into()));
-        assert!(keys.contains(&"plugins/known_marketplaces.json".into()));
-        assert!(keys.contains(&"plugins/blocklist.json".into()));
-        assert!(!keys.iter().any(|k| k.contains("extra-cache")));
+        assert!(keys.contains(&"settings.json".into()), "{keys:?}");
+        assert!(
+            !keys.iter().any(|k| k.starts_with("plugins")),
+            "claude patterns no longer track plugins/: {keys:?}"
+        );
         assert!(!keys.iter().any(|k| k.starts_with("projects")));
 
         let staged = staged_files(&claude, DEFAULT_NEVER_IGNORE);
@@ -1235,7 +1236,10 @@ mod tests {
         let pats = patterns_for(&root, home, &cfg);
         let (file, _) = seed(&opencode, &pats, DEFAULT_NEVER_IGNORE, Limits::default()).unwrap();
         let keys = tracked_keys(&file);
-        assert!(keys.contains(&"plugins/".into()), "{keys:?}");
+        assert!(
+            !keys.contains(&"plugins/".into()),
+            "opencode patterns no longer track plugins/: {keys:?}"
+        );
         assert!(keys.contains(&"opencode.json".into()), "{keys:?}");
         assert!(!keys
             .iter()
