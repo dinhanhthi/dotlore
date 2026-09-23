@@ -11,4 +11,8 @@ design.md
 .coding-friend/*
 !.coding-friend/skills/
 
-.env
+*.env
+.codex/
+.claude/
+CLAUDE.md
+AGENTS.md

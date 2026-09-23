@@ -59,6 +59,8 @@ export type RootsContextValue = RootsState & {
   openFirstConflict: (slug: string) => void;
   /** Leave the resolver; `close_resolution` runs on unmount. */
   closeResolver: () => void;
+  /** The resolver reports whether Result differs from its initial text. */
+  setResolverDirty: (dirty: boolean) => void;
   showAllProjects: () => void;
   showStarred: () => void;
   showConflicts: () => void;

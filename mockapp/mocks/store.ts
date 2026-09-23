@@ -191,12 +191,12 @@ export function syncConflictCount(slug: string): void {
 
 export function resolutionFor(slug: string, rel: string): ResolutionDto {
   const record = fileRecord(slug, rel);
-  const sibling = (store.conflicts[slug] ?? []).find((view) => view.live === rel);
+  const siblings = (store.conflicts[slug] ?? []).filter((view) => view.live === rel);
   return demoResolution(
     slug,
     rel,
     record?.text ?? null,
     record?.binary ?? false,
-    sibling,
+    siblings,
   );
 }

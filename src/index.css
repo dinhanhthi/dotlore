@@ -255,3 +255,49 @@
 .cm-merge-host .cm-mergeViewEditor + .cm-mergeViewEditor {
   border-left: 1px solid var(--border);
 }
+
+/* Per-chunk "+" / check toggles in the MergeView side gutters. */
+.cm-chunk-toggle-gutter .cm-gutterElement {
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+}
+
+.cm-chunk-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.cm-chunk-toggle:hover {
+  color: var(--foreground);
+}
+
+.cm-chunk-toggle[aria-pressed="true"] {
+  color: var(--primary);
+}
+
+/* Result: empty conflict slots and the current slot. */
+.cm-chunk-placeholder {
+  margin: 2px 4px;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  cursor: text;
+}
+
+.cm-chunk-placeholder-current {
+  border-color: var(--status-conflict);
+}
+
+.cm-chunk-current {
+  background-color: color-mix(in oklch, var(--status-conflict) 14%, transparent);
+}

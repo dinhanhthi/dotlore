@@ -31,6 +31,7 @@ function renderViewer(): string {
     openResolver: () => {},
     openFirstConflict: () => {},
     closeResolver: () => {},
+    setResolverDirty: () => {},
     showAllProjects: () => {},
     showStarred: () => {},
     showConflicts: () => {},

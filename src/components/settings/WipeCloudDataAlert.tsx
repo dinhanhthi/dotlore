@@ -49,9 +49,9 @@ export function WipeCloudDataAlert({
           <AlertDialogTitle>Wipe all synced data?</AlertDialogTitle>
           <AlertDialogDescription>
             This deletes everything Dotlore has synced to your cloud folder,
-            for every Mac, and rebuilds each project from your current
+            for every machine, and rebuilds each project from your current
             patterns. Files in your projects are not touched. Quit Dotlore and
-            reset it on your other Macs first, or they will upload the old data
+            reset it on your other machines first, or they will upload the old data
             again.
           </AlertDialogDescription>
         </AlertDialogHeader>

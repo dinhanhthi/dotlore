@@ -1,7 +1,14 @@
-import { MergeView } from "@codemirror/merge";
-import { EditorState } from "@codemirror/state";
+import { Chunk, MergeView } from "@codemirror/merge";
+import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { CircleHelp, Maximize2, Minimize2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  CircleHelp,
+  Loader2,
+  Maximize2,
+  Minimize2,
+} from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -14,12 +21,35 @@ import {
   resolveBinary,
   resolveConflict,
 } from "@/lib/ipc";
+import { closeClean } from "@/lib/leave-guard";
+import {
+  chunkToggleGutter,
+  resultDecorations,
+  setCurrentChunk,
+  setSidePicks,
+} from "@/lib/merge-controls";
+import {
+  assembleResult,
+  chunkAtHeight,
+  keepAll,
+  resultPosForA,
+  resultSlots,
+  type Side,
+  slotSummary,
+  toggleSlot,
+} from "@/lib/merge-result";
 import { useRoots } from "@/lib/roots";
 import type { ResolutionDto, ResolveResultDto, SiblingDto } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const RESULT_DEFAULT = 180;
 const RESULT_MIN = 80;
+/** Quiet period after ↑/↓ before scroll events may recompute `current`. */
+const NAV_SETTLE_MS = 150;
+
+type Summary = ReturnType<typeof slotSummary>;
+
+const EMPTY_SUMMARY: Summary = { total: 0, resolved: [], picks: [] };
 
 type ConflictResolverProps = {
   slug: string;
@@ -80,7 +110,7 @@ function errorMessage(error: unknown): string {
 }
 
 export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) {
-  const { locked, refreshRoots } = useRoots();
+  const { locked, refreshRoots, setResolverDirty } = useRoots();
   const [resolving, setResolving] = useState(false);
   const [dto, setDto] = useState<ResolutionDto | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -88,12 +118,17 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
   const [siblingIndex, setSiblingIndex] = useState(0);
   const [discard, setDiscard] = useState<Record<string, boolean>>({});
   const [resultHeight, setResultHeight] = useState(RESULT_DEFAULT);
-  const [seed, setSeed] = useState<{ key: string; text: string } | null>(null);
+  const [summary, setSummary] = useState<Summary>(EMPTY_SUMMARY);
   const [expanded, setExpanded] = useState(false);
+  const [current, setCurrent] = useState(0);
 
   const mergeParentRef = useRef<HTMLDivElement>(null);
   const resultParentRef = useRef<HTMLDivElement>(null);
+  const mergeViewRef = useRef<MergeView | null>(null);
   const resultViewRef = useRef<EditorView | null>(null);
+  const initialResultRef = useRef("");
+  const currentRef = useRef(0);
+  const navigateRef = useRef<((index: number) => void) | null>(null);
 
   useEffect(() => {
     setDto(null);
@@ -101,7 +136,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
     setNotice(null);
     setSiblingIndex(0);
     setDiscard({});
-    setSeed(null);
+    setSummary(EMPTY_SUMMARY);
   }, [slug, rel]);
 
   useEffect(() => {
@@ -110,12 +145,6 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
       .then((resolution) => {
         if (cancelled) return;
         setDto(resolution);
-        setSeed((current) => {
-          const key = `${slug}:${rel}`;
-          return current?.key === key
-            ? current
-            : { key, text: resolution.live_text ?? "" };
-        });
       })
       .catch((cause: unknown) => {
         if (!cancelled) setError(errorMessage(cause));
@@ -140,40 +169,176 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
   const sibling: SiblingDto | undefined = dto?.siblings[siblingIndex] ?? dto?.siblings[0];
 
   useEffect(() => {
-    const parent = mergeParentRef.current;
-    if (!parent || !dto || dto.binary) return;
+    const mergeParent = mergeParentRef.current;
+    const resultParent = resultParentRef.current;
+    if (!mergeParent || !resultParent || !dto || dto.binary) return;
+    const live = dto.live_text ?? "";
+    const other = sibling?.text ?? "";
+    // Both sides get the same `Text` as `assembleResult` (split on "\n" only),
+    // so these chunks match `view.chunks` even for CRLF files.
+    const aDoc = Text.of(live.split("\n"));
+    const bDoc = Text.of(other.split("\n"));
+    const chunks = Chunk.build(aDoc, bDoc);
+    const onToggle = (side: Side) => (index: number) => {
+      const result = resultViewRef.current;
+      if (result) result.dispatch(toggleSlot(result.state, index, side));
+    };
     const view = new MergeView({
       a: {
-        doc: dto.live_text ?? "",
-        extensions: [...viewerExtensions(rel), EditorView.lineWrapping],
+        doc: aDoc,
+        extensions: [
+          ...viewerExtensions(rel),
+          EditorView.lineWrapping,
+          chunkToggleGutter("a", chunks, onToggle("a")),
+        ],
       },
       b: {
-        doc: sibling?.text ?? "",
-        extensions: [...viewerExtensions(rel), EditorView.lineWrapping],
+        doc: bDoc,
+        extensions: [
+          ...viewerExtensions(rel),
+          EditorView.lineWrapping,
+          chunkToggleGutter("b", chunks, onToggle("b")),
+        ],
       },
-      parent,
+      parent: mergeParent,
       highlightChanges: true,
       gutter: true,
     });
-    return () => view.destroy();
-  }, [dto, rel, sibling]);
+    mergeViewRef.current = view;
 
-  useEffect(() => {
-    const parent = resultParentRef.current;
-    if (!parent || !seed) return;
-    const view = new EditorView({
+    const { text, slots } = assembleResult(live, other, chunks, []);
+    initialResultRef.current = text;
+    let dirty = false;
+    setResolverDirty(false);
+    const result = new EditorView({
       state: EditorState.create({
-        doc: seed.text,
-        extensions: editorExtensions(rel),
+        doc: text,
+        extensions: [
+          editorExtensions(rel),
+          resultSlots.init(() => slots),
+          resultDecorations(),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged) {
+              const next = update.state.doc.toString() !== initialResultRef.current;
+              if (next !== dirty) {
+                dirty = next;
+                setResolverDirty(next);
+              }
+            }
+            if (update.state.field(resultSlots) === update.startState.field(resultSlots)) {
+              return;
+            }
+            const next = slotSummary(update.state);
+            setSummary(next);
+            for (const side of ["a", "b"] as const) {
+              view[side].dispatch({
+                effects: setSidePicks.of(next.picks.map((p) => p.includes(side))),
+              });
+            }
+          }),
+        ],
       }),
-      parent,
+      parent: resultParent,
     });
-    resultViewRef.current = view;
+    resultViewRef.current = result;
+    setSummary(slotSummary(result.state));
+    currentRef.current = 0;
+    setCurrent(0);
+
+    // The two top panes scroll as one unit inside `.cm-mergeView`.
+    const container = mergeParent.querySelector<HTMLElement>(".cm-mergeView");
+    const a = view.a;
+    let frame = 0;
+    let suppress = false;
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+
+    function scrolledHeight(el: HTMLElement): number {
+      return Math.max(0, el.getBoundingClientRect().top - a.documentTop);
+    }
+
+    function currentAt(el: HTMLElement, h: number): number {
+      const len = aDoc.length;
+      const tops = chunks.map((c) => a.lineBlockAt(Math.min(c.fromA, len)).top);
+      const bottoms = chunks.map(
+        (c) => a.lineBlockAt(Math.min(Math.max(c.fromA, c.toA - 1), len)).bottom,
+      );
+      const index = chunkAtHeight(tops, bottoms, h);
+      // At the bottom, chunks that cannot reach the top stay current while
+      // they are still on screen (e.g. after ↓ to the last chunk).
+      const prev = currentRef.current;
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+      const prevVisible = tops[prev] !== undefined && tops[prev] < h + el.clientHeight;
+      if (atBottom && index < prev && prevVisible) return prev;
+      return index;
+    }
+
+    function sync() {
+      frame = 0;
+      if (!container || suppress) return;
+      const h = scrolledHeight(container);
+      const index = currentAt(container, h);
+      if (index >= 0) setCurrent(index);
+      const pos = resultPosForA(result.state, aDoc, chunks, a.lineBlockAtHeight(h).from);
+      result.scrollDOM.scrollTop = result.lineBlockAt(pos).top;
+    }
+
+    function settle() {
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        suppress = false;
+      }, NAV_SETTLE_MS);
+    }
+
+    function onScroll() {
+      // Programmatic scrolls from ↑/↓ keep pushing the quiet period out.
+      if (suppress) {
+        settle();
+        return;
+      }
+      if (!frame) frame = requestAnimationFrame(sync);
+    }
+
+    navigateRef.current = (index: number) => {
+      const chunk = chunks[index];
+      const slot = result.state.field(resultSlots)[index];
+      if (!container || !chunk || !slot) return;
+      currentRef.current = index;
+      setCurrent(index);
+      suppress = true;
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+      }
+      settle();
+      const top = a.lineBlockAt(Math.min(chunk.fromA, aDoc.length)).top;
+      container.scrollTop += top + a.documentTop - container.getBoundingClientRect().top;
+      // `lineBlockAt` includes an empty slot's placeholder widget above the line.
+      result.scrollDOM.scrollTop = result.lineBlockAt(slot.from).top;
+    };
+
+    container?.addEventListener("scroll", onScroll, { passive: true });
     return () => {
+      container?.removeEventListener("scroll", onScroll);
+      if (frame) cancelAnimationFrame(frame);
+      clearTimeout(settleTimer);
+      navigateRef.current = null;
+      result.destroy();
       view.destroy();
       resultViewRef.current = null;
+      mergeViewRef.current = null;
+      setResolverDirty(false);
     };
-  }, [rel, seed]);
+  }, [dto, rel, sibling, setResolverDirty]);
+
+  useEffect(() => {
+    currentRef.current = current;
+    resultViewRef.current?.dispatch({ effects: setCurrentChunk.of(current) });
+  }, [current]);
+
+  function handleKeepAll(side: Side) {
+    const result = resultViewRef.current;
+    if (result) result.dispatch(keepAll(result.state, side));
+  }
 
   function onResizePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -195,7 +360,8 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
       await refreshRoots().catch(() => {
         // Tree/status still refresh from the status event.
       });
-      onClose();
+      // Resolved: nothing left to discard, so `onClose` must not ask.
+      closeClean(setResolverDirty, onClose);
       return;
     }
     if (result.outcome === "stale") {
@@ -247,6 +413,8 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
     }
   }
 
+  const unresolved = summary.resolved.filter((done) => !done).length;
+  const total = summary.total;
   const checked = sibling ? discard[sibling.path] !== false : true;
   const device = sibling?.device_name ?? "other device";
 
@@ -314,10 +482,10 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
         <div className="flex min-h-0 flex-1 items-center justify-center px-6">
           <div className="flex w-full max-w-lg gap-3">
             <BinaryCard
-              label="ON THIS MAC"
-              device="this Mac"
+              label="THIS MACHINE"
+              device="this machine"
               bytes={dto.live_bytes_len}
-              actionLabel="Keep this Mac"
+              actionLabel="Keep this machine"
               disabled={locked}
               onKeep={() => {
                 void handleBinary("live");
@@ -338,8 +506,18 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
       ) : (
         <>
           <div className="grid shrink-0 grid-cols-2 border-b border-border text-label text-muted-foreground">
-            <div className="px-pad-x py-1">ON THIS MAC</div>
-            <div className="border-l border-border px-pad-x py-1">FROM CLOUD</div>
+            <div className="flex items-center justify-between gap-2 px-pad-x py-1">
+              THIS MACHINE
+              <Button variant="ghost" size="xs" onClick={() => handleKeepAll("a")}>
+                Keep all
+              </Button>
+            </div>
+            <div className="flex items-center justify-between gap-2 border-l border-border px-pad-x py-1">
+              FROM CLOUD
+              <Button variant="ghost" size="xs" onClick={() => handleKeepAll("b")}>
+                Keep all
+              </Button>
+            </div>
           </div>
           <div ref={mergeParentRef} className="cm-merge-host min-h-0 flex-1 overflow-hidden" />
         </>
@@ -357,8 +535,31 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
             onPointerDown={onResizePointerDown}
             className="absolute inset-x-0 top-0 z-10 h-1.5 cursor-ns-resize"
           />
-          <div className="shrink-0 px-pad-x py-1 text-label text-muted-foreground">
-            Result
+          <div className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center px-pad-x py-1 text-label text-muted-foreground">
+            <span>Result</span>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Previous conflict"
+                disabled={total === 0 || current <= 0}
+                onClick={() => navigateRef.current?.(current - 1)}
+              >
+                <ChevronUp />
+              </Button>
+              <span className="min-w-8 text-center tabular-nums">
+                {total === 0 ? "0/0" : `${current + 1}/${total}`}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Next conflict"
+                disabled={total === 0 || current >= total - 1}
+                onClick={() => navigateRef.current?.(current + 1)}
+              >
+                <ChevronDown />
+              </Button>
+            </div>
           </div>
           <div ref={resultParentRef} className="min-h-0 flex-1 overflow-hidden" />
         </div>
@@ -416,15 +617,37 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
             Cancel
           </Button>
           {!dto?.binary ? (
-            <Button
-              size="xs"
-              onClick={() => {
-                void handleResolve();
-              }}
-              disabled={locked || !dto}
-            >
-              Resolve
-            </Button>
+            unresolved > 0 ? (
+              <Tooltip>
+                <TooltipTrigger render={<span className="inline-flex" />}>
+                  <Button size="xs" disabled>
+                    Resolve
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" align="end">
+                  {unresolved === 1
+                    ? "1 conflict still needs a side. Pick one above or edit it in Result."
+                    : `${unresolved} conflicts still need a side. Pick one above or edit them in Result.`}
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <Button
+                size="xs"
+                onClick={() => {
+                  void handleResolve();
+                }}
+                disabled={locked || !dto || resolving}
+              >
+                {resolving ? (
+                  <>
+                    <Loader2 className="animate-spin" aria-hidden />
+                    Resolving…
+                  </>
+                ) : (
+                  "Resolve"
+                )}
+              </Button>
+            )
           ) : null}
         </div>
       </footer>

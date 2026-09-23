@@ -66,7 +66,7 @@ export function afterMountFor(id: string): (() => void) | undefined {
     return () => {
       clickWhen(() =>
         document.querySelector<HTMLElement>(
-          '#sidebar-root-notes [aria-label="2 conflicts"]',
+          '#sidebar-root-notes [aria-label="4 conflicts"]',
         ),
       );
     };

@@ -34,12 +34,12 @@ export function parentRel(rel: string): string | null {
 export function untrackCopy(entry: EntryView, entries: EntryView[]): string {
   const stay = "Files stay on disk.";
   if (entry.covering.length > 0) {
-    return `This path stops syncing on every Mac. ${stay} ${entry.key} is excluded from ${entry.covering.join(", ")}.`;
+    return `This path stops syncing on every machine. ${stay} ${entry.key} is excluded from ${entry.covering.join(", ")}.`;
   }
   if (!entries.some((listed) => listed.key === entry.key)) {
-    return `Every include entry under ${entry.key} is removed on every Mac. ${stay} Files under this folder will stop syncing.`;
+    return `Every include entry under ${entry.key} is removed on every machine. ${stay} Files under this folder will stop syncing.`;
   }
-  return `The include entry ${entry.key} is removed on every Mac. ${stay} Files under this entry will stop syncing.`;
+  return `The include entry ${entry.key} is removed on every machine. ${stay} Files under this entry will stop syncing.`;
 }
 
 /**
