@@ -210,6 +210,11 @@ export function providerDir(): Promise<string | null> {
   return invoke("provider_dir");
 }
 
+/** The provider's `dotlore` folder, or the provider before the first publish. */
+export function openCloudFolder(): Promise<void> {
+  return invoke("open_cloud_folder");
+}
+
 export function gitMissing(): Promise<boolean> {
   return invoke("git_missing");
 }

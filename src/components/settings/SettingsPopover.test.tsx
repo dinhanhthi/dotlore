@@ -290,7 +290,7 @@ describe("Wipe cloud data", () => {
     expect(html).not.toContain("Wipe cloud data…");
     expect(clicks.get("Wipe cloud data")).toBeTypeOf("function");
     const wipeAt = html.indexOf('aria-label="Wipe cloud data"');
-    const folderAt = html.indexOf('aria-label="Go to location"');
+    const folderAt = html.indexOf('aria-label="Go to cloud folder"');
     expect(wipeAt).toBeGreaterThan(-1);
     expect(wipeAt).toBeLessThan(folderAt);
 
@@ -391,7 +391,7 @@ describe("Wipe cloud data", () => {
     expect(html).not.toContain("Change…");
     expect(clicks.get("Change cloud folder")).toBeTypeOf("function");
     expect(html.indexOf('aria-label="Change cloud folder"')).toBeGreaterThan(
-      html.indexOf('aria-label="Go to location"'),
+      html.indexOf('aria-label="Go to cloud folder"'),
     );
   });
 });

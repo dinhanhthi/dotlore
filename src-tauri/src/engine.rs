@@ -1581,6 +1581,11 @@ pub fn configure_provider(
 /// (`provider_key`, `refs/dotlore/sent/<key>`, `consumed`) is derived from the
 /// real directory: a config that records `/var/…` and one that records
 /// `/private/var/…` for the same folder must not become two providers.
+/// Where this provider's bundles live: `<provider_dir>/dotlore`, canonicalized.
+pub fn cloud_folder(provider_dir: &Path) -> PathBuf {
+    cloud_at(provider_dir).base
+}
+
 fn cloud_at(provider_dir: &Path) -> Cloud {
     Cloud {
         base: canonical(provider_dir).join("dotlore"),

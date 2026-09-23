@@ -80,6 +80,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::resolve_conflict,
             commands::resolve_binary,
             commands::provider_dir,
+            commands::open_cloud_folder,
             commands::git_missing,
             commands::sync_now,
             commands::set_provider,

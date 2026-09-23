@@ -31,6 +31,7 @@ objc2-app-kit = { version = "0.3.0", default-features = false, features = [
     "NSImage",
     "NSParagraphStyle",
     "NSText",
+    "NSWorkspace",
 ] }
 objc2-foundation = { version = "0.3.0", default-features = false, features = [
     "std",
@@ -41,6 +42,7 @@ objc2-foundation = { version = "0.3.0", default-features = false, features = [
     "NSObject",
     "NSRange",
     "NSString",
+    "NSURL",
 ] }
 
 [build-dependencies]

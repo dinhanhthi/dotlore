@@ -339,6 +339,43 @@ pub async fn provider_dir(state: State<'_, AppState>) -> Result<Option<String>, 
     .map_err(front_msg)?
 }
 
+/// Open the provider's `dotlore` folder in Finder, or the provider itself
+/// before the first publish has created it. AppKit opens it directly: no
+/// child process, so `open(1)` stays off the list of programs this app runs.
+#[tauri::command]
+pub async fn open_cloud_folder(state: State<'_, AppState>) -> Result<(), String> {
+    let home = state.home.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(provider) = load_cfg(&home)?.provider_dir else {
+            return Err("No cloud folder set".to_string());
+        };
+        open_folder(&cloud_folder_target(&provider))
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+fn cloud_folder_target(provider: &Path) -> PathBuf {
+    let dotlore = engine::cloud_folder(provider);
+    if dotlore.is_dir() {
+        dotlore
+    } else {
+        provider.to_path_buf()
+    }
+}
+
+fn open_folder(dir: &Path) -> Result<(), String> {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSString, NSURL};
+
+    let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&dir.to_string_lossy()), true);
+    if NSWorkspace::sharedWorkspace().openURL(&url) {
+        Ok(())
+    } else {
+        Err(format!("Could not open {}", dir.display()))
+    }
+}
+
 /// `async` so the main thread never waits on it: [`git::which_git`] spawns
 /// `git --version`. No `spawn_blocking` and no `Result` — a child process is
 /// milliseconds, not the open-ended wait the home lock can be, and there is
@@ -1485,6 +1522,23 @@ mod tests {
     use crate::config::Config;
     use crate::engine::Engine;
     use tempfile::TempDir;
+
+    #[test]
+    fn cloud_folder_target_opens_the_dotlore_folder_inside_the_provider() {
+        let provider = TempDir::new().unwrap();
+        let dotlore = provider.path().join("dotlore");
+        fs::create_dir(&dotlore).unwrap();
+        assert_eq!(
+            cloud_folder_target(provider.path()),
+            dotlore.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn cloud_folder_target_falls_back_to_the_provider_before_the_first_publish() {
+        let provider = TempDir::new().unwrap();
+        assert_eq!(cloud_folder_target(provider.path()), provider.path());
+    }
 
     fn dir_root(path: PathBuf) -> config::Root {
         config::Root {

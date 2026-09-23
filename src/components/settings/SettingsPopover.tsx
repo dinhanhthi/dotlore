@@ -1,7 +1,7 @@
 import { ChevronDown, Loader2, Pencil, Settings, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
+import { CloudFolderButton } from "@/components/layout/CloudFolderButton";
 import { ChangeCloudFolderDialog } from "@/components/settings/ChangeCloudFolderDialog";
 import { SettingsSeedList } from "@/components/settings/SettingsSeedList";
 import { WipeCloudDataAlert } from "@/components/settings/WipeCloudDataAlert";
@@ -370,7 +370,7 @@ export function SettingsSync({
                   <TooltipContent>Wipe cloud data</TooltipContent>
                 </Tooltip>
               )}
-              <RevealInFinderButton path={providerDir} />
+              <CloudFolderButton size="icon-xs" />
               <Tooltip>
                 <TooltipTrigger
                   render={
