@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { applyRootDiscovery, looksLikeAgent, mergeRootsBySlug, rootsWithSeeding } from "./roots";
+import {
+  applyRootDiscovery,
+  looksLikeAgent,
+  mergeRootsBySlug,
+  overlayStatuses,
+  rootsWithSeeding,
+} from "./roots";
 import type { LinkableRow, RootRow } from "./types";
 
 function linkedRow(overrides: Partial<RootRow> = {}): RootRow {
@@ -147,5 +153,23 @@ describe("applyRootDiscovery", () => {
     ]);
     expect(applied?.roots.find((row) => row.slug === "notes")?.linked).toBe(true);
     expect(applied?.discoveryError).toBe("Could not list configured projects");
+  });
+});
+
+describe("overlayStatuses", () => {
+  const conflicted = linkedRow({ status: { kind: "Conflicts", detail: 1 } });
+
+  it("keeps a removed root's conflict count off its cloud-only row", () => {
+    const unlinked = linkedRow({ linked: false, path: "", status: { kind: "Pending" } });
+    expect(overlayStatuses([unlinked], [conflicted])[0]?.status).toEqual({
+      kind: "Pending",
+    });
+  });
+
+  it("still overlays onto a linked row", () => {
+    expect(overlayStatuses([linkedRow()], [conflicted])[0]?.status).toEqual({
+      kind: "Conflicts",
+      detail: 1,
+    });
   });
 });
