@@ -1,6 +1,6 @@
 import type { EntryView, PickerRow } from "@/lib/types";
 
-import { explicitEntry } from "./entries";
+import { coveringEntry, explicitEntry } from "./entries";
 
 export type PickerKind = "file" | "directory";
 export type PendingAction = "track" | "untrack";
@@ -35,8 +35,8 @@ function ancestorAction(rel: string, pending: PendingMap): PendingAction | null 
 /**
  * Tracked before staged marks.
  * Files follow the synced file list, so a hole punched in a parent folder
- * stays untracked. A folder is tracked when it is an explicit entry or it
- * still contains a synced file.
+ * stays untracked. A folder is tracked when it is an explicit entry, or it
+ * sits under a tracked folder and still contains a synced file.
  */
 function baselineTracked(
   path: string,
@@ -46,6 +46,7 @@ function baselineTracked(
 ): boolean {
   if (kind === "file") return trackedRels.has(path);
   if (explicitEntry(path, entries)) return true;
+  if (!coveringEntry(path, entries)) return false;
   const prefix = `${path}/`;
   for (const rel of trackedRels) {
     if (rel.startsWith(prefix)) return true;
@@ -69,6 +70,32 @@ export function isShownTracked(
   if (ancestor === "track") return true;
   if (ancestor === "untrack") return explicitEntry(path, entries) !== null;
   return baselineTracked(path, kind, entries, trackedRels);
+}
+
+/** A folder holds a path that is shown tracked, after staged marks. */
+export function hasTrackedInside(
+  rel: string,
+  entries: EntryView[],
+  pending: PendingMap,
+  trackedRels: ReadonlySet<string>,
+): boolean {
+  const prefix = `${rel.replace(/\/+$/, "")}/`;
+  const candidates: [string, PickerKind][] = [
+    ...[...trackedRels].map((path): [string, PickerKind] => [path, "file"]),
+    ...entries.map((entry): [string, PickerKind] => [entry.key, entry.kind]),
+    ...Object.entries(pending)
+      .filter(([, action]) => action === "track")
+      .map(([key]): [string, PickerKind] => [
+        key,
+        key.endsWith("/") ? "directory" : "file",
+      ]),
+  ];
+  return candidates.some(
+    ([path, kind]) =>
+      path.startsWith(prefix) &&
+      path !== prefix &&
+      isShownTracked(path, kind, entries, pending, trackedRels),
+  );
 }
 
 /** A mark that repeats the state already shown without it is dropped. */

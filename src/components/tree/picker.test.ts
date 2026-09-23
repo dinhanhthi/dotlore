@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { EntryView } from "@/lib/types";
 
 import {
+  hasTrackedInside,
   isShownTracked,
   orderedPendingOps,
   stagePending,
@@ -45,6 +46,32 @@ describe("isShownTracked", () => {
         kind: "file",
         covering: ["docs/"],
       }], untrackParent, synced),
+    ).toBe(true);
+  });
+});
+
+describe("hasTrackedInside", () => {
+  const settings: EntryView = {
+    key: ".claude/settings.json",
+    kind: "file",
+    covering: [],
+  };
+  const files = new Set([".claude/settings.json"]);
+
+  it("marks a folder holding a tracked file without tracking the folder", () => {
+    expect(isShownTracked(".claude", "directory", [settings], {}, files)).toBe(
+      false,
+    );
+    expect(hasTrackedInside(".claude", [settings], {}, files)).toBe(true);
+    expect(hasTrackedInside("docs", [settings], {}, files)).toBe(false);
+  });
+
+  it("follows staged marks inside the folder", () => {
+    expect(
+      hasTrackedInside(".claude", [settings], { ".claude/settings.json": "untrack" }, files),
+    ).toBe(false);
+    expect(
+      hasTrackedInside("docs", [], { "docs/notes/": "track" }, new Set()),
     ).toBe(true);
   });
 });

@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 
 import { formatBytes, untrackCopy } from "./entries";
 import {
+  hasTrackedInside,
   isShownTracked,
   orderedPendingOps,
   pickerRowMatchesQuery,
@@ -288,6 +289,10 @@ function PickerNode({
 }: PickerNodeProps) {
   const kind = asKind(row.kind);
   const tracked = isShownTracked(row.rel, kind, entries, pending, trackedRels);
+  const partial =
+    !tracked &&
+    kind === "directory" &&
+    hasTrackedInside(row.rel, entries, pending, trackedRels);
   const open = kind === "directory" && expanded[row.rel] === true;
   const loading = loadingRel[row.rel] === true;
   const nested = childrenByRel[row.rel];
@@ -344,6 +349,7 @@ function PickerNode({
         <TrackMark
           name={row.name}
           tracked={tracked}
+          partial={partial}
           onClick={() => onStage(row.rel, kind, tracked ? "untrack" : "track")}
         />
       </div>
@@ -386,25 +392,27 @@ function PickerNode({
 function TrackMark({
   name,
   tracked,
+  partial,
   onClick,
 }: {
   name: string;
   tracked: boolean;
+  partial: boolean;
   onClick: () => void;
 }) {
   return (
-    <span className="group/mark ml-auto inline-grid w-[4.75rem] shrink-0 items-center justify-items-end">
+    <span className="group/mark ml-auto inline-grid w-[5.5rem] shrink-0 items-center justify-items-end">
       <Badge
         aria-hidden
-        variant="secondary"
+        variant={partial ? "outline" : "secondary"}
         className={cn(
           "pointer-events-none col-start-1 row-start-1 font-normal transition-opacity",
-          tracked
+          tracked || partial
             ? "opacity-100 group-hover:opacity-0 group-focus-within/mark:opacity-0"
             : "opacity-0",
         )}
       >
-        tracked
+        {partial ? "has tracked" : "tracked"}
       </Badge>
       <Button
         type="button"
