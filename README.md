@@ -13,99 +13,69 @@
 > [!NOTE]
 > **macOS** is the current priority. Windows and Linux are coming soon.
 
-Dotlore tracks the AI-agent config your projects git-ignore and syncs it between your own Macs. Point it at a folder — `.claude/`, `.agents/`, your project's `docs/`, your global `~/.claude` — and pick the entries to sync. `CLAUDE.md` is an entry inside a project, not a root of its own. Files stay where they are; nothing is moved, symlinked, or added to your project's git history.
+Dotlore syncs the AI-agent config your projects git-ignore (`.claude/`, `CLAUDE.md`, `.agents/`, `docs/`, `~/.claude`) between your own Macs. Files stay where they are: nothing is moved, symlinked, or added to your project's git history.
 
 ## ✨ Features
 
-- **Files stay put** — projects stay where they are: never moved, never symlinked, never added to git history.
-- **Project folders** — a project is always a folder with a synced include-list. `.claude/`, `CLAUDE.md`, `.agents/`, `docs/`, and `~/.claude` are entries inside it, not roots of their own.
-- **Cloud folder, not a cloud API** — sync through iCloud Drive or Google Drive desktop, a folder path you already have.
-- **Immutable bundles** — each Mac publishes its own git bundle; nothing in the cloud folder is rewritten or deleted.
-- **Conflicts without markers** — the newer commit wins on every device; the loser's bytes stay beside it as a sibling file.
-- **Desktop + menu bar** — one three-column window (sidebar, file tree, viewer/resolver) and a compact status item.
+- **Files stay put** — never moved, never symlinked, never added to git history.
+- **Project folders** — each project is a folder with an include-list of entries to sync.
+- **Cloud folder, not a cloud API** — sync through iCloud Drive or Google Drive desktop.
+- **Immutable bundles** — each Mac publishes its own git bundle; nothing in the cloud is rewritten.
+- **Conflicts without markers** — the newer commit wins; the other version is kept as a sibling file.
+- **Desktop + menu bar** — a three-column window and a compact status item.
 
 ## 🔄 How it works
 
-Transport is a cloud folder you already sync (iCloud Drive or Google Drive desktop) — a folder path, never a cloud API.
-
-Each project gets a private staging git repo under `~/Library/Application Support/dotlore/`. Dotlore mirrors the include-list into staging, commits, and publishes an **immutable** git bundle to its own device directory in the cloud:
+Each project gets a private staging git repo under `~/Library/Application Support/dotlore/`. Dotlore copies the include-list into it, commits, and publishes an immutable git bundle to its own device folder in the cloud:
 
 ```
 <cloud>/dotlore/<slug>/devices/<device-id>/000001.bundle
 ```
 
-Two devices never write the same cloud file, and nothing there is ever rewritten or deleted. Incoming bundles are fetched and merged by the system `git` — so non-overlapping edits just merge.
-
-Overlapping edits resolve deterministically: the newer commit wins on **every** device, and the loser's bytes are kept beside it as `<stem>.conflict-<device>-<blob>.<ext>`. No version is ever lost, no conflict markers are written into a live file, and all devices converge on the same tree.
-
-## 💻 Platforms
-
-**macOS** (desktop + menu bar) is the current priority. Windows and Linux are coming soon. Encryption at rest, direct cloud APIs, and syncing session logs or caches are out of scope — the threat model is "not in the project's git", not "hide from the cloud provider".
+Other devices fetch and merge those bundles with the system `git`. On overlapping edits the newer commit wins everywhere, and the other version is saved as `<stem>.conflict-<device>-<blob>.<ext>`. Nothing is lost and all devices converge.
 
 ## 🛠️ Tech stack
 
-| Layer    | Technology                                                                 |
-| -------- | -------------------------------------------------------------------------- |
-| Engine   | Rust in `src-tauri/` (package and binary `dotlore`)                        |
-| Git      | System `git` binary (no git library)                                       |
-| App      | Tauri 2; React 19 + TypeScript + Vite in `src/`                            |
-| UI       | Tailwind CSS v4, shadcn/ui                                                 |
-| Editor   | CodeMirror 6 (`@codemirror/merge` for conflicts)                           |
-| Login    | macOS `launchctl`                                                          |
+| Layer  | Technology                                       |
+| ------ | ------------------------------------------------ |
+| Engine | Rust in `src-tauri/`, driving the system `git`   |
+| App    | Tauri 2; React 19 + TypeScript + Vite in `src/`  |
+| UI     | Tailwind CSS v4, shadcn/ui                       |
+| Editor | CodeMirror 6 (`@codemirror/merge` for conflicts) |
 
 ## 🚀 Development
 
-**Prerequisites:** [Rust](https://rustup.rs/) 1.89+ (uses `std::fs::File::lock`), [Node.js](https://nodejs.org/) 20+, [pnpm](https://pnpm.io/), the system `git`, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for macOS. If `git` is missing, Dotlore refuses to sync and points you at `xcode-select --install`. The Dock icon for macOS 26 ships as a committed `src-tauri/icons/Assets.car`, so an ordinary build needs no Xcode: only `scripts/icon.sh`, which recompiles it and `icon.icns` from the `src-tauri/icons/logo.icon` Icon Composer document, wants Xcode 26 or newer.
-
-`pnpm tauri dev` keeps its state in `~/Downloads/dotlore-dev` instead of `~/Library/Application Support/dotlore/`, so a dev run can sit beside a copy installed in `/Applications`. It prints the path it used, and an explicit `DOTLORE_HOME` overrides it. The directory is created on first use. Two copies sharing one home fight over a lock file, and the loser exits without a window.
+**Prerequisites:** [Rust](https://rustup.rs/) 1.89+, [Node.js](https://nodejs.org/) 20+, [pnpm](https://pnpm.io/), `git`, and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for macOS.
 
 ```bash
 pnpm install
-
-pnpm tauri dev                    # desktop app (opens the window if provider is unset)
-pnpm ui:dev                       # frontend only, from src/
-pnpm mockapp:dev                  # browser UI preview (mocked backend) — http://localhost:38422
-
+pnpm tauri dev          # desktop app
+pnpm mockapp:dev        # browser UI with a mocked backend — http://localhost:38422
 pnpm test
-pnpm smoke:two-devices
 pnpm format:check
 ```
+
+> [!TIP]
+> `pnpm tauri dev` stores its state in `~/Downloads/dotlore-dev` (override with `DOTLORE_HOME`), so it can run beside an installed copy.
 
 ### 📦 Build
 
 ```bash
-pnpm build                        # → src-tauri/target/release/bundle/{macos/Dotlore.app, dmg/*.dmg}
-# pnpm tauri build                # same thing
-open src-tauri/target/release/bundle/macos/Dotlore.app
+export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/dotlore.key)"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
+pnpm build              # → src-tauri/target/release/bundle/{macos/Dotlore.app, dmg/*.dmg}
 ```
 
-> [!IMPORTANT]
-> `pnpm build` needs the updater signing key. `tauri.conf.json` sets
-> `bundle.createUpdaterArtifacts: true` and carries a `plugins.updater.pubkey`,
-> so the bundler signs `Dotlore.app.tar.gz` and fails if the private key is not
-> exported:
->
-> ```bash
-> export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/dotlore.key)"
-> export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
-> ```
->
-> `pnpm tauri dev` is unaffected — it does not bundle.
-
-To pass a sandbox home into the bundled binary (Finder's `open` does not forward env):
-
-```bash
-DOTLORE_HOME="$HOME/Downloads/dotlore" src-tauri/target/release/bundle/macos/Dotlore.app/Contents/MacOS/dotlore
-```
+The signing key is required because the build also produces signed updater artifacts.
 
 ## 🌐 Website
 
-The landing page is at [dotlore.dinhanhthi.com](https://dotlore.dinhanhthi.com). Source is static HTML in [`website/`](website/). A push to `main` deploys it. Open `website/index.html` in a browser to preview. No build step.
+The landing page at [dotlore.dinhanhthi.com](https://dotlore.dinhanhthi.com) is static HTML in [`website/`](website/), deployed on every push to `main`.
 
 ## 🤝 Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) — it covers the invariants the engine depends on.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the invariants the engine depends on.
 
 ## 📄 License
 
-Dotlore is licensed under [MIT](LICENSE).
+[MIT](LICENSE)
