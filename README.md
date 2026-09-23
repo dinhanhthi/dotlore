@@ -13,6 +13,8 @@
 > [!NOTE]
 > **macOS** is the current priority. Windows and Linux are coming soon.
 
+<img src="assets/screenshot.png" width="100%" alt="Screenshot" />
+
 Dotlore syncs the AI-agent config your projects git-ignore (`.claude/`, `CLAUDE.md`, `.agents/`, `docs/`, `~/.claude`) between your own Macs. Files stay where they are: nothing is moved, symlinked, or added to your project's git history.
 
 ## ✨ Features
