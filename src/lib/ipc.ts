@@ -240,8 +240,10 @@ export function linkRoot(slug: string, path: string): Promise<void | null> {
   );
 }
 
-export function removeRoot(slug: string): Promise<void> {
-  return run(() => invoke("remove_root", { slug }));
+export function removeRoot(slug: string): Promise<void | null> {
+  return runTask(`Removing ${slug}…`, () =>
+    invoke<void>("remove_root", { slug }),
+  );
 }
 
 export type WipeReport = {

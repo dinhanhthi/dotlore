@@ -26,14 +26,15 @@ export function RemoveRootAlert({
 }: RemoveRootAlertProps) {
   const { refreshRoots, locked } = useRoots();
 
+  /** Closes first: the remove runs as a footer task, the window stays usable. */
   async function confirm() {
     if (slug === null || locked) return;
+    onOpenChange(false);
     try {
-      await removeRoot(slug);
+      if ((await removeRoot(slug)) === null) return;
       await refreshRoots();
-      onOpenChange(false);
     } catch {
-      // Banner is set by `run()`.
+      // Banner is set by `runTask()`.
     }
   }
 
