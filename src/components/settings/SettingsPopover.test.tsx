@@ -204,7 +204,7 @@ describe("Wipe cloud data", () => {
     return { html, onOpenChange };
   }
 
-  it("shows a Wipe cloud data… button that opens the dialog", () => {
+  it("renders a clickable Wipe cloud data… button and the dialog copy", () => {
     const html = wrap(
       <Dialog open>
         <SettingsPanel />
@@ -220,7 +220,7 @@ describe("Wipe cloud data", () => {
     expect(alert).toContain("Wipe");
   });
 
-  it("does not wipe when the dialog is only opened and cancelled", () => {
+  it("does not wipe just by rendering the dialog", () => {
     const { html } = renderAlert();
     expect(html).toContain('data-slot="alert-dialog-cancel"');
     expect(wipeCloudData).not.toHaveBeenCalled();
