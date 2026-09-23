@@ -12,7 +12,10 @@ set -euo pipefail
 # instead of the dev one.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dev-home.sh"
 HOME_DIR="$DOTLORE_HOME"
+# The dev run and the bundled app do not always key WebKit storage the same
+# way; `consider` skips whichever is absent.
 WEBKIT_DIR="$HOME/Library/WebKit/dotlore"
+WEBKIT_BUNDLE_DIR="$HOME/Library/WebKit/dev.dinhanhthi.dotlore"
 PLIST="$HOME/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist"
 CFG="$HOME_DIR/config.json"
 
@@ -112,7 +115,9 @@ consider "$HOME_DIR/app.lock"
 consider "$HOME_DIR/tmp"
 consider "$HOME_DIR/repos"
 consider "$HOME_DIR/recovery"
+consider "$HOME_DIR/adding"
 consider "$WEBKIT_DIR"
+consider "$WEBKIT_BUNDLE_DIR"
 
 if [ "$YES" -eq 1 ]; then
 	launchctl bootout "gui/$(id -u)/dev.dinhanhthi.dotlore" >/dev/null 2>&1 || true
