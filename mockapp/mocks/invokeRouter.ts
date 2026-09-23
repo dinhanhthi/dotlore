@@ -322,6 +322,18 @@ const handlers: Record<
   resolve_binary: (args) => {
     const slug = argString(args, "slug");
     const rel = argString(args, "rel");
+    if (args.keep === "other") {
+      const { binary, siblings } = resolutionFor(slug, rel);
+      const path = typeof args.sibling === "string" ? args.sibling : null;
+      const kept = path ? siblings.find((item) => item.path === path) : siblings[0];
+      if (!kept || (!path && siblings.length > 1)) {
+        throw new Error(`mockapp: no single sibling to keep for ${rel}`);
+      }
+      if (!binary && kept.text !== null) {
+        const files = store.files[slug] ?? (store.files[slug] = {});
+        files[rel] = { text: kept.text, binary: false, too_large: false };
+      }
+    }
     store.conflicts[slug] = (store.conflicts[slug] ?? []).filter(
       (view) => view.live !== rel,
     );

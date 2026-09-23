@@ -10,7 +10,7 @@ export type FileRecord = {
 
 const DOTLORE_CLAUDE = `# Dotlore
 
-Sync git-ignored AI-agent config between your own Macs through a cloud folder.
+Sync git-ignored AI-agent config between your own machines through a cloud folder.
 `;
 
 const DOTLORE_SETTINGS = `{
@@ -29,13 +29,67 @@ staging repo under Application Support.
 
 const MEMLORE_CLAUDE = `# Memlore
 
-A private journal on this Mac.
+A private journal on this machine.
 `;
 
 const NOTES_CLAUDE = `# Daily notes
 
+Working notes for the Dotlore desktop app. Newest items go at the top of
+each section; move finished work to the log at the bottom.
+
+## Today
+
 - Review the Dotlore conflict resolver
+- Check the chunk counter on long files
 - Keep CLAUDE.md short
+
+## Conventions
+
+- Use pnpm for every script
+- Run the mockapp before touching the real app
+- Keep Rust and TypeScript types in sync
+- Prefer small commits with one-line messages
+- Never commit secrets or tokens
+
+## Build
+
+1. Install dependencies with pnpm install
+2. Start the mockapp with pnpm mockapp:dev
+3. Run pnpm exec vitest run before pushing
+4. Build the app with pnpm tauri build
+
+## Review checklist
+
+- Result pane starts empty for each chunk
+- Arrows move between chunks
+- Keep all copies one side exactly
+- Resolve stays disabled until every chunk is picked
+- Scroll sync follows the left pane
+
+## Ideas
+
+- Inline blame for each chunk
+- Remember the last side picked per file
+- Show device names in the tree
+
+## Open questions
+
+- Should Keep all ask for confirmation?
+- How should binary files preview?
+- Do we need a three-way view later?
+
+## Devices
+
+- studio: desk machine, main build box
+- laptop: travel machine, battery tests
+- mini: always-on sync host
+
+## Log
+
+- Mon: styled the sidebar
+- Tue: file tree and context menu
+- Wed: first pass on the resolver
+- Thu: fixed scroll sync on long files
 `;
 
 const NOTES_JOURNAL = `Morning. Styled the sidebar, then the file tree.
@@ -94,7 +148,7 @@ export function demoFiles(): Record<string, Record<string, FileRecord>> {
       },
     },
     "missing-proj": {
-      "README.md": textFile("This folder is gone on this Mac.\n"),
+      "README.md": textFile("This folder is gone on this machine.\n"),
     },
   };
 }

@@ -35,7 +35,7 @@ export function demoRoots(): RootRow[] {
       name: "Notes",
       is_agent: false,
       linked: true,
-      status: { kind: "Conflicts", detail: 2 },
+      status: { kind: "Conflicts", detail: 4 },
     },
     {
       slug: "missing-proj",
