@@ -230,12 +230,12 @@ export function useSyncing(): boolean {
   return count > 0;
 }
 
-/** Footer copy while a track/untrack batch runs. Null when idle. */
-export function useTrackLabel(): string | null {
+/** Footer copy while a background task runs. Null when idle. */
+export function useTaskLabel(): string | null {
   return useSyncExternalStore(
     subscribeWork,
-    () => getWorkSnapshot().trackLabel,
-    () => getWorkSnapshot().trackLabel,
+    () => getWorkSnapshot().taskLabel,
+    () => getWorkSnapshot().taskLabel,
   );
 }
 

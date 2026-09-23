@@ -67,6 +67,14 @@ vi.mock("@/components/ui/alert-dialog", async () => {
 vi.mock("@/lib/ipc", () => ({
   wipeCloudData,
   setBanner,
+  subscribeWork: () => () => {},
+  getWorkSnapshot: () => ({
+    inflight: 0,
+    syncing: 0,
+    banner: null,
+    taskLabel: null,
+    trackConfirm: null,
+  }),
   defaultPatterns: () => Promise.resolve(["CLAUDE.md", "docs/"]),
   defaultIgnore: () => Promise.resolve("/chats/\n"),
   maxFileMb: () => Promise.resolve(50),
@@ -295,6 +303,22 @@ describe("Wipe cloud data", () => {
     expect(refreshRoots).toHaveBeenCalledOnce();
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(setBanner).not.toHaveBeenCalled();
+  });
+
+  it("closes before the wipe finishes, so the window stays usable", async () => {
+    let finish = (_: { readded: string[]; failed: { slug: string; error: string }[] }) => {};
+    wipeCloudData.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { onOpenChange } = renderAlert();
+
+    void clicks.get("Wipe")?.({ preventDefault: () => {} });
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(wipeCloudData).toHaveBeenCalledOnce();
+    finish({ readded: [], failed: [] });
   });
 
   it("banners the projects that could not be rebuilt", async () => {

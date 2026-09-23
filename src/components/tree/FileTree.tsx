@@ -24,9 +24,9 @@ import {
   syncNow,
   trackedFiles,
 } from "@/lib/ipc";
-import { useRoots, useSyncing, useTrackLabel } from "@/lib/roots";
+import { useRoots, useSyncing, useTaskLabel } from "@/lib/roots";
 import { buildTree, filterTree } from "@/lib/tree";
-import type { ConflictView, EntryView, TrackedFile } from "@/lib/types";
+import type { ConflictView, EntryView, RootRow, TrackedFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -69,6 +69,15 @@ export function treeAwaitingLoad(
   return shown.slug !== current.slug || shown.linked !== current.linked;
 }
 
+/** A detected agent folder whose patterns matched nothing would otherwise show a blank tree. */
+export function showAgentEmptyHint(
+  root: RootRow,
+  fileCount: number,
+  filtering: boolean,
+): boolean {
+  return root.is_agent && root.linked && fileCount === 0 && !filtering;
+}
+
 function conflictPathSet(views: ConflictView[]): Set<string> {
   return new Set(views.map((view) => String(view.live).replace(/\\/g, "/")));
 }
@@ -103,8 +112,8 @@ export function FileTree() {
   const { roots, selectedSlug, selectedRel, selectFile, openResolver, busy, seeding } =
     useRoots();
   const syncing = useSyncing();
-  const trackLabel = useTrackLabel();
-  const tracking = trackLabel !== null;
+  const taskLabel = useTaskLabel();
+  const tracking = taskLabel !== null;
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
   const seedingItem = seeding.find((item) => item.slug === selectedSlug) ?? null;
 
@@ -310,6 +319,12 @@ export function FileTree() {
         <div className="flex flex-col gap-0.5 px-1.5 py-1">
         {filtering && visibleTree.length === 0 ? (
           <p className="px-2 py-1.5 text-sm text-muted-foreground">No matches</p>
+        ) : null}
+        {showAgentEmptyHint(root, files.length, filtering) ? (
+          <p className="px-2 py-1.5 text-sm text-muted-foreground">
+            Agent found on this Mac, but no files match its patterns. Use + to
+            add or edit patterns.
+          </p>
         ) : null}
         {visibleTree.map((node) => (
           <TreeNode

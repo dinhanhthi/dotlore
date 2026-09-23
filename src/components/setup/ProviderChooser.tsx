@@ -43,10 +43,15 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
   const [localBusy, setLocalBusy] = useState(false);
   const locked = busy || localBusy;
 
+  /**
+   * Closes first, then writes: `set_provider` runs as a footer task, so the
+   * window stays usable. `applyProvider` waits for it — it re-reads
+   * `provider_dir`, which would still be the old folder until then.
+   */
   async function apply(dir: string) {
-    await setProvider(dir);
-    applyProvider(dir);
     onApplied?.();
+    if ((await setProvider(dir)) === null) return;
+    applyProvider(dir);
   }
 
   async function withLock(action: () => Promise<void>) {

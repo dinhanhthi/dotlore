@@ -9,7 +9,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { setBanner, wipeCloudData } from "@/lib/ipc";
-import { useRoots } from "@/lib/roots";
+import { useRoots, useTaskLabel } from "@/lib/roots";
 
 type WipeCloudDataAlertProps = {
   open: boolean;
@@ -20,12 +20,16 @@ export function WipeCloudDataAlert({
   open,
   onOpenChange,
 }: WipeCloudDataAlertProps) {
-  const { refreshRoots, busy } = useRoots();
+  const { refreshRoots } = useRoots();
+  const running = useTaskLabel() !== null;
 
+  /** Closes first: the wipe runs as a footer task, the window stays usable. */
   async function confirm() {
-    if (busy) return;
+    if (running) return;
+    onOpenChange(false);
     try {
       const report = await wipeCloudData();
+      if (report === null) return;
       await refreshRoots();
       if (report.failed.length > 0) {
         const slugs = report.failed.map((f) => f.slug).join(", ");
@@ -34,9 +38,8 @@ export function WipeCloudDataAlert({
         );
       }
     } catch {
-      // Banner is set by `run()`.
+      // Banner is set by `runTask()`.
     }
-    onOpenChange(false);
   }
 
   return (
@@ -53,10 +56,10 @@ export function WipeCloudDataAlert({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={running}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
-            disabled={busy}
+            disabled={running}
             onClick={(event) => {
               event.preventDefault();
               void confirm();

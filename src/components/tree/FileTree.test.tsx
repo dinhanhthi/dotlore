@@ -8,6 +8,7 @@ import type { RootRow } from "@/lib/types";
 import { pickerStateAfterIdentityChange } from "./picker";
 import {
   FileTree,
+  showAgentEmptyHint,
   treeAwaitingLoad,
   treeDialogsAfterRootChange,
   treeLoadMatches,
@@ -176,5 +177,20 @@ describe("FileTree header", () => {
     expect(isDisabled(buttonWithLabel(renderTree(unlinked), "Add to track"))).toBe(
       true,
     );
+  });
+});
+
+describe("FileTree agent empty hint", () => {
+  const agent: RootRow = { ...linked, is_agent: true };
+
+  it("shows the hint for a linked agent with no matching files", () => {
+    expect(showAgentEmptyHint(agent, 0, false)).toBe(true);
+  });
+
+  it("hides the hint for projects, unlinked agents, searches, and agents with files", () => {
+    expect(showAgentEmptyHint(linked, 0, false)).toBe(false);
+    expect(showAgentEmptyHint({ ...agent, linked: false }, 0, false)).toBe(false);
+    expect(showAgentEmptyHint(agent, 0, true)).toBe(false);
+    expect(showAgentEmptyHint(agent, 3, false)).toBe(false);
   });
 });

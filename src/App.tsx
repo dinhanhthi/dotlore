@@ -64,10 +64,10 @@ async function importAgentsWhenReady(dir: string | null): Promise<void> {
   if (dir === null) return;
   try {
     const report = await importInstalledAgents();
-    const first = report.failed[0];
+    const first = report?.failed[0];
     if (first) setBanner(first.message);
   } catch {
-    // `run` already stored the command error for the toast.
+    // `runTask` already stored the command error for the toast.
   }
 }
 

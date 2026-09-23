@@ -1,4 +1,4 @@
-import { ChevronDown, Pencil, Settings, Trash2 } from "lucide-react";
+import { ChevronDown, Loader2, Pencil, Settings, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
@@ -41,7 +41,7 @@ import {
   setPatternCatalog,
   type PatternCatalog,
 } from "@/lib/ipc";
-import { useRoots } from "@/lib/roots";
+import { useRoots, useTaskLabel } from "@/lib/roots";
 import { useTheme } from "@/lib/theme";
 
 const SETTINGS_TABS = [
@@ -321,6 +321,7 @@ function SettingsGeneral({
   onChangeFolder: () => void;
 }) {
   const { providerDir, busy } = useRoots();
+  const cloudBusy = useTaskLabel() !== null;
   const [loginOn, setLoginOn] = useState(false);
   const [wipeOpen, setWipeOpen] = useState(false);
   const [theme, setTheme] = useTheme();
@@ -372,13 +373,17 @@ function SettingsGeneral({
                         variant="ghost"
                         size="icon-xs"
                         className="text-destructive hover:text-destructive"
-                        disabled={busy}
+                        disabled={busy || cloudBusy}
                         aria-label="Wipe cloud data"
                         onClick={() => setWipeOpen(true)}
                       />
                     }
                   >
-                    <Trash2 className="size-3.5" aria-hidden />
+                    {cloudBusy ? (
+                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                    ) : (
+                      <Trash2 className="size-3.5" aria-hidden />
+                    )}
                   </TooltipTrigger>
                   <TooltipContent>Wipe cloud data</TooltipContent>
                 </Tooltip>
@@ -391,6 +396,7 @@ function SettingsGeneral({
                       variant="ghost"
                       size="icon-xs"
                       className="text-muted-foreground"
+                      disabled={busy || cloudBusy}
                       aria-label="Change cloud folder"
                       onClick={onChangeFolder}
                     />

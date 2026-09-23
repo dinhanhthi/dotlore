@@ -29,34 +29,34 @@ export type WorkSnapshot = {
   inflight: number;
   syncing: number;
   banner: string | null;
-  /** Background track/untrack apply. Does not count toward `inflight`. */
-  trackLabel: string | null;
+  /** A background task with its own footer copy. Never counts toward `inflight`. */
+  taskLabel: string | null;
   trackConfirm: TrackConfirm | null;
 };
 
 let inflight = 0;
 let syncing = 0;
 let banner: string | null = null;
-let trackLabel: string | null = null;
+let taskLabel: string | null = null;
 let trackConfirm: TrackConfirm | null = null;
 let confirmResolve: ((yes: boolean) => void) | null = null;
 let snapshot: WorkSnapshot = {
   inflight: 0,
   syncing: 0,
   banner: null,
-  trackLabel: null,
+  taskLabel: null,
   trackConfirm: null,
 };
 const listeners = new Set<() => void>();
 
 function emit(): void {
-  snapshot = { inflight, syncing, banner, trackLabel, trackConfirm };
+  snapshot = { inflight, syncing, banner, taskLabel, trackConfirm };
   for (const listener of listeners) listener();
 }
 
-function setTrackLabel(label: string | null): void {
-  if (trackLabel === label) return;
-  trackLabel = label;
+function setTaskLabel(label: string | null): void {
+  if (taskLabel === label) return;
+  taskLabel = label;
   emit();
 }
 
@@ -108,6 +108,28 @@ async function run<T>(op: () => Promise<T>): Promise<T> {
   } finally {
     inflight = Math.max(0, inflight - 1);
     emit();
+  }
+}
+
+/**
+ * Run a write in the background: the footer shows `label` with a spinner and
+ * the rest of the window stays usable. Null when another task already holds
+ * the slot.
+ */
+export async function runTask<T>(
+  label: string,
+  op: () => Promise<T>,
+): Promise<T | null> {
+  if (taskLabel !== null || confirmResolve !== null) return null;
+  setBanner(null);
+  setTaskLabel(label);
+  try {
+    return await op();
+  } catch (err) {
+    setBanner(errorMessage(err, "Something went wrong"));
+    throw err;
+  } finally {
+    setTaskLabel(null);
   }
 }
 
@@ -178,8 +200,10 @@ export function syncNow(): Promise<void> {
   });
 }
 
-export function setProvider(dir: string): Promise<void> {
-  return run(() => invoke("set_provider", { dir }));
+export function setProvider(dir: string): Promise<void | null> {
+  return runTask("Switching cloud folder…", () =>
+    invoke<void>("set_provider", { dir }),
+  );
 }
 
 /**
@@ -190,8 +214,10 @@ export function addRoot(path: string, slug?: string): Promise<string> {
   return invoke("add_root", { path, slug: slug ?? null });
 }
 
-export function importInstalledAgents(): Promise<ImportAgentsDto> {
-  return run(() => invoke("import_installed_agents"));
+export function importInstalledAgents(): Promise<ImportAgentsDto | null> {
+  return runTask("Looking for agent folders…", () =>
+    invoke<ImportAgentsDto>("import_installed_agents"),
+  );
 }
 
 export function linkRoot(slug: string, path: string): Promise<void> {
@@ -207,8 +233,10 @@ export type WipeReport = {
   failed: { slug: string; error: string }[];
 };
 
-export function wipeCloudData(): Promise<WipeReport> {
-  return run(() => invoke<WipeReport>("wipe_cloud_data"));
+export function wipeCloudData(): Promise<WipeReport | null> {
+  return runTask("Wiping cloud data…", () =>
+    invoke<WipeReport>("wipe_cloud_data"),
+  );
 }
 
 export function recoverRoot(slug: string): Promise<void> {
@@ -263,15 +291,15 @@ export type TrackBatchOp = {
 
 /**
  * Apply staged track/untrack marks without the global busy lock.
- * The footer reads `trackLabel` while this runs.
+ * The footer reads `taskLabel` while this runs.
  */
 export async function applyTrackBatch(
   slug: string,
   ops: TrackBatchOp[],
 ): Promise<void> {
-  if (ops.length === 0 || trackLabel !== null || confirmResolve !== null) return;
+  if (ops.length === 0 || taskLabel !== null || confirmResolve !== null) return;
   setBanner(null);
-  setTrackLabel("Updating tracked files…");
+  setTaskLabel("Updating tracked files…");
   const declined: string[] = [];
   const stillOver: string[] = [];
   let firstError: string | null = null;
@@ -280,7 +308,7 @@ export async function applyTrackBatch(
       const op = ops[i]!;
       const verb = op.action === "track" ? "Tracking" : "Untracking";
       const progress = ops.length > 1 ? ` (${i + 1} of ${ops.length})` : "";
-      setTrackLabel(`${verb} ${op.rel}…${progress}`);
+      setTaskLabel(`${verb} ${op.rel}…${progress}`);
       try {
         if (op.action === "untrack") {
           await invoke("untrack_entry", { slug, rel: op.rel });
@@ -292,7 +320,7 @@ export async function applyTrackBatch(
           confirmedFolderBytes: op.confirmedFolderBytes ?? null,
         });
         if (result.outcome === "needs_confirmation") {
-          setTrackLabel(`Confirm tracking ${op.rel}…${progress}`);
+          setTaskLabel(`Confirm tracking ${op.rel}…${progress}`);
           const yes = await waitForTrackConfirm({
             rel: op.rel,
             bytes: result.bytes,
@@ -334,7 +362,7 @@ export async function applyTrackBatch(
   } finally {
     confirmResolve = null;
     trackConfirm = null;
-    trackLabel = null;
+    taskLabel = null;
     emit();
   }
 }

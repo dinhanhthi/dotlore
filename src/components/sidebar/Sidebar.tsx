@@ -161,7 +161,7 @@ export function Sidebar() {
     try {
       try {
         const report = await importInstalledAgents();
-        const first = report.failed[0];
+        const first = report?.failed[0];
         if (first) setBanner(first.message);
       } catch {
         // Banner is set by `run()`.
