@@ -17,6 +17,8 @@ import { useRoots } from "@/lib/roots";
 /** What the Google Drive client calls the account's own root. */
 const MY_DRIVE = "My Drive";
 
+export const APPLY_LABEL = "Use this folder";
+
 type Provider = "icloud" | "gdrive" | "other";
 
 const PROVIDER_LABELS: Record<Provider, string> = {
@@ -30,8 +32,13 @@ function mountName(path: string): string {
   return name && name.length > 0 ? name : path;
 }
 
+/** The folder a Google Drive account mount syncs through. */
+export function accountDir(mount: string): string {
+  return `${mount}/${MY_DRIVE}`;
+}
+
 type ProviderChooserProps = {
-  /** Called as soon as a folder is chosen, before `set_provider` runs. */
+  /** Called as soon as the folder is confirmed, before `set_provider` runs. */
   onApplied?: () => void;
 };
 
@@ -40,6 +47,9 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
   const [provider, setProviderChoice] = useState<Provider | null>(null);
   const [mounts, setMounts] = useState<string[] | null>(null);
   const [account, setAccount] = useState<string | null>(null);
+  // The folder the next apply commits to. Resolved while choosing, so the
+  // button can say what it will do and stay disabled until it can do it.
+  const [dir, setDir] = useState<string | null>(null);
   const [localBusy, setLocalBusy] = useState(false);
   const locked = appLocked || localBusy;
 
@@ -48,10 +58,10 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
    * window stays usable. `applyProvider` waits for it — it re-reads
    * `provider_dir`, which would still be the old folder until then.
    */
-  async function apply(dir: string) {
+  async function apply(target: string) {
     onApplied?.();
-    if ((await setProvider(dir)) === BLOCKED) return;
-    applyProvider(dir);
+    if ((await setProvider(target)) === BLOCKED) return;
+    applyProvider(target);
   }
 
   async function withLock(action: () => Promise<void>) {
@@ -66,21 +76,21 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
     }
   }
 
+  /** Choosing only resolves a folder; nothing is written until apply. */
   function chooseProvider(next: Provider) {
     setProviderChoice(next);
     setMounts(null);
     setAccount(null);
+    setDir(null);
     if (next === "icloud") {
       void withLock(async () => {
-        await apply(await icloudDir());
+        setDir(await icloudDir());
       });
       return;
     }
     if (next === "other") {
       void withLock(async () => {
-        const dir = await pickLocalPath();
-        if (dir === null) return;
-        await apply(dir);
+        setDir(await pickLocalPath());
       });
       return;
     }
@@ -93,9 +103,12 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
 
   function chooseAccount(mount: string) {
     setAccount(mount);
-    void withLock(async () => {
-      await apply(`${mount}/${MY_DRIVE}`);
-    });
+    setDir(accountDir(mount));
+  }
+
+  function confirm() {
+    if (dir === null) return;
+    void withLock(() => apply(dir));
   }
 
   return (
@@ -161,6 +174,24 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
           </DropdownMenu>
         )
       )}
+
+      {dir !== null && (
+        <p
+          className="truncate font-mono text-xs text-muted-foreground"
+          title={dir}
+        >
+          {dir}
+        </p>
+      )}
+
+      <Button
+        type="button"
+        className="mt-2 w-full"
+        disabled={locked || dir === null}
+        onClick={confirm}
+      >
+        {APPLY_LABEL}
+      </Button>
     </div>
   );
 }
