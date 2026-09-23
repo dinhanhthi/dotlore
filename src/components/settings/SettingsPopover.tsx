@@ -1,4 +1,11 @@
-import { ChevronDown, Loader2, Pencil, Settings, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  FolderOpen,
+  Loader2,
+  Pencil,
+  Settings,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { CloudFolderButton } from "@/components/layout/CloudFolderButton";
@@ -29,10 +36,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  appHome,
   defaultIgnore,
   loginItemEnabled,
   maxFileMb,
   maxSeedFolderMb,
+  openAppHome,
   patternCatalogs,
   setDefaultIgnore,
   setLoginItem,
@@ -417,6 +426,15 @@ export function SettingsGeneral() {
   const { locked } = useRoots();
   const [loginOn, setLoginOn] = useState(false);
   const [theme, setTheme] = useTheme();
+  const [home, setHome] = useState<string | null>(null);
+
+  useEffect(() => {
+    void appHome()
+      .then(setHome)
+      .catch(() => {
+        setHome(null);
+      });
+  }, []);
 
   useEffect(() => {
     void loginItemEnabled()
@@ -474,6 +492,46 @@ export function SettingsGeneral() {
             void toggleLogin(on);
           }}
         />
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col">
+          <span className="text-sm">App data</span>
+          {home !== null && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    className="block min-w-0 truncate text-left font-mono text-xs text-muted-foreground"
+                  />
+                }
+              >
+                {tildePath(home)}
+              </TooltipTrigger>
+              <TooltipContent>{home}</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="shrink-0 text-muted-foreground"
+                aria-label="Go to app data folder"
+                onClick={() => {
+                  void openAppHome().catch(() => {
+                    // Folder missing or Finder is unavailable.
+                  });
+                }}
+              />
+            }
+          >
+            <FolderOpen className="size-3.5" aria-hidden />
+          </TooltipTrigger>
+          <TooltipContent>Go to app data folder</TooltipContent>
+        </Tooltip>
       </div>
     </div>
   );

@@ -355,6 +355,18 @@ pub async fn open_cloud_folder(state: State<'_, AppState>) -> Result<(), String>
     .map_err(front_msg)?
 }
 
+/// The state dir this app runs on (`DOTLORE_HOME`), for Settings to show.
+#[tauri::command]
+pub fn app_home(state: State<'_, AppState>) -> String {
+    state.home.to_string_lossy().into_owned()
+}
+
+/// Open the state dir in Finder the same way as [`open_cloud_folder`].
+#[tauri::command]
+pub fn open_app_home(state: State<'_, AppState>) -> Result<(), String> {
+    open_folder(&state.home)
+}
+
 fn cloud_folder_target(provider: &Path) -> PathBuf {
     let dotlore = engine::cloud_folder(provider);
     if dotlore.is_dir() {

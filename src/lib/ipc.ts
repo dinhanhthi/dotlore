@@ -215,6 +215,15 @@ export function openCloudFolder(): Promise<void> {
   return invoke("open_cloud_folder");
 }
 
+/** The state dir this app runs on (`DOTLORE_HOME`). */
+export function appHome(): Promise<string> {
+  return invoke("app_home");
+}
+
+export function openAppHome(): Promise<void> {
+  return invoke("open_app_home");
+}
+
 export function gitMissing(): Promise<boolean> {
   return invoke("git_missing");
 }

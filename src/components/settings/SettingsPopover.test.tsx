@@ -10,6 +10,7 @@ import {
   SettingsNeverList,
   SettingsPanel,
   SettingsPatterns,
+  SettingsGeneral,
   SettingsSync,
 } from "./SettingsPopover";
 import { WipeCloudDataAlert } from "./WipeCloudDataAlert";
@@ -88,6 +89,8 @@ vi.mock("@/lib/ipc", () => ({
   setMaxFileMb: () => Promise.resolve(),
   setMaxSeedFolderMb: () => Promise.resolve(),
   loginItemEnabled: () => Promise.resolve(false),
+  appHome: () => Promise.resolve("/Users/demo/Library/Application Support/dotlore"),
+  openAppHome: () => Promise.resolve(),
   setLoginItem: () => Promise.resolve(),
   patternCatalogs: () => Promise.resolve([]),
   setPatternCatalog: () => Promise.resolve(),
@@ -393,5 +396,13 @@ describe("Wipe cloud data", () => {
     expect(html.indexOf('aria-label="Change cloud folder"')).toBeGreaterThan(
       html.indexOf('aria-label="Go to cloud folder"'),
     );
+  });
+});
+
+describe("SettingsGeneral", () => {
+  it("offers a button to the app data folder", () => {
+    const html = wrap(<SettingsGeneral />);
+    expect(html).toContain("App data");
+    expect(html).toContain('aria-label="Go to app data folder"');
   });
 });

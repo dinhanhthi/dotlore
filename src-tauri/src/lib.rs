@@ -81,6 +81,8 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::resolve_binary,
             commands::provider_dir,
             commands::open_cloud_folder,
+            commands::app_home,
+            commands::open_app_home,
             commands::git_missing,
             commands::sync_now,
             commands::set_provider,
