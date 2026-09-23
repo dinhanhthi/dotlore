@@ -1,10 +1,11 @@
 import { MergeView } from "@codemirror/merge";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { Maximize2, Minimize2 } from "lucide-react";
+import { CircleHelp, Maximize2, Minimize2 } from "lucide-react";
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { editorExtensions, viewerExtensions } from "@/lib/cm";
 import {
   BLOCKED,
@@ -363,11 +364,11 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
         </div>
       ) : null}
 
-      <footer className="flex shrink-0 flex-col gap-1.5 border-t border-border px-pad-x py-2">
+      <footer className="flex shrink-0 items-center gap-2 border-t border-border px-pad-x py-2">
         {!dto?.binary ? (
-          <>
-            {sibling ? (
-              <label className="flex items-center gap-2 text-foreground">
+          sibling ? (
+            <div className="flex items-center gap-1">
+              <label className="flex items-center gap-2 text-xs text-foreground">
                 <input
                   type="checkbox"
                   checked={checked}
@@ -380,23 +381,43 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
                 />
                 Discard this sibling file
               </label>
-            ) : null}
-            <p className="text-sm text-muted-foreground">
-              Unchecked siblings stay as files next to {liveName(rel)}.
-            </p>
-          </>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="text-muted-foreground"
+                      aria-label="What is a sibling file?"
+                    />
+                  }
+                >
+                  <CircleHelp className="size-3.5" aria-hidden />
+                </TooltipTrigger>
+                <TooltipContent side="top" align="start" className="flex-col items-start gap-1.5">
+                  <p>
+                    Two devices changed {liveName(rel)}. The newer version stayed in{" "}
+                    {liveName(rel)}; the other version was saved next to it as a sibling
+                    file, {liveName(sibling.path)}.
+                  </p>
+                  <p>Checked: Resolve saves the Result and deletes the sibling file.</p>
+                  <p>Unchecked: Resolve saves the Result and keeps the sibling file on disk.</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          ) : null
         ) : (
           <p className="text-sm text-muted-foreground">
             Keeping one side discards every sibling of {liveName(rel)}.
           </p>
         )}
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose} disabled={resolving}>
+        <div className="ml-auto flex items-center gap-2">
+          <Button variant="ghost" size="xs" onClick={onClose} disabled={resolving}>
             Cancel
           </Button>
           {!dto?.binary ? (
             <Button
-              size="sm"
+              size="xs"
               onClick={() => {
                 void handleResolve();
               }}
