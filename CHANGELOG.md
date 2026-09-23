@@ -2,9 +2,9 @@
 
 ### Conflicts
 
-- A dedicated Conflicts view, reachable from the sidebar and the footer status, lists every unresolved conflict across projects.
-- A collapsed sidebar section header flags conflicts inside it, so they are never hidden by collapsing the list.
-- The two sides of a conflict are labeled "on this Mac" and "from cloud", with a vertical divider between them and the conflict status colour tinting the icons. [#85f007b9](https://github.com/dinhanhthi/dotlore/commit/85f007b9) [#01d9d0a3](https://github.com/dinhanhthi/dotlore/commit/01d9d0a3) [#235de343](https://github.com/dinhanhthi/dotlore/commit/235de343) [#e91d89c7](https://github.com/dinhanhthi/dotlore/commit/e91d89c7) [#42f1fb81](https://github.com/dinhanhthi/dotlore/commit/42f1fb81) [#022997a1](https://github.com/dinhanhthi/dotlore/commit/022997a1) [#88130dc4](https://github.com/dinhanhthi/dotlore/commit/88130dc4)
+- A dedicated Conflicts view, reachable from the sidebar and the footer status, lists every unresolved conflict across projects. [#85f007b9](https://github.com/dinhanhthi/dotlore/commit/85f007b9) [#01d9d0a3](https://github.com/dinhanhthi/dotlore/commit/01d9d0a3)
+- A collapsed sidebar section header flags conflicts inside it, so they are never hidden by collapsing the list. [#235de343](https://github.com/dinhanhthi/dotlore/commit/235de343)
+- The two sides of a conflict are labeled "on this Mac" and "from cloud", with a vertical divider between them and the conflict status colour tinting the icons. [#e91d89c7](https://github.com/dinhanhthi/dotlore/commit/e91d89c7) [#42f1fb81](https://github.com/dinhanhthi/dotlore/commit/42f1fb81) [#022997a1](https://github.com/dinhanhthi/dotlore/commit/022997a1) [#88130dc4](https://github.com/dinhanhthi/dotlore/commit/88130dc4)
 
 ### Settings
 
