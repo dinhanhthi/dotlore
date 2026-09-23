@@ -295,20 +295,20 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
         <div className="flex min-h-0 flex-1 items-center justify-center px-6">
           <div className="flex w-full max-w-lg gap-3">
             <BinaryCard
-              label="LIVE"
-              device="this device"
+              label="ON THIS MAC"
+              device="this Mac"
               bytes={dto.live_bytes_len}
-              actionLabel="Keep LIVE"
+              actionLabel="Keep this Mac"
               disabled={locked}
               onKeep={() => {
                 void handleBinary("live");
               }}
             />
             <BinaryCard
-              label="OTHER"
+              label="FROM CLOUD"
               device={device}
               bytes={sibling?.bytes_len ?? 0}
-              actionLabel="Keep OTHER"
+              actionLabel="Keep from cloud"
               disabled={locked || !sibling}
               onKeep={() => {
                 void handleBinary("other");
@@ -319,8 +319,8 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
       ) : (
         <>
           <div className="grid shrink-0 grid-cols-2 border-b border-border text-label text-muted-foreground">
-            <div className="px-pad-x py-1">LIVE</div>
-            <div className="border-l border-border px-pad-x py-1">OTHER</div>
+            <div className="px-pad-x py-1">ON THIS MAC</div>
+            <div className="border-l border-border px-pad-x py-1">FROM CLOUD</div>
           </div>
           <div ref={mergeParentRef} className="cm-merge-host min-h-0 flex-1 overflow-hidden" />
         </>
