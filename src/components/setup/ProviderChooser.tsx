@@ -112,7 +112,7 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex min-w-0 flex-col gap-2">
       <DropdownMenu>
         <DropdownMenuTrigger
           render={
@@ -177,7 +177,7 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
 
       {dir !== null && (
         <p
-          className="truncate font-mono text-xs text-muted-foreground"
+          className="block w-full min-w-0 truncate font-mono text-xs text-muted-foreground"
           title={dir}
         >
           {dir}
