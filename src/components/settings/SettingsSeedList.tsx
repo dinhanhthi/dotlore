@@ -75,15 +75,26 @@ export function SettingsSeedList({
       </div>
     );
 
-  const addRow = (
-    <div className="flex items-center gap-2">
+  const toolbar = (
+    <div
+      data-slot="seed-list-toolbar"
+      className="flex items-center gap-1.5"
+    >
+      {catalog}
+      <Input
+        placeholder="Search"
+        value={query}
+        disabled={disabled}
+        className="h-8 min-w-0 flex-1 px-2.5 text-xs md:text-xs"
+        onChange={(event) => setQuery(event.target.value)}
+      />
       <Input
         id={id}
         placeholder={addPlaceholder}
         value={draft}
         disabled={disabled}
         spellCheck={false}
-        className="font-mono text-xs"
+        className="h-8 min-w-0 flex-1 px-2.5 font-mono text-xs md:text-xs"
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
           if (event.key !== "Enter") return;
@@ -94,22 +105,14 @@ export function SettingsSeedList({
       <Button
         type="button"
         variant="secondary"
+        size="sm"
+        className="shrink-0 text-xs"
         disabled={disabled}
         onClick={commitAdd}
       >
         Add
       </Button>
     </div>
-  );
-
-  const search = (
-    <Input
-      placeholder="Search"
-      value={query}
-      disabled={disabled}
-      className={catalog ? "min-w-0 flex-1" : undefined}
-      onChange={(event) => setQuery(event.target.value)}
-    />
   );
 
   return (
@@ -119,18 +122,17 @@ export function SettingsSeedList({
           {label}
         </label>
       ) : null}
-      <p className="text-xs text-muted-foreground">{hint}</p>
-      <div className="mt-4 flex min-h-0 flex-1 flex-col gap-3">
-        {catalog ? (
-          <div className="flex items-center gap-2">
-            {catalog}
-            {search}
-          </div>
-        ) : (
-          search
-        )}
-        {addRow}
-        <div className="min-h-0 flex-1 overflow-y-auto">{list}</div>
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
+        <div className="flex flex-col gap-1.5">
+          {toolbar}
+          <p className="text-xs text-muted-foreground">{hint}</p>
+        </div>
+        <div
+          data-slot="seed-list-items"
+          className="min-h-0 flex-1 overflow-y-auto"
+        >
+          {list}
+        </div>
       </div>
     </div>
   );

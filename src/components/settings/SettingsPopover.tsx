@@ -231,7 +231,7 @@ export function SettingsPatterns() {
   return (
     <SettingsSeedList
       id="default-patterns"
-      hint="Applies the next time a project or agent folder is added. Folders already added stay as they are."
+      hint="Applies to folders added from now on. Folders already added keep their list."
       lines={lines}
       disabled={busy}
       addPlaceholder="Add a pattern"
@@ -245,8 +245,9 @@ export function SettingsPatterns() {
               <Button
                 type="button"
                 variant="outline"
+                size="sm"
                 disabled={busy}
-                className="shrink-0"
+                className="shrink-0 text-xs"
               />
             }
           >
@@ -303,7 +304,7 @@ export function SettingsNeverList() {
   return (
     <SettingsSeedList
       id="default-ignore"
-      hint="Applies the next time a project or agent folder is added. One list for projects and agent folders."
+      hint="Applies to projects and agent folders added from now on."
       lines={lines}
       disabled={busy}
       addPlaceholder="Add an entry"

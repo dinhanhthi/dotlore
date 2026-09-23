@@ -165,6 +165,57 @@ describe("SettingsNeverList", () => {
   });
 });
 
+function toolbarOf(html: string): string {
+  const start = html.indexOf('data-slot="seed-list-toolbar"');
+  const end = html.indexOf('data-slot="seed-list-items"');
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return html.slice(start, end);
+}
+
+describe("seed list toolbar", () => {
+  it("puts the catalog, search, add input and Add on one compact row in Patterns", () => {
+    const bar = toolbarOf(wrap(<SettingsPatterns />));
+    expect(bar).toContain("Projects");
+    expect(bar).toContain('placeholder="Search"');
+    expect(bar).toContain('placeholder="Add a pattern"');
+    expect(bar).toContain(">Add<");
+    expect(bar).not.toContain("h-9");
+  });
+
+  it("puts search, add input and Add on one compact row in Never-list", () => {
+    const bar = toolbarOf(wrap(<SettingsNeverList />));
+    expect(bar).toContain('placeholder="Search"');
+    expect(bar).toContain('placeholder="Add an entry"');
+    expect(bar).toContain(">Add<");
+    expect(bar).not.toContain("h-9");
+  });
+});
+
+describe("seed list hint", () => {
+  function hintBetween(html: string, hint: string) {
+    const bar = html.indexOf('data-slot="seed-list-toolbar"');
+    const at = html.indexOf(hint);
+    const items = html.indexOf('data-slot="seed-list-items"');
+    expect(at).toBeGreaterThan(bar);
+    expect(at).toBeLessThan(items);
+  }
+
+  it("shows the short Patterns hint under the toolbar", () => {
+    const html = wrap(<SettingsPatterns />);
+    hintBetween(
+      html,
+      "Applies to folders added from now on. Folders already added keep their list.",
+    );
+  });
+
+  it("shows the short Never-list hint under the toolbar", () => {
+    const html = wrap(<SettingsNeverList />);
+    hintBetween(html, "Applies to projects and agent folders added from now on.");
+    expect(html).not.toContain("One list for projects and agent folders.");
+  });
+});
+
 describe("SettingsSeedList", () => {
   it("renders each line with a remove button", () => {
     const html = wrap(
