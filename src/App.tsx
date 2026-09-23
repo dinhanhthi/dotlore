@@ -46,6 +46,7 @@ import {
   emptyRootsState,
   emptyTrackedStats,
   folderName,
+  overlayStatuses,
   RootsContext,
   rootsWithSeeding,
   useRoots,
@@ -69,15 +70,6 @@ async function importAgentsWhenReady(dir: string | null): Promise<void> {
   } catch {
     // `runTask` already stored the command error for the toast.
   }
-}
-
-function overlayStatuses(rows: RootRow[], live: RootRow[]): RootRow[] {
-  if (live.length === 0) return rows;
-  const bySlug = new Map(live.map((row) => [row.slug, row.status]));
-  return rows.map((row) => {
-    const status = bySlug.get(row.slug);
-    return status ? { ...row, status } : row;
-  });
 }
 
 function isLinked(roots: RootRow[], slug: string | null): boolean {

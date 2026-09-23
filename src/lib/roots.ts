@@ -161,6 +161,23 @@ export function mergeRootsBySlug(
   return [...local, ...extras];
 }
 
+/**
+ * Overlay the live cycle statuses onto the discovered rows.
+ *
+ * An unlinked row keeps its own `Pending`: the last status event for a slug
+ * outlives the root it described, so a root that was removed would otherwise
+ * carry that staging repo's conflict count on a cloud-only row with no files
+ * behind it.
+ */
+export function overlayStatuses(rows: RootRow[], live: RootRow[]): RootRow[] {
+  if (live.length === 0) return rows;
+  const bySlug = new Map(live.map((row) => [row.slug, row.status]));
+  return rows.map((row) => {
+    const status = row.linked ? bySlug.get(row.slug) : undefined;
+    return status ? { ...row, status } : row;
+  });
+}
+
 export type CloudDiscovery =
   | { ok: true; rows: LinkableRow[] }
   | { ok: false; message: string };
