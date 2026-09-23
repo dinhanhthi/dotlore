@@ -89,6 +89,10 @@ function clickRefresh() {
   return refreshClicks.at(-1)?.({ nativeEvent: new Event("click") });
 }
 
+/** The attribute, in any order within the tag — not the `disabled:` utility class. */
+const REFRESH_DISABLED =
+  /<button(?=[^>]*aria-label="Refresh agents")[^>]*\sdisabled=""/;
+
 describe("Sidebar agents refresh", () => {
   beforeEach(() => {
     importInstalledAgents.mockReset();
@@ -136,9 +140,14 @@ describe("Sidebar agents refresh", () => {
     expect(refreshRoots).toHaveBeenCalledOnce();
   });
 
-  it("disables the refresh button while busy", () => {
-    const { html } = renderSidebar({ busy: true });
-    expect(html).toMatch(/<button[^>]*aria-label="Refresh agents"[^>]*disabled/);
+  it("disables the refresh button while a write is in flight", () => {
+    const { html } = renderSidebar({ locked: true });
+    expect(html).toMatch(REFRESH_DISABLED);
+  });
+
+  it("leaves the refresh button enabled when nothing is in flight", () => {
+    const { html } = renderSidebar({ locked: false });
+    expect(html).not.toMatch(REFRESH_DISABLED);
   });
 });
 
