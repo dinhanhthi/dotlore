@@ -5,9 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Keep AI files and custom patterns out of git, and sync them across your machines through iCloud, Google Drive, and more."
+      content="What Dotlore collects, stores, and sends: no analytics, no accounts, no servers of its own."
     />
-    <title>Dotlore — Sync your AI stuff away from your codebase</title>
+    <title>Privacy — Dotlore</title>
     <link rel="icon" href="logo.png" type="image/png" />
     <link rel="stylesheet" href="styles.css" />
     <script>
@@ -27,16 +27,6 @@
             <img src="logo.png" alt="Dotlore" width="32" height="32" />
             <span class="wordmark">Dotlore</span>
           </a>
-          <!-- dotlore:version -->
-          <a
-            class="version-badge"
-            href="https://github.com/dinhanhthi/dotlore/releases/tag/v0.2.1"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            v0.2.1
-          </a>
-          <!-- /dotlore:version -->
         </div>
         <nav class="nav">
           <button
@@ -78,76 +68,116 @@
     <main class="site-main">
       <div class="page">
         <section class="hero">
-          <h1>Sync your AI stuff and keep it away from your main codebase.</h1>
+          <h1>Privacy</h1>
           <p>
-            Keep AI files, folders, and any custom patterns out of the repository
-            without losing them. Dotlore syncs them across your machines through
-            your own cloud — iCloud, Google Drive, and more to come.
-          </p>
-          <div class="actions">
-            <a
-              class="btn btn-primary"
-              href="https://github.com/dinhanhthi/dotlore/releases/latest/download/Dotlore-universal.dmg"
-              target="_blank"
-              rel="noopener noreferrer"
-              >Download</a
-            >
-            <a
-              class="btn btn-outline"
-              href="https://github.com/dinhanhthi/dotlore"
-              target="_blank"
-              rel="noopener noreferrer"
-              >GitHub</a
-            >
-          </div>
-          <p class="note">
-            macOS is the current priority. Windows &amp; Linux are coming soon.
+            Dotlore has no analytics, no telemetry, no crash reporting, no
+            accounts, and no servers of its own. Your files never pass through
+            anything run by Dotlore.
           </p>
         </section>
 
         <section>
-          <h2>What it does</h2>
+          <h2>What the app sends over the network</h2>
           <ul class="what">
             <li>
-              Files stay put: not moved, not symlinked, not added to the project's
-              git history.
+              <strong>Update checks.</strong> At launch, every six hours, and
+              when you choose "Check for Updates…", the app downloads
+              <code>latest.json</code> from this project's GitHub Releases. The
+              request carries no identifier, but GitHub sees your IP address, as
+              with any web request. An update is downloaded from GitHub only after
+              you agree to install it.
             </li>
             <li>
-              A project is a folder with a synced include-list.
-              <code>.claude/</code>, <code>CLAUDE.md</code>, <code>.agents/</code>,
-              <code>docs/</code>, and <code>~/.claude</code> are entries inside it.
-            </li>
-            <li>Sync through a local cloud folder path, not a cloud API.</li>
-            <li>
-              Each Mac publishes an immutable git bundle. Nothing in the cloud
-              folder is rewritten or deleted.
-            </li>
-            <li>
-              Conflicts: the newer commit wins on every device; the loser's bytes
-              stay beside it as a sibling file.
-            </li>
-            <li>
-              Desktop app, menu bar status item, and a CLI
-              (<code>add</code>, <code>sync</code>, <code>status</code>,
-              <code>daemon</code>).
+              <strong>Nothing else.</strong> Dotlore does not report how you use
+              it, which projects you add, or that it is installed at all.
             </li>
           </ul>
         </section>
 
         <section>
-          <h2>How it works</h2>
-          <ol class="steps">
-            <li>Add a project folder and pick the entries to sync.</li>
+          <h2>What stays on your Mac</h2>
+          <ul class="what">
             <li>
-              Dotlore copies the include-list into a private staging git repo
-              under <code>~/Library/Application Support/dotlore/</code>.
+              Everything Dotlore keeps lives in
+              <code>~/Library/Application Support/dotlore/</code>: its settings
+              (a random device ID, your Mac's name, the cloud folder path, and the
+              paths of the project folders you add), plus a private staging git
+              repo per project holding copies of the files you chose to sync.
             </li>
             <li>
-              It publishes an immutable bundle to
-              <code>&lt;cloud&gt;/dotlore/&lt;slug&gt;/devices/&lt;device-id&gt;/</code>.
+              Your project files stay where they are. Dotlore does not add
+              anything to a project's git history.
             </li>
-            <li>Other Macs fetch and merge with the system git.</li>
-          </ol>
+          </ul>
+        </section>
+
+        <section>
+          <h2>What goes into your cloud folder</h2>
+          <ul class="what">
+            <li>
+              Dotlore writes git bundles into the cloud folder you pick (iCloud
+              Drive, Google Drive desktop, …). They hold the contents of the files
+              in your include-list, the project's name, and each Mac's device ID
+              and name.
+            </li>
+            <li>
+              Dotlore only writes files to that folder on your disk. Uploading them
+              is done by your cloud provider's own app, under your own account and
+              that provider's privacy policy.
+            </li>
+            <li>
+              Bundles are not encrypted by Dotlore. Anyone who can read that cloud
+              folder can read the synced files, so do not put secrets in the
+              include-list.
+            </li>
+          </ul>
+        </section>
+
+        <section>
+          <h2>Removing your data</h2>
+          <ul class="what">
+            <li>
+              Settings → "Wipe cloud data" deletes the <code>dotlore</code> folder
+              from your cloud folder.
+            </li>
+            <li>
+              To remove the local data, quit Dotlore and delete
+              <code>~/Library/Application Support/dotlore/</code>.
+            </li>
+          </ul>
+        </section>
+
+        <section>
+          <h2>This website</h2>
+          <ul class="what">
+            <li>
+              The site is hosted on GitHub Pages, which may log visitors' IP
+              addresses. It has no analytics and sets no cookies. The theme
+              toggle stores your choice in your browser's local storage.
+            </li>
+            <li>
+              The Inter font is loaded from Google Fonts, so Google sees your IP
+              address when you open this site.
+            </li>
+            <li>
+              Downloads are served by GitHub Releases, which counts them.
+            </li>
+          </ul>
+        </section>
+
+        <section>
+          <h2>Questions</h2>
+          <p>
+            Dotlore is open source, so every claim on this page can be checked in
+            the code. Open an issue on
+            <a
+              href="https://github.com/dinhanhthi/dotlore/issues"
+              target="_blank"
+              rel="noopener noreferrer"
+              >GitHub</a
+            >
+            if anything here is unclear.
+          </p>
         </section>
       </div>
       <footer class="site-footer">

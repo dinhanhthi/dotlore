@@ -19,6 +19,7 @@ Or serve the folder with any static server.
 | File | Role |
 | --- | --- |
 | `index.html` | Page |
+| `privacy.html` | Privacy page — update it when the app's network use or stored data changes |
 | `styles.css` | shadcn-like tokens and layout |
 | `logo.png` | Copy of `../assets/logo_256.png` |
 | `CNAME` | Custom domain (`dotlore.dinhanhthi.com`) |
