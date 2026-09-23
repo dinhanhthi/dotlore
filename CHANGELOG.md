@@ -1,3 +1,28 @@
+## v0.2.1 (2026-09-23)
+
+### Sync
+
+- A root whose cloud folder lost its bundles (a Google account signed out and reconnected, say) is republished in full instead of silently going stale. [#3c90ce72](https://github.com/dinhanhthi/dotlore/commit/3c90ce72)
+
+### Sidebar
+
+- Removing a root now runs as a background task instead of freezing the window, and the row's status no longer keeps a stale conflict count once it is unlinked. [#5436d20a](https://github.com/dinhanhthi/dotlore/commit/5436d20a) [#6214c51e](https://github.com/dinhanhthi/dotlore/commit/6214c51e) [#c03db188](https://github.com/dinhanhthi/dotlore/commit/c03db188)
+- Untracking a folder that only holds explicit entries removes all of them instead of leaving some behind. [#2dc6376f](https://github.com/dinhanhthi/dotlore/commit/2dc6376f)
+
+### Settings
+
+- Cloud folder and size limits moved out of General into their own Sync tab. [#8ce78ec8](https://github.com/dinhanhthi/dotlore/commit/8ce78ec8)
+- Choosing a cloud folder now waits for a "Use this folder" button instead of applying as soon as an option is picked. A long path is shown shortened from the middle with a button to reveal it in Finder, and Cancel backs out without changing anything. [#503e75b9](https://github.com/dinhanhthi/dotlore/commit/503e75b9) [#ac5c1aab](https://github.com/dinhanhthi/dotlore/commit/ac5c1aab) [#84ec3bf6](https://github.com/dinhanhthi/dotlore/commit/84ec3bf6)
+
+### Desktop app
+
+- A background write refused because another one was already running was mistaken for a successful empty result, so linking, removing, or wiping could silently skip their refresh. Fixed. [#2bd0e155](https://github.com/dinhanhthi/dotlore/commit/2bd0e155)
+- The updater checks every 6 hours and shows an available update in the tray menu and the title bar. [#ebd1754d](https://github.com/dinhanhthi/dotlore/commit/ebd1754d)
+
+### Platform
+
+- The dev reset script also clears add-reservations and the bundle's cached, preference, and saved-state files, so a reset actually starts clean. [#fed55343](https://github.com/dinhanhthi/dotlore/commit/fed55343) [#8d578677](https://github.com/dinhanhthi/dotlore/commit/8d578677)
+
 ## v0.2.0 (2026-09-23)
 
 ### Conflicts
