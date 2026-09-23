@@ -456,7 +456,7 @@ export function SettingsGeneral() {
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm">Appearance</span>
         <div className="flex rounded-4xl border border-border p-0.5">
