@@ -26,7 +26,10 @@ export function ChangeCloudFolderDialog({
             Google Drive, or any other.
           </DialogDescription>
         </DialogHeader>
-        <ProviderChooser onApplied={() => onOpenChange(false)} />
+        <ProviderChooser
+          onApplied={() => onOpenChange(false)}
+          onCancel={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   );

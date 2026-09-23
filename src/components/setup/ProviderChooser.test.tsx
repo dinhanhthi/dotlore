@@ -19,11 +19,21 @@ vi.mock("@/lib/ipc", () => ({
 
 vi.mock("@/lib/pick", () => ({ pickLocalPath }));
 
+vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
+
 import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roots";
 
-import { accountDir, APPLY_LABEL, ProviderChooser } from "./ProviderChooser";
+import {
+  accountDir,
+  APPLY_LABEL,
+  CANCEL_LABEL,
+  ProviderChooser,
+} from "./ProviderChooser";
 
-function wrap(overrides: Partial<RootsContextValue> = {}): string {
+function wrap(
+  overrides: Partial<RootsContextValue> = {},
+  props: { onCancel?: () => void } = {},
+): string {
   const value = {
     ...emptyRootsState,
     selectRoot: () => {},
@@ -47,7 +57,7 @@ function wrap(overrides: Partial<RootsContextValue> = {}): string {
   } as RootsContextValue;
   return renderToStaticMarkup(
     <RootsContext.Provider value={value}>
-      <ProviderChooser />
+      <ProviderChooser {...props} />
     </RootsContext.Provider>,
   );
 }
@@ -67,6 +77,13 @@ describe("ProviderChooser", () => {
     expect(setProvider).not.toHaveBeenCalled();
     expect(icloudDir).not.toHaveBeenCalled();
     expect(pickLocalPath).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProviderChooser cancel", () => {
+  it("offers a way out only when the caller can be dismissed", () => {
+    expect(wrap()).not.toContain(CANCEL_LABEL);
+    expect(wrap({}, { onCancel: () => {} })).toContain(CANCEL_LABEL);
   });
 });
 

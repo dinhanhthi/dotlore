@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 
+import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -11,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { errorMessage } from "@/lib/errors";
 import { BLOCKED, icloudDir, listGdriveMounts, setProvider } from "@/lib/ipc";
+import { middleEllipsis } from "@/lib/path";
 import { pickLocalPath } from "@/lib/pick";
 import { useRoots } from "@/lib/roots";
 
@@ -18,6 +20,7 @@ import { useRoots } from "@/lib/roots";
 const MY_DRIVE = "My Drive";
 
 export const APPLY_LABEL = "Use this folder";
+export const CANCEL_LABEL = "Cancel";
 
 type Provider = "icloud" | "gdrive" | "other";
 
@@ -40,9 +43,11 @@ export function accountDir(mount: string): string {
 type ProviderChooserProps = {
   /** Called as soon as the folder is confirmed, before `set_provider` runs. */
   onApplied?: () => void;
+  /** Dismiss without writing. Omitted during onboarding, which has no way out. */
+  onCancel?: () => void;
 };
 
-export function ProviderChooser({ onApplied }: ProviderChooserProps) {
+export function ProviderChooser({ onApplied, onCancel }: ProviderChooserProps) {
   const { applyProvider, locked: appLocked, setBanner } = useRoots();
   const [provider, setProviderChoice] = useState<Provider | null>(null);
   const [mounts, setMounts] = useState<string[] | null>(null);
@@ -176,22 +181,37 @@ export function ProviderChooser({ onApplied }: ProviderChooserProps) {
       )}
 
       {dir !== null && (
-        <p
-          className="block w-full min-w-0 truncate font-mono text-xs text-muted-foreground"
-          title={dir}
-        >
-          {dir}
-        </p>
+        <div className="flex min-w-0 items-center gap-1">
+          <span
+            className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
+            title={dir}
+          >
+            {middleEllipsis(dir)}
+          </span>
+          <RevealInFinderButton path={dir} />
+        </div>
       )}
 
-      <Button
-        type="button"
-        className="mt-2 w-full"
-        disabled={locked || dir === null}
-        onClick={confirm}
-      >
-        {APPLY_LABEL}
-      </Button>
+      <div className="mt-2 flex items-center gap-2">
+        {onCancel && (
+          <Button
+            type="button"
+            variant="outline"
+            className="flex-1"
+            onClick={onCancel}
+          >
+            {CANCEL_LABEL}
+          </Button>
+        )}
+        <Button
+          type="button"
+          className="flex-1"
+          disabled={locked || dir === null}
+          onClick={confirm}
+        >
+          {APPLY_LABEL}
+        </Button>
+      </div>
     </div>
   );
 }
