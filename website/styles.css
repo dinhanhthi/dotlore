@@ -409,3 +409,7 @@ section h2,
     transition: none !important;
   }
 }
+
+.screenshot {
+  display: block;
+}
