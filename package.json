@@ -15,7 +15,8 @@
     "smoke:two-devices": "cargo test --manifest-path src-tauri/Cargo.toml --test two_devices two_devices_smoke_syncs_one_file -- --exact",
     "format": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "format:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check && tsc --noEmit",
-    "reset:dev": "bash scripts/reset-dev.sh"
+    "reset:dev": "bash scripts/reset-dev.sh",
+    "sweep:cargo": "bash scripts/sweep-cargo.sh"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

@@ -54,3 +54,12 @@ tempfile = "3"
 
 [profile.dev]
 opt-level = 1
+# macOS dev builds default to unpacked split debuginfo, which leaves every
+# codegen-unit .o in target/debug/deps. Keep dependency debug info to line
+# tables. Copy this block into ~/.cargo/config.toml so other projects share
+# one target directory — see CONTRIBUTING.md.
+split-debuginfo = "off"
+
+[profile.dev.package."*"]
+debug = "line-tables-only"
+incremental = false

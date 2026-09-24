@@ -26,8 +26,65 @@ This exists so a dev run can sit beside a copy installed in `/Applications`. Bot
 Three things are shared regardless of `DOTLORE_HOME`, because they are keyed on `$HOME` or on the bundle identifier, not on the state dir:
 
 - **Start at login.** `login_item.rs` has a single `LABEL` (`dev.dinhanhthi.dotlore`) and writes `~/Library/LaunchAgents/dev.dinhanhthi.dotlore.plist` whose `program` points at whichever copy toggled it last. Toggle it in the installed app only, never in a dev run, or macOS launches your `target/debug` binary at login.
-- **The updater's target.** `pnpm dev` runs through `scripts/dev-dock-bundle.sh`, which builds a real bundle at `src-tauri/target/debug/Dotlore.app` so the Dock shows "Dotlore". The updater resolves its install target from `current_exe` by walking up out of `Contents/MacOS`, so a dev run that accepts an update overwrites *that* bundle with the released one. Only reachable while the published version is ahead of `src-tauri/Cargo.toml`; in a dev run, choose "Later" — and do not click the menu-bar "Update to Dotlore …" row or the title-bar "Update" badge, which open the same prompt. The background checks (at launch, then every 6 h) never show an error — they swallow it and log.
+- **The updater's target.** `pnpm dev` runs through `scripts/dev-dock-bundle.sh`, which builds a real bundle beside the debug binary so the Dock shows "Dotlore". That bundle is `src-tauri/target/debug/Dotlore.app`, or `<target-dir>/debug/Dotlore.app` when a shared Cargo target dir is set ([Cargo build cache](#cargo-build-cache)). The updater resolves its install target from `current_exe` by walking up out of `Contents/MacOS`, so a dev run that accepts an update overwrites *that* bundle with the released one. Only reachable while the published version is ahead of `src-tauri/Cargo.toml`; in a dev run, choose "Later" — and do not click the menu-bar "Update to Dotlore …" row or the title-bar "Update" badge, which open the same prompt. The background checks (at launch, then every 6 h) never show an error — they swallow it and log.
 - **The cloud folder.** `device_id` is random per home (`config.rs`), so a dev run is a second device. Point it at a different cloud folder unless you want a permanent extra `devices/<id>/` entry — the cloud is immutable and nothing but an explicit "Wipe cloud data" deletes one.
+
+### Cargo build cache
+
+`target/` is Cargo's build cache for this Mac, not a second OS you opted into. `pnpm tauri dev` and `cargo test` write the `dev` profile to `debug/`. `pnpm build` writes `release/`. There is no `aarch64-apple-darwin/` or Windows directory here unless you cross-compile. The hash folders under `debug/incremental/` are earlier compiles of the same crate, left behind when `rustc`, the profile, or a feature set changes. Cargo does not delete them.
+
+On macOS the `dev` profile's default `split-debuginfo` is `"unpacked"`, and only while debug info is enabled. Each codegen unit drops a `.o` into `target/debug/deps`. That is the bulk of a debug target that has grown past 10 GB. `src-tauri/Cargo.toml` sets:
+
+```toml
+[profile.dev]
+opt-level = 1
+split-debuginfo = "off"
+
+[profile.dev.package."*"]
+debug = "line-tables-only"
+incremental = false
+```
+
+`split-debuginfo = "off"` stops those object files. Dependency crates keep line tables, enough for a backtrace to name a file and a line. The `dotlore` crate itself keeps full debug info, and incremental compilation stays on for it. `incremental = false` under `package."*"` covers path dependencies; registry crates already skip incremental compilation. Changing the profile does not shrink a target that already exists.
+
+Share one cache across Rust projects by creating `~/.cargo/config.toml` once per machine. This file is outside the repo. Cargo does not expand `~`. A relative path in `~/.cargo/config.toml` is resolved from `$HOME`, so the value below is `~/.cargo/shared-target` on every account:
+
+```toml
+[build]
+target-dir = ".cargo/shared-target"
+
+[profile.dev]
+opt-level = 1
+split-debuginfo = "off"
+
+[profile.dev.package."*"]
+debug = "line-tables-only"
+incremental = false
+```
+
+Copy the profile from `src-tauri/Cargo.toml` and keep the two identical. Profile keys in Cargo's config override the same keys in every `Cargo.toml`. You set this once. You do not retune it when you switch projects. A project that leaves `opt-level` at the default `0` compiles a second copy of every dependency next to Dotlore's `opt-level = 1` copies. The build still succeeds. The disk just holds both.
+
+What lands in the shared directory:
+
+- Dependency artifacts in `debug/deps` (`.rlib`, `.rmeta`, build-script output) when the crate version, features, `rustc`, profile flags, and target triple match. Two Tauri 2 apps reuse `tauri`, `wry`, `tokio`, `serde`, and `objc2` under those conditions.
+- Each app's own binary, side by side (`debug/dotlore`, `debug/<other>`). Give them different binary names so one does not replace the other.
+
+A different feature set stores another copy of that one crate. `cargo clean` deletes the whole shared directory, every project included. Cargo locks the directory, so build one project at a time.
+
+`scripts/tauri.sh` does not set `CARGO_TARGET_DIR`, so `pnpm tauri dev` and `pnpm test` follow this config. With no config and no environment variable they still use `src-tauri/target`. `scripts/build.sh` exports `CARGO_TARGET_DIR` to `src-tauri/target` on purpose: an inherited target dir must not move `src-tauri/target/release/bundle`. Leave that pin alone. Release artifacts stay per-repo. An exported `CARGO_TARGET_DIR` still overrides the config for dev commands, because the environment outranks `~/.cargo/config.toml`.
+
+After writing the config on a machine that already has per-project `target/` directories, delete those directories. They are no longer on Cargo's path, and `cargo clean` will not see them. The next `pnpm tauri dev` fills `~/.cargo/shared-target`.
+
+Old artifacts still accumulate inside the directory that is in use. `scripts/sweep-cargo.sh` (`pnpm sweep:cargo`) runs `cargo sweep` and removes anything unused for 14 days. Install it once: `cargo install cargo-sweep`.
+
+```sh
+pnpm sweep:cargo                 # this repo's target, wherever Cargo put it
+pnpm sweep:cargo -- --dry-run
+pnpm sweep:cargo -- --days 7
+pnpm sweep:cargo -- "$HOME/git"  # every Cargo project under that tree
+```
+
+With the shared directory configured, sweeping this repo once sweeps that directory. Passing a tree is for machines that still have a `target/` inside each project. `cargo sweep` reads Cargo's fingerprint data. Do not `find -mtime +14 -delete` inside `target/`: that removes objects the current build still names.
 
 ## Layout
 
