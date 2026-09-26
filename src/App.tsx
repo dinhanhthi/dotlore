@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import { AppBodyProvider } from "@/components/layout/app-body";
 import {
   MainSkeleton,
   SidebarSkeleton,
@@ -513,33 +514,35 @@ export function App() {
 
   return (
     <TooltipProvider delay={400}>
-      <SidebarQueryProvider query={sidebarQuery} setQuery={setSidebarQuery}>
-        <RootsContext.Provider value={value}>
-          <TrackConfirmDialog />
-          <DiscardChangesAlert
-            open={pendingLeave !== null}
-            fileName={leaveNameRef.current}
-            onCancel={() => setPendingLeave(null)}
-            onDiscard={() => {
-              if (!pendingLeave) return;
-              dirtyRef.current = false;
-              const run = pendingLeave.run;
-              setPendingLeave(null);
-              run();
-            }}
-          />
-          <Toaster>
-            <NoticeToasts banner={work.banner} gitMissing={state.gitMissing} />
-            <Shell
-              hideTree={ready && (onboarding || state.view !== "root")}
-              sidebar={!ready ? <SidebarSkeleton /> : onboarding ? null : <Sidebar />}
-              tree={!ready ? <TreeSkeleton /> : <FileTree />}
-              main={!ready ? <MainSkeleton /> : <MainColumn />}
-              footer={<Footer />}
+      <AppBodyProvider>
+        <SidebarQueryProvider query={sidebarQuery} setQuery={setSidebarQuery}>
+          <RootsContext.Provider value={value}>
+            <TrackConfirmDialog />
+            <DiscardChangesAlert
+              open={pendingLeave !== null}
+              fileName={leaveNameRef.current}
+              onCancel={() => setPendingLeave(null)}
+              onDiscard={() => {
+                if (!pendingLeave) return;
+                dirtyRef.current = false;
+                const run = pendingLeave.run;
+                setPendingLeave(null);
+                run();
+              }}
             />
-          </Toaster>
-        </RootsContext.Provider>
-      </SidebarQueryProvider>
+            <Toaster>
+              <NoticeToasts banner={work.banner} gitMissing={state.gitMissing} />
+              <Shell
+                hideTree={ready && (onboarding || state.view !== "root")}
+                sidebar={!ready ? <SidebarSkeleton /> : onboarding ? null : <Sidebar />}
+                tree={!ready ? <TreeSkeleton /> : <FileTree />}
+                main={!ready ? <MainSkeleton /> : <MainColumn />}
+                footer={<Footer />}
+              />
+            </Toaster>
+          </RootsContext.Provider>
+        </SidebarQueryProvider>
+      </AppBodyProvider>
     </TooltipProvider>
   );
 }

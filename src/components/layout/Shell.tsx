@@ -2,6 +2,7 @@ import { useCallback, useState, type MouseEvent as ReactMouseEvent, type ReactNo
 
 import { cn } from "@/lib/utils";
 
+import { useAppBodyRef } from "./app-body";
 import { TitleBar } from "./TitleBar";
 
 const SIDEBAR_W = 240;
@@ -58,36 +59,50 @@ export function Shell({
     : hideTree
       ? `${SIDEBAR_W}px 1fr`
       : `${SIDEBAR_W}px ${treeWidth}px 1fr`;
+  const appBodyRef = useAppBodyRef();
 
   return (
-    <div
-      className="grid h-svh w-full overflow-hidden bg-background [grid-template-rows:auto_1fr_auto]"
-      style={{ gridTemplateColumns: columns }}
-    >
-      <TitleBar className="col-span-full" />
-      {showSidebar ? (
-        <aside className="flex min-h-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar">
-          {sidebar}
-        </aside>
-      ) : null}
-      {!hideTree && (
-        <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-background">
-          {tree}
-          <ResizeHandle
-            width={treeWidth}
-            onResize={onResize}
-          />
-        </section>
-      )}
-      <main
-        className={cn(
-          "flex min-h-0 flex-col overflow-hidden bg-background",
-          showSidebar && "border-l border-border",
-        )}
-      >
-        {main}
-      </main>
-      <div className="col-span-full">{footer}</div>
+    <div className="grid h-svh w-full overflow-hidden bg-background [grid-template-rows:auto_1fr_auto]">
+      <TitleBar />
+      <div className="relative min-h-0 min-w-0">
+        <div
+          className="grid h-full min-h-0 min-w-0"
+          style={{ gridTemplateColumns: columns }}
+        >
+          {showSidebar ? (
+            <aside className="flex min-h-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar">
+              {sidebar}
+            </aside>
+          ) : null}
+          {!hideTree && (
+            <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-background">
+              {tree}
+              <ResizeHandle
+                width={treeWidth}
+                onResize={onResize}
+              />
+            </section>
+          )}
+          <main
+            className={cn(
+              "flex min-h-0 flex-col overflow-hidden bg-background",
+              showSidebar && "border-l border-border",
+            )}
+          >
+            {main}
+          </main>
+        </div>
+        {/* Dialogs portal here. contain:paint makes this the containing block
+            for their position:fixed overlay, so it fills the body and leaves
+            the title bar and footer clear. Other fixed layers (the expanded
+            conflict view) stay on the window. */}
+        <div
+          ref={appBodyRef}
+          data-slot="app-modal-root"
+          className="pointer-events-none absolute inset-0 z-50 contain-paint"
+        />
+      </div>
+      <div>{footer}</div>
     </div>
   );
 }

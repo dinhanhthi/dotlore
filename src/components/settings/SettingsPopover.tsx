@@ -546,7 +546,7 @@ export function SettingsPanel({
 
   return (
     <>
-      <DialogHeader className="gap-4 border-b border-border px-6 pt-6 pr-14 pb-4">
+      <DialogHeader className="shrink-0 gap-4 border-b border-border px-6 pt-6 pr-14 pb-4">
         <div className="flex flex-col gap-1">
           <DialogTitle>Settings</DialogTitle>
           <DialogDescription>
@@ -579,8 +579,8 @@ export function SettingsPanel({
       <div
         className={
           tab === "general" || tab === "sync"
-            ? "h-[28rem] overflow-y-auto px-6 pt-5 pb-7"
-            : "flex h-[28rem] min-h-0 flex-col overflow-hidden px-6 pt-5 pb-7"
+            ? "h-[28rem] min-h-0 shrink overflow-y-auto px-6 pt-5 pb-7"
+            : "flex h-[28rem] min-h-0 shrink flex-col overflow-hidden px-6 pt-5 pb-7"
         }
       >
         {tab === "general" ? (
@@ -642,7 +642,7 @@ export function SettingsDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-xl">
+        <DialogContent className="flex min-h-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
           <SettingsPanel
             key={open ? "open" : "closed"}
             onChangeFolder={() => {

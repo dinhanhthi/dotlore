@@ -184,7 +184,7 @@ export function EntryPickerDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex h-[min(42rem,calc(100dvh-2rem))] w-full flex-col overflow-hidden sm:max-w-2xl">
+      <DialogContent className="flex h-[min(42rem,calc(100%-2rem))] w-full flex-col overflow-hidden sm:max-w-2xl">
         <DialogHeader className="shrink-0 pr-8">
           <DialogTitle>Add to track</DialogTitle>
           <DialogDescription>
@@ -470,7 +470,7 @@ export function TrackConfirmDialog() {
         if (!next) answerTrackConfirm(false);
       }}
     >
-      <AlertDialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden">
+      <AlertDialogContent className="flex max-h-[calc(100%-2rem)] flex-col overflow-hidden">
         <AlertDialogHeader className="shrink-0">
           <AlertDialogTitle className="line-clamp-2 break-all">
             Track {confirm?.rel ?? "folder"}?
