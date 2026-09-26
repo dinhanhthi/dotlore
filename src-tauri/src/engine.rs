@@ -34,15 +34,19 @@ use crate::repo::{
 
 /// Where one tracked root stands after a cycle.
 ///
-/// `Pending` is not an error: a linked root whose staging has no `main` yet
-/// because no bundle is readable in the cloud, or an apply that raced a live
-/// edit, is retried on the next cycle with its journal intact.
+/// `Checking`, `Pending` and `Retrying` are not errors. `Checking` is the
+/// placeholder a listing shows before a cycle reports the root. `Pending` is
+/// a linked root whose staging has no `main` yet because no bundle is readable
+/// in the cloud. `Retrying` is an apply that raced a live edit, retried on the
+/// next cycle with its journal intact.
 #[derive(Serialize, Clone, PartialEq, Eq, Debug)]
 #[serde(tag = "kind", content = "detail")]
 pub enum RootStatus {
     Synced,
     Conflicts(usize),
+    Checking,
     Pending,
+    Retrying,
     RootMissing,
     GitMissing,
     Error(String),
@@ -1633,12 +1637,11 @@ fn cloud_at(provider_dir: &Path) -> Cloud {
 
 /// Why an apply did not finish, as a status a user can act on.
 ///
-/// A path that raced a live edit is genuinely `Pending` — the next cycle picks
-/// it up. A path blocked by a symlink in the live root or by a target entry
-/// that is not a regular file is re-skipped on every attempt forever: the
-/// whole root then stops committing and publishing behind the same `Pending`
-/// the UI shows for "no bundles yet", with nothing to act on. That one is
-/// `Error` naming the paths.
+/// A path that raced a live edit is `Retrying` — the next cycle picks it up.
+/// A path blocked by a symlink in the live root or by a target entry that is
+/// not a regular file is re-skipped on every attempt forever: the whole root
+/// then stops committing and publishing behind a status with nothing to act
+/// on. That one is `Error` naming the paths.
 ///
 /// The root stays frozen as a whole while any path is blocked: finalizing the
 /// unblocked paths would advance `main` past a root that does not match it,
@@ -1646,7 +1649,7 @@ fn cloud_at(provider_dir: &Path) -> Cloud {
 fn stalled(slug: &str, tx: &Transaction) -> RootStatus {
     match stall_message(slug, tx.blocked()) {
         Some(m) => RootStatus::Error(m),
-        None => RootStatus::Pending,
+        None => RootStatus::Retrying,
     }
 }
 

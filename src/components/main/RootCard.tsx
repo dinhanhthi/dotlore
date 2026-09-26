@@ -20,7 +20,9 @@ function statusDotClass(kind: RootStatus["kind"]): string {
       return "bg-status-synced";
     case "Conflicts":
       return "bg-status-conflict";
+    case "Checking":
     case "Pending":
+    case "Retrying":
       return "bg-status-pending";
     case "RootMissing":
     case "GitMissing":
@@ -35,8 +37,12 @@ function statusAria(status: RootStatus): string {
       return "Synced";
     case "Conflicts":
       return status.detail === 1 ? "1 conflict" : `${status.detail} conflicts`;
+    case "Checking":
+      return "Syncing…";
     case "Pending":
-      return "Pending";
+      return "Waiting for cloud files";
+    case "Retrying":
+      return "Files changed during sync — retrying";
     case "RootMissing":
       return "Folder missing";
     case "GitMissing":

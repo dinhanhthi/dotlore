@@ -22,7 +22,9 @@ function statusDotClass(kind: RootStatus["kind"]): string {
       return "bg-status-synced";
     case "Conflicts":
       return "bg-status-conflict";
+    case "Checking":
     case "Pending":
+    case "Retrying":
       return "bg-status-pending";
     case "RootMissing":
     case "GitMissing":

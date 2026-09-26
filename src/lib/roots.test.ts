@@ -40,7 +40,7 @@ describe("rootsWithSeeding", () => {
     expect(merged.find((row) => row.slug === "site")).toMatchObject({
       linked: true,
       path: "/Users/thi/src/site",
-      status: { kind: "Pending" },
+      status: { kind: "Checking" },
     });
   });
 

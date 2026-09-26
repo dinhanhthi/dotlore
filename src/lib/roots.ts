@@ -138,7 +138,7 @@ export function rootsWithSeeding(roots: RootRow[], seeding: SeedingRoot[]): Root
         name: item.name,
         is_agent: looksLikeAgent(item.path),
         linked: true,
-        status: { kind: "Pending" },
+        status: { kind: "Checking" },
       }),
     ),
   ];

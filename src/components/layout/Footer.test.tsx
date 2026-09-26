@@ -127,6 +127,33 @@ describe("conflict entry point", () => {
     expect(html).toMatch(/<button(?=[^>]*aria-label="Sync now")[^>]*\sdisabled=""/);
   });
 
+  it("shows a spinner while the first cycle has not reported a root yet", () => {
+    const html = wrap(<Footer />, { roots: [row("a", { kind: "Checking" })] });
+    expect(html).toContain("Syncing…");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("Pending");
+  });
+
+  it("stops the spinner when the cycle failed before reporting", () => {
+    const html = wrap(<Footer />, {
+      roots: [row("a", { kind: "Checking" })],
+      error: "cycle failed",
+    });
+    expect(html).toContain("Not synced");
+    expect(html).not.toContain("Syncing…");
+  });
+
+  it("says a root is waiting for the cloud instead of a bare Pending", () => {
+    const html = wrap(<Footer />, { roots: [row("a", { kind: "Pending" })] });
+    expect(html).toContain("Waiting for cloud files");
+    expect(html).not.toContain(">Pending<");
+  });
+
+  it("says a root will retry after a live edit", () => {
+    const html = wrap(<Footer />, { roots: [row("a", { kind: "Retrying" })] });
+    expect(html).toContain("Files changed during sync — retrying");
+  });
+
   it("no longer puts a conflict button in the title bar", () => {
     wrap(<TitleBarActions />, {
       roots: [row("a", { kind: "Conflicts", detail: 1 })],

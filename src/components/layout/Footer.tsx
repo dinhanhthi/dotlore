@@ -15,7 +15,7 @@ import type { RootRow, RootStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Aggregate = {
-  glyph: "dot" | "warn";
+  glyph: "dot" | "warn" | "spin";
   color: string;
   text: string;
 };
@@ -48,6 +48,7 @@ function visibleFooterError(
 function aggregateStatus(
   providerDir: string | null,
   roots: RootRow[],
+  error: string | null,
 ): Aggregate {
   if (providerDir === null) {
     return { glyph: "dot", color: "bg-status-pending", text: "No cloud folder set" };
@@ -72,8 +73,21 @@ function aggregateStatus(
       text: conflicts === 1 ? "1 conflict" : `${conflicts} conflicts`,
     };
   }
+  if (roots.some((r) => r.status.kind === "Checking")) {
+    // A failed cycle never replaces the placeholder; the error says why.
+    return error === null
+      ? { glyph: "spin", color: "", text: "Syncing…" }
+      : { glyph: "dot", color: "bg-status-pending", text: "Not synced" };
+  }
+  if (roots.some((r) => r.status.kind === "Retrying")) {
+    return {
+      glyph: "dot",
+      color: "bg-status-pending",
+      text: "Files changed during sync — retrying",
+    };
+  }
   if (roots.some((r) => r.status.kind === "Pending")) {
-    return { glyph: "dot", color: "bg-status-pending", text: "Pending" };
+    return { glyph: "dot", color: "bg-status-pending", text: "Waiting for cloud files" };
   }
   return { glyph: "dot", color: "bg-status-synced", text: "Synced" };
 }
@@ -96,8 +110,8 @@ export function Footer() {
   const roots = allRoots.filter((row) => row.linked);
   const syncing = useSyncing();
   const taskLabel = useTaskLabel();
-  const status = aggregateStatus(providerDir, roots);
   const footerError = visibleFooterError(providerDir, error);
+  const status = aggregateStatus(providerDir, roots, footerError);
   const tracked = Object.values(trackedBySlug);
   const filesTracked = tracked.reduce((n, stats) => n + stats.files, 0);
   const bytesTracked = tracked.reduce((n, stats) => n + stats.bytes, 0);
@@ -151,7 +165,7 @@ export function Footer() {
     <footer className="flex h-11 items-center gap-4 border-t border-border px-3 text-[0.8rem] text-muted-foreground">
       <div
         className="flex min-w-0 flex-1 items-center gap-2.5"
-        aria-busy={busy || loadingRoots || taskLabel !== null}
+        aria-busy={busy || loadingRoots || taskLabel !== null || status.glyph === "spin"}
       >
         {taskLabel ? (
           <>
@@ -186,6 +200,8 @@ export function Footer() {
             </span>
             <span className="truncate">{status.text}</span>
           </Button>
+        ) : status.glyph === "spin" ? (
+          <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
         ) : (
           <span
             className={cn("size-2.5 shrink-0 rounded-full", status.color)}

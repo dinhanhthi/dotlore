@@ -203,7 +203,7 @@ pub async fn list_roots(state: State<'_, AppState>) -> Result<Vec<RootRow>, Stri
         Ok(cfg
             .roots
             .iter()
-            .map(|root| RootRow::from_root(root, &home_dir, RootStatus::Pending))
+            .map(|root| RootRow::from_root(root, &home_dir, RootStatus::Checking))
             .collect())
     })
     .await
@@ -1048,7 +1048,7 @@ fn status_payload(state: &AppState) -> StatusPayload {
             roots: cfg
                 .roots
                 .iter()
-                .map(|root| RootRow::from_root(root, &state.home_dir, RootStatus::Pending))
+                .map(|root| RootRow::from_root(root, &state.home_dir, RootStatus::Checking))
                 .collect(),
             error: None,
         },
@@ -1809,6 +1809,24 @@ mod tests {
             result,
             TrackResultDto::ConfirmSensitive {
                 paths: vec!["notes/credentials.json".into()],
+                more: false,
+            }
+        );
+        assert_eq!(fx.engine.list_entries(&fx.slug).unwrap(), before);
+    }
+
+    #[test]
+    fn folder_track_finds_a_deeply_nested_secret() {
+        let mut fx = fixture();
+        write(&fx, "notes/deep/er/credentials.json", b"{}\n");
+        write(&fx, "notes/deep/er/plain.md", b"ok\n");
+        let before = fx.engine.list_entries(&fx.slug).unwrap();
+
+        let result = track_entry_sync(&mut fx.engine, &fx.slug, "notes", None, false).unwrap();
+        assert_eq!(
+            result,
+            TrackResultDto::ConfirmSensitive {
+                paths: vec!["notes/deep/er/credentials.json".into()],
                 more: false,
             }
         );
