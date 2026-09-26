@@ -593,8 +593,8 @@ export function icloudDir(): Promise<string> {
   return invoke("icloud_dir");
 }
 
-export function listGdriveMounts(): Promise<string[]> {
-  return invoke("list_gdrive_mounts");
+export function listCloudMounts(): Promise<string[]> {
+  return invoke("list_cloud_mounts");
 }
 
 export function loginItemEnabled(): Promise<boolean> {
