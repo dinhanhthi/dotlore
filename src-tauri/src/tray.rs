@@ -23,6 +23,14 @@ const LABEL_MAX: usize = 80;
 
 const ICON: Image<'_> = include_image!("../assets/logo_256.png");
 
+/// The status dot, top-right of the 256px logo (the bottom-left already has
+/// the green ball). Scaled to the menu bar it is about 7pt across.
+const DOT_CX: usize = 212;
+const DOT_CY: usize = 44;
+const DOT_R: f32 = 40.0;
+/// A transparent ring around the dot, so it reads against the blue square.
+const DOT_GAP: f32 = 12.0;
+
 const ID_OPEN: &str = "open";
 const ID_SYNC: &str = "sync";
 const ID_UPDATE: &str = "update";
@@ -37,6 +45,10 @@ pub struct TrayView {
     pub git_missing: bool,
     pub no_provider: bool,
     pub error: Option<String>,
+    /// Some root reports `Conflicts`.
+    pub conflicts: bool,
+    /// Some root reports `Error`, `RootMissing` or `GitMissing`.
+    pub root_error: bool,
     /// The version the updater found, if any.
     pub update: Option<String>,
 }
@@ -52,6 +64,8 @@ impl TrayView {
             git_missing,
             no_provider,
             error: None,
+            conflicts: false,
+            root_error: false,
             update: updater::available_version(app),
         }
     }
@@ -59,11 +73,38 @@ impl TrayView {
     fn from_status_json(payload: &str, git_missing: bool, no_provider: bool) -> Self {
         let v: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
         let error = v.get("error").and_then(|e| e.as_str()).map(str::to_string);
+        let kinds: Vec<&str> = v
+            .get("roots")
+            .and_then(|r| r.as_array())
+            .map(|roots| {
+                roots
+                    .iter()
+                    .filter_map(|r| r.pointer("/status/kind").and_then(|k| k.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             git_missing,
             no_provider,
             error,
+            conflicts: kinds.contains(&"Conflicts"),
+            root_error: kinds
+                .iter()
+                .any(|k| matches!(*k, "Error" | "RootMissing" | "GitMissing")),
             update: None,
+        }
+    }
+
+    /// The worst state worth a dot. Busy states and a missing cloud folder
+    /// get none: the first would blink every poll, the second is a fresh
+    /// install, not a fault.
+    fn dot(&self) -> Option<Dot> {
+        if self.git_missing || self.error.is_some() || self.root_error {
+            Some(Dot::Error)
+        } else if self.conflicts {
+            Some(Dot::Conflict)
+        } else {
+            None
         }
     }
 
@@ -77,6 +118,59 @@ impl TrayView {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Dot {
+    Conflict,
+    Error,
+}
+
+impl Dot {
+    /// sRGB of `--status-conflict` / `--status-error` (light theme) in
+    /// `src/index.css`.
+    fn rgba(self) -> [u8; 4] {
+        match self {
+            Dot::Conflict => [193, 127, 33, 255],
+            Dot::Error => [231, 0, 11, 255],
+        }
+    }
+}
+
+/// The logo, with the status dot painted on when there is one.
+fn icon_with(dot: Option<Dot>) -> Image<'static> {
+    let Some(dot) = dot else {
+        return ICON;
+    };
+    let (w, h) = (ICON.width() as usize, ICON.height() as usize);
+    let scale = w as f32 / 256.0;
+    let (cx, cy) = (DOT_CX as f32 * scale, DOT_CY as f32 * scale);
+    let (r, gap) = (DOT_R * scale, DOT_GAP * scale);
+    let color = dot.rgba();
+    let mut buf = ICON.rgba().to_vec();
+    for y in 0..h {
+        for x in 0..w {
+            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            if d >= r + gap + 0.5 {
+                continue;
+            }
+            let px = &mut buf[(y * w + x) * 4..][..4];
+            // Cut the ring, then lay the anti-aliased dot over it.
+            let keep = (d - (r + gap) + 0.5).clamp(0.0, 1.0);
+            px[3] = (px[3] as f32 * keep).round() as u8;
+            let cover = (r - d + 0.5).clamp(0.0, 1.0);
+            if cover > 0.0 {
+                let a = px[3] as f32 / 255.0;
+                let out = cover + a * (1.0 - cover);
+                for c in 0..3 {
+                    let v = (color[c] as f32 * cover + px[c] as f32 * a * (1.0 - cover)) / out;
+                    px[c] = v.round() as u8;
+                }
+                px[3] = (out * 255.0).round() as u8;
+            }
+        }
+    }
+    Image::new_owned(buf, w as u32, h as u32)
+}
+
 /// Create the status item. The icon stays registered on the app handle.
 pub fn build(app: &App) -> tauri::Result<TrayIcon> {
     // `app.trayIcon` already spawned one so the PNG is embedded; drop it so
@@ -85,12 +179,14 @@ pub fn build(app: &App) -> tauri::Result<TrayIcon> {
 
     let view = TrayView::from_app(app.handle());
     let menu = build_menu(app.handle(), &view)?;
+    let icon = icon_with(view.dot());
     // Shared by both listeners: a status event must not drop the update row,
     // and an update event must not drop the last error. With no provider the
     // daemon never runs, so the update event cannot wait for a status tick.
     let shared = Arc::new(Mutex::new(view));
+    // Not a template: AppKit would tint it one colour and drop the dot's.
     let tray = TrayIconBuilder::with_id("main")
-        .icon(ICON)
+        .icon(icon)
         .icon_as_template(false)
         .tooltip("Dotlore")
         .menu(&menu)
@@ -108,8 +204,14 @@ pub fn build(app: &App) -> tauri::Result<TrayIcon> {
         };
         let mut view = view.lock().unwrap_or_else(PoisonError::into_inner);
         let next = TrayView::from_status_json(event.payload(), git_missing, no_provider);
+        let before = view.dot();
         view.apply_status(next);
         refresh(&app_handle, &tray_handle, &view);
+        if view.dot() != before {
+            if let Err(e) = tray_handle.set_icon(Some(icon_with(view.dot()))) {
+                eprintln!("dotlore: tray icon: {e}");
+            }
+        }
     });
 
     let tray_handle = tray.clone();
@@ -268,7 +370,7 @@ mod tests {
             git_missing: true,
             no_provider: true,
             error: Some("cycle failed".into()),
-            update: None,
+            ..view()
         };
         assert_eq!(
             menu_labels(&s),
@@ -342,6 +444,74 @@ mod tests {
     fn a_short_error_is_not_truncated() {
         let label = format!("Error: {}", one_line("no such provider"));
         assert_eq!(label, "Error: no such provider");
+    }
+
+    fn status(kinds: &[&str], error: Option<&str>) -> TrayView {
+        let roots: Vec<_> = kinds
+            .iter()
+            .map(|k| serde_json::json!({ "slug": "s", "status": { "kind": k, "detail": 1 } }))
+            .collect();
+        let json = serde_json::json!({ "roots": roots, "error": error }).to_string();
+        TrayView::from_status_json(&json, false, false)
+    }
+
+    #[test]
+    fn a_healthy_or_busy_status_has_no_dot() {
+        let v = status(&["Synced", "Checking", "Pending", "Retrying"], None);
+        assert_eq!(v.dot(), None);
+    }
+
+    #[test]
+    fn a_conflict_shows_the_conflict_dot() {
+        assert_eq!(
+            status(&["Synced", "Conflicts"], None).dot(),
+            Some(Dot::Conflict)
+        );
+    }
+
+    #[test]
+    fn an_error_outranks_a_conflict() {
+        assert_eq!(
+            status(&["Conflicts", "Error"], None).dot(),
+            Some(Dot::Error)
+        );
+        assert_eq!(status(&["RootMissing"], None).dot(), Some(Dot::Error));
+        assert_eq!(
+            status(&["Conflicts"], Some("cycle failed")).dot(),
+            Some(Dot::Error)
+        );
+        let git = TrayView {
+            git_missing: true,
+            ..view()
+        };
+        assert_eq!(git.dot(), Some(Dot::Error));
+    }
+
+    /// Guard: a fresh install with no cloud folder is not an error.
+    #[test]
+    fn no_cloud_folder_has_no_dot() {
+        let v = TrayView {
+            no_provider: true,
+            ..view()
+        };
+        assert_eq!(v.dot(), None);
+    }
+
+    #[test]
+    fn the_dot_is_painted_top_right_and_leaves_the_logo_ball_alone() {
+        let plain = icon_with(None);
+        let dotted = icon_with(Some(Dot::Error));
+        let (w, h) = (dotted.width() as usize, dotted.height() as usize);
+        let px = |img: &Image<'_>, x: usize, y: usize| {
+            let i = (y * w + x) * 4;
+            img.rgba()[i..i + 4].to_vec()
+        };
+        let (cx, cy) = (w * DOT_CX / 256, h * DOT_CY / 256);
+        assert_eq!(px(&dotted, cx, cy), Dot::Error.rgba().to_vec());
+        assert_eq!(px(&plain, cx, cy), px(&ICON, cx, cy));
+        // The green ball, bottom-left.
+        let (bx, by) = (w * 50 / 256, h * 200 / 256);
+        assert_eq!(px(&dotted, bx, by), px(&ICON, bx, by));
     }
 
     #[test]
