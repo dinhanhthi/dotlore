@@ -1276,7 +1276,16 @@ mod tests {
     fn secret_file_names_are_classified_in_any_directory() {
         for rel in [
             ".env",
+            ".env.local",
             ".env.production",
+            ".something.env",
+            "something.env",
+            "deploy/.staging.env",
+            "a/b/prod.env",
+            "a/b/c/d/.env",
+            "x/y/z/secrets.yaml",
+            "deep/er/still/id_rsa",
+            "one/two/AuthKey_X.p8",
             "certs/server.pem",
             "certs/server.key",
             "certs/server.p12",
@@ -1296,6 +1305,17 @@ mod tests {
             "config/.credentials.json",
         ] {
             assert_eq!(
+                sensitivity(Path::new(rel)),
+                Some(Sensitivity::Secret),
+                "{rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn env_lookalike_names_are_not_secret() {
+        for rel in ["environment.md", "env.ts", ".envrc.md", "a/b/c/notes.md"] {
+            assert_ne!(
                 sensitivity(Path::new(rel)),
                 Some(Sensitivity::Secret),
                 "{rel}"

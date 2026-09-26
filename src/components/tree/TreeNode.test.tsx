@@ -56,9 +56,10 @@ describe("TreeNode untrack", () => {
 });
 
 describe("TreeNode sensitivity", () => {
-  it("shows the amber warning for a Secret file, immediately before size", () => {
+  it("shows the warning for a Secret file, immediately before size", () => {
     const html = renderNode("config/credentials.json", "secret");
-    expect(html).toContain('aria-label="Sensitive file — synced as plaintext. Protect it to encrypt."');
+    expect(html).toContain('aria-label="Sensitive file — may contain secrets"');
+    expect(html).not.toContain("text-amber-500");
     expect(html.indexOf('aria-label="Sensitive file')).toBeLessThan(html.indexOf("0 bytes"));
   });
 
@@ -73,12 +74,7 @@ describe("TreeNode sensitivity", () => {
     expect(html).toMatch(/<span class="[^"]*text-status-conflict[^"]*">credentials\.json<\/span>/);
   });
 
-  it("keeps the normal name color on a protected Secret file, a TokenHint file and a plain file", () => {
-    const protectedSecret = renderNode("config/credentials.json", "secret", {
-      "config/credentials.json": { inheritedFrom: null },
-    });
-    expect(protectedSecret).toMatch(/<span class="[^"]*">credentials\.json<\/span>/);
-    expect(protectedSecret).not.toMatch(/text-status-conflict[^"]*">credentials\.json/);
+  it("keeps the normal name color on a TokenHint file and a plain file", () => {
     expect(renderNode(".mcp.json", "tokenHint")).not.toMatch(/text-status-conflict[^"]*">\.mcp\.json/);
     expect(renderNode("CLAUDE.md")).not.toMatch(/text-status-conflict[^"]*">CLAUDE\.md/);
   });

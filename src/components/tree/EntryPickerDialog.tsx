@@ -477,7 +477,7 @@ export function TrackConfirmDialog() {
           </AlertDialogTitle>
           <AlertDialogDescription>
             {confirm?.kind === "sensitive"
-              ? "These files may contain secrets. Tracking syncs their contents as plaintext to your cloud folder."
+              ? "These files may contain secrets. Tracking syncs their contents to your cloud folder."
               : confirm?.kind === "folder_limit"
                 ? `${confirm.rel} is ${formatBytes(confirm.bytes)} (limit ${formatBytes(confirm.folderLimit)}). This folder is over the add limit. Confirm to track it.`
                 : ""}

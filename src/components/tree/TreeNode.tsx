@@ -102,7 +102,7 @@ export function TreeNode({
   const sensitivity = node.kind === "file" ? sensitivityByRel.get(node.path) : null;
   const sensitivityLabel =
     sensitivity === "secret"
-      ? "Sensitive file — synced as plaintext. Protect it to encrypt."
+      ? "Sensitive file — may contain secrets"
       : sensitivity === "tokenHint"
         ? "May contain API tokens"
         : null;
@@ -148,7 +148,7 @@ export function TreeNode({
               <span
                 className={cn(
                   "min-w-0 truncate text-sm",
-                  sensitivity === "secret" && !protection && "text-status-conflict",
+                  sensitivity === "secret" && "text-status-conflict",
                 )}
               >
                 {node.name}
@@ -163,7 +163,7 @@ export function TreeNode({
                 }
               >
                 {sensitivity === "secret" ? (
-                  <TriangleAlert aria-hidden className="size-3.5 text-amber-500" />
+                  <TriangleAlert aria-hidden className="size-3.5 text-status-conflict" />
                 ) : (
                   <Info aria-hidden className="size-3.5 text-muted-foreground" />
                 )}
