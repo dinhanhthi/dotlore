@@ -113,13 +113,12 @@
               under its own privacy policy.
             </li>
             <li>
-              Protected files are encrypted (AES-SIV) before they are written.
-              Other files are not.
+              Dotlore does not encrypt anything. Included files are copied into
+              the bundles as they are on disk.
             </li>
             <li>
-              Bundles are not encrypted by Dotlore. Anyone who can read that cloud
-              folder can read the synced files, so do not put secrets in the
-              include-list.
+              Anyone who can read that cloud folder can read the synced files,
+              so do not put secrets in the include-list.
             </li>
           </ul>
         </section>
@@ -134,12 +133,6 @@
             <li>
               To remove the local data, quit Dotlore and delete
               <code>~/Library/Application Support/dotlore/</code>.
-            </li>
-            <li>
-              <strong>Local data.</strong> Quit Dotlore, delete
-              <code>~/Library/Application Support/dotlore/</code>, and remove the
-              <code>master-key-…</code> item for <code>dotlore</code> in Keychain
-              Access.
             </li>
           </ul>
         </section>
