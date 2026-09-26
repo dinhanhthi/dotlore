@@ -9,6 +9,12 @@ export type RootStatus =
   | { kind: "GitMissing" }
   | { kind: "Error"; detail: string };
 
+/** Mirrors `cloud::UploadState` (`#[serde(tag = "kind", content = "detail")]`). */
+export type UploadState =
+  | { kind: "Uploaded" }
+  | { kind: "Uploading"; detail: number }
+  | { kind: "Unknown" };
+
 /** Mirrors `state::RootRow` (snake_case fields, no rename). */
 export type RootRow = {
   slug: string;

@@ -16,6 +16,7 @@ import type {
   StatusPayload,
   TrackedFile,
   TrackResultDto,
+  UploadState,
 } from "./types";
 
 /** A pending question before a track batch can continue. */
@@ -253,6 +254,11 @@ export function resolveBinary(
 
 export function providerDir(): Promise<string | null> {
   return invoke("provider_dir");
+}
+
+/** Whether the provider has uploaded this device's cloud files. */
+export function cloudUpload(): Promise<UploadState> {
+  return invoke("cloud_upload");
 }
 
 /** The provider's `dotlore` folder, or the provider before the first publish. */

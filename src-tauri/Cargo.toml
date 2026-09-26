@@ -36,14 +36,17 @@ objc2-app-kit = { version = "0.3.0", default-features = false, features = [
 ] }
 objc2-foundation = { version = "0.3.0", default-features = false, features = [
     "std",
+    "NSArray",
     "NSAttributedString",
     "NSData",
     "NSDictionary",
+    "NSError",
     "NSGeometry",
     "NSObject",
     "NSRange",
     "NSString",
     "NSURL",
+    "NSValue",
 ] }
 
 [build-dependencies]

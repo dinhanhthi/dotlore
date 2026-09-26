@@ -23,6 +23,7 @@ use anyhow::{bail, Result};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+use crate::cloud::{Cloud, UploadState};
 use crate::config;
 use crate::daemon::{Cmd, SharedEngine};
 use crate::engine::{
@@ -342,6 +343,27 @@ pub async fn provider_dir(state: State<'_, AppState>) -> Result<Option<String>, 
     tauri::async_runtime::spawn_blocking(move || {
         let cfg = load_cfg(&home)?;
         Ok(cfg.provider_dir.map(|p| p.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+/// Whether this device's published files have reached the provider, for the
+/// status line. Off the main thread for the same reason as [`list_roots`]:
+/// each file costs a Foundation resource-value query.
+#[tauri::command]
+pub async fn cloud_upload(state: State<'_, AppState>) -> Result<UploadState, String> {
+    let home = state.home.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = load_cfg(&home)?;
+        let Some(provider) = cfg.provider_dir else {
+            return Ok(UploadState::Unknown);
+        };
+        let cloud = Cloud {
+            base: engine::cloud_folder(&provider),
+        };
+        let slugs: Vec<String> = cfg.roots.into_iter().map(|r| r.slug).collect();
+        Ok(cloud.upload_state(&slugs, &cfg.device_id, crate::upload_mac::is_uploaded))
     })
     .await
     .map_err(front_msg)?

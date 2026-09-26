@@ -355,6 +355,7 @@ const handlers: Record<
     return { outcome: "applied" };
   },
   provider_dir: () => store.providerDir,
+  cloud_upload: () => ({ kind: "Unknown" }),
   git_missing: () => store.gitMissing,
   sync_now: () => {
     emitStatus();

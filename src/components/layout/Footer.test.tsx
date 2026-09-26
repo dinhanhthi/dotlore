@@ -1,11 +1,11 @@
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roots";
-import type { RootRow } from "@/lib/types";
+import type { RootRow, UploadState } from "@/lib/types";
 
-import { Footer } from "./Footer";
+import { aggregateStatus, Footer, pollUpload } from "./Footer";
 import { TitleBarActions } from "./TitleBarActions";
 
 const { clicks } = vi.hoisted(() => ({
@@ -31,6 +31,11 @@ vi.mock("@/components/ui/button", async () => {
 vi.mock("@/components/settings/SettingsPopover", () => ({
   SettingsPopover: () => null,
 }));
+
+vi.mock("@/lib/ipc", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/ipc")>("@/lib/ipc");
+  return { ...actual, cloudUpload: vi.fn(async () => ({ kind: "Unknown" })) };
+});
 
 function row(slug: string, status: RootRow["status"]): RootRow {
   return { slug, path: `/p/${slug}`, name: slug, is_agent: false, linked: true, status };
@@ -215,5 +220,96 @@ describe("conflict entry point", () => {
       roots: [row("a", { kind: "Conflicts", detail: 1 })],
     });
     expect([...clicks.keys()].some((k) => k.includes("conflict"))).toBe(false);
+  });
+});
+
+describe("cloud upload status", () => {
+  const synced = [row("a", { kind: "Synced" })];
+
+  it("says the provider is still uploading", () => {
+    expect(aggregateStatus("/cloud", synced, 0, null, { kind: "Uploading", detail: 3 })).toEqual({
+      glyph: "dot",
+      color: "bg-status-pending",
+      text: "Uploading to cloud…",
+    });
+  });
+
+  it("says the files reached the cloud", () => {
+    expect(aggregateStatus("/cloud", synced, 0, null, { kind: "Uploaded" })).toEqual({
+      glyph: "dot",
+      color: "bg-status-synced",
+      text: "Synced to cloud",
+    });
+  });
+
+  it("keeps plain Synced when the provider does not say", () => {
+    expect(aggregateStatus("/cloud", synced, 0, null, { kind: "Unknown" }).text).toBe("Synced");
+  });
+
+  it("does not let an upload state override an earlier status", () => {
+    const pending = [row("a", { kind: "Pending" })];
+    expect(aggregateStatus("/cloud", pending, 0, null, { kind: "Uploaded" }).text).toBe(
+      "Waiting for cloud files",
+    );
+  });
+
+  it("renders plain Synced before the first upload poll answers", () => {
+    const html = wrap(<Footer />, { roots: synced });
+    expect(html).toContain(">Synced<");
+    expect(html).not.toContain("cloud…");
+  });
+});
+
+describe("upload poll", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("asks again while the provider is still uploading", async () => {
+    const fetch = vi.fn(async (): Promise<UploadState> => ({ kind: "Uploading", detail: 1 }));
+    pollUpload(fetch, () => {});
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start a second probe while the first is still running", async () => {
+    const fetch = vi.fn(() => new Promise<UploadState>(() => {}));
+    pollUpload(fetch, () => {});
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("stops once the files reached the cloud", async () => {
+    const onState = vi.fn();
+    const fetch = vi.fn(async (): Promise<UploadState> => ({ kind: "Uploaded" }));
+    pollUpload(fetch, onState);
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(onState).toHaveBeenCalledWith({ kind: "Uploaded" });
+  });
+
+  it("stops when the probe fails", async () => {
+    const onState = vi.fn();
+    const fetch = vi.fn(async (): Promise<UploadState> => {
+      throw new Error("no runtime");
+    });
+    pollUpload(fetch, onState);
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(onState).toHaveBeenCalledWith({ kind: "Unknown" });
+  });
+
+  it("stops after cancel", async () => {
+    const onState = vi.fn();
+    const fetch = vi.fn(async (): Promise<UploadState> => ({ kind: "Uploading", detail: 1 }));
+    const cancel = pollUpload(fetch, onState);
+    await vi.advanceTimersByTimeAsync(0);
+    cancel();
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(onState).toHaveBeenCalledOnce();
   });
 });

@@ -16,6 +16,7 @@ mod login_item;
 mod state;
 mod tray;
 mod updater;
+mod upload_mac;
 
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
@@ -81,6 +82,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::resolve_binary,
             commands::provider_dir,
             commands::open_cloud_folder,
+            commands::cloud_upload,
             commands::app_home,
             commands::open_app_home,
             commands::git_missing,

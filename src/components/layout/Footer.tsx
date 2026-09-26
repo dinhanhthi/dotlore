@@ -9,9 +9,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { uniqueConflictRels } from "@/lib/conflicts";
-import { conflicts as fetchConflicts, syncNow } from "@/lib/ipc";
+import { cloudUpload, conflicts as fetchConflicts, syncNow } from "@/lib/ipc";
 import { useRoots, useSyncing, useTaskLabel, type SeedingRoot } from "@/lib/roots";
-import type { RootRow, RootStatus } from "@/lib/types";
+import type { RootRow, RootStatus, UploadState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Aggregate = {
@@ -44,12 +44,43 @@ function visibleFooterError(
   return error;
 }
 
+const UNKNOWN_UPLOAD: UploadState = { kind: "Unknown" };
+const UPLOAD_POLL_MS = 5000;
+
+/**
+ * Each probe lists every bundle of every root, and the cloud folder only
+ * grows, so ask again only after the last answer came back, and only while
+ * the provider is still uploading. Returns a cancel function.
+ */
+export function pollUpload(
+  fetch: () => Promise<UploadState>,
+  onState: (state: UploadState) => void,
+): () => void {
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const probe = () => {
+    void fetch()
+      .catch(() => UNKNOWN_UPLOAD)
+      .then((state) => {
+        if (cancelled) return;
+        onState(state);
+        if (state.kind === "Uploading") timer = setTimeout(probe, UPLOAD_POLL_MS);
+      });
+  };
+  probe();
+  return () => {
+    cancelled = true;
+    clearTimeout(timer);
+  };
+}
+
 /** Old `window.rs` ~970–997 priority. */
-function aggregateStatus(
+export function aggregateStatus(
   providerDir: string | null,
   roots: RootRow[],
   commandErrors: number,
   error: string | null,
+  upload: UploadState = UNKNOWN_UPLOAD,
 ): Aggregate {
   if (roots.some((r) => r.status.kind === "GitMissing")) {
     return { glyph: "error", color: "bg-status-error", text: "git not found" };
@@ -95,6 +126,13 @@ function aggregateStatus(
   if (roots.some((r) => r.status.kind === "Pending")) {
     return { glyph: "dot", color: "bg-status-pending", text: "Waiting for cloud files" };
   }
+  // "Synced" is local; the provider may still be uploading.
+  if (upload.kind === "Uploading") {
+    return { glyph: "dot", color: "bg-status-pending", text: "Uploading to cloud…" };
+  }
+  if (upload.kind === "Uploaded") {
+    return { glyph: "dot", color: "bg-status-synced", text: "Synced to cloud" };
+  }
   return { glyph: "dot", color: "bg-status-synced", text: "Synced" };
 }
 
@@ -119,7 +157,12 @@ export function Footer() {
   const syncing = useSyncing();
   const taskLabel = useTaskLabel();
   const footerError = visibleFooterError(providerDir, error);
-  const status = aggregateStatus(providerDir, roots, commandErrors.length, footerError);
+  const [upload, setUpload] = useState<UploadState>(UNKNOWN_UPLOAD);
+  const localStatus = aggregateStatus(providerDir, roots, commandErrors.length, footerError);
+  const shouldPollUpload = providerDir !== null && localStatus.text === "Synced";
+  const status = shouldPollUpload
+    ? aggregateStatus(providerDir, roots, commandErrors.length, footerError, upload)
+    : localStatus;
   const tracked = Object.values(trackedBySlug);
   const filesTracked = tracked.reduce((n, stats) => n + stats.files, 0);
   const bytesTracked = tracked.reduce((n, stats) => n + stats.bytes, 0);
@@ -147,6 +190,16 @@ export function Footer() {
       cancelled = true;
     };
   }, [inResolver, selectedSlug, statusKey]);
+
+  useEffect(() => {
+    if (!shouldPollUpload) {
+      setUpload(UNKNOWN_UPLOAD);
+      return;
+    }
+    // `allRoots` gets a new identity on every daemon status push, so a cycle
+    // that published a new bundle asks the provider again.
+    return pollUpload(cloudUpload, setUpload);
+  }, [shouldPollUpload, allRoots]);
 
   const navRels =
     !resolvingRel

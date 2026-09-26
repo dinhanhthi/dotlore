@@ -44,6 +44,19 @@ pub struct Bundle {
     pub path: PathBuf,
 }
 
+/// Whether this device's own files in the provider folder have left the Mac.
+///
+/// Only iCloud Drive answers the question; any other provider, or no files
+/// yet, is `Unknown` rather than a claim either way. `Uploading` carries how
+/// many files the provider still has to send.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(tag = "kind", content = "detail")]
+pub enum UploadState {
+    Uploaded,
+    Uploading(usize),
+    Unknown,
+}
+
 #[derive(Serialize, Deserialize)]
 struct DeviceFile {
     name: String,
@@ -336,6 +349,65 @@ impl Cloud {
             }
         }
         out
+    }
+
+    /// Upload state of `device`'s files for `slugs`: each `manifest.json` and
+    /// every file directly in `devices/<device>/`.
+    ///
+    /// Reads the directories itself rather than going through `list_bundles`,
+    /// which asks iCloud to download every stub it meets — a status poll must
+    /// not pull files back down. A `.<name>.icloud` stub is an evicted file,
+    /// and iCloud only evicts what it has uploaded, so it counts as uploaded
+    /// without asking `probe`. `*.part` temp files are mid-publish and never
+    /// reach the provider under that name. Missing directories are skipped.
+    pub fn upload_state(
+        &self,
+        slugs: &[String],
+        device: &str,
+        probe: impl Fn(&Path) -> Option<bool>,
+    ) -> UploadState {
+        let mut answers = Vec::new();
+        for slug in slugs {
+            let Ok(slug_dir) = self.slug_dir(slug) else {
+                continue;
+            };
+            let manifest = slug_dir.join("manifest.json");
+            if manifest.is_file() {
+                answers.push(probe(&manifest));
+            } else if slug_dir.join(".manifest.json.icloud").is_file() {
+                answers.push(Some(true));
+            }
+            let Ok(dev_dir) = checked(&slug_dir.join("devices"), device) else {
+                continue;
+            };
+            let Ok(files) = fs::read_dir(&dev_dir) else {
+                continue;
+            };
+            for f in files.flatten() {
+                if !f.file_type().is_ok_and(|t| t.is_file()) {
+                    continue;
+                }
+                let Ok(name) = f.file_name().into_string() else {
+                    continue;
+                };
+                if name.ends_with(".part") {
+                    continue;
+                }
+                if name.starts_with('.') && name.ends_with(".icloud") {
+                    answers.push(Some(true));
+                } else {
+                    answers.push(probe(&f.path()));
+                }
+            }
+        }
+        let pending = answers.iter().filter(|a| **a == Some(false)).count();
+        if pending > 0 {
+            UploadState::Uploading(pending)
+        } else if answers.iter().any(Option::is_some) {
+            UploadState::Uploaded
+        } else {
+            UploadState::Unknown
+        }
     }
 }
 
@@ -783,5 +855,141 @@ mod tests {
         assert_eq!(got.chars().count(), 64, "name was not capped: {got:?}");
         assert!(got.starts_with("[31mEvil"), "{got:?}");
         assert_eq!(listed[0].slug, "s");
+    }
+
+    /// A probe that answers per file name and records every path it was asked.
+    fn probe_by_name<'a>(
+        answers: &'a [(&'a str, Option<bool>)],
+        asked: &'a std::cell::RefCell<Vec<String>>,
+    ) -> impl Fn(&Path) -> Option<bool> + 'a {
+        move |p: &Path| {
+            let name = p.file_name().unwrap().to_str().unwrap().to_string();
+            asked.borrow_mut().push(name.clone());
+            answers
+                .iter()
+                .find(|(n, _)| *n == name)
+                .and_then(|(_, a)| *a)
+        }
+    }
+
+    fn two_bundles(c: &Cloud, td: &TempDir) {
+        let a = src_file(td, "a.bundle", "one");
+        c.publish_bundle("s", "dev1", 1, &a).unwrap();
+        c.publish_bundle("s", "dev1", 2, &a).unwrap();
+    }
+
+    fn slugs() -> Vec<String> {
+        vec!["s".to_string()]
+    }
+
+    #[test]
+    fn one_file_not_uploaded_is_uploading_one() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        two_bundles(&c, &td);
+        let asked = Default::default();
+        let answers = [
+            ("000001.bundle", Some(true)),
+            ("000002.bundle", Some(false)),
+        ];
+        let got = c.upload_state(&slugs(), "dev1", probe_by_name(&answers, &asked));
+        assert_eq!(got, UploadState::Uploading(1));
+    }
+
+    #[test]
+    fn every_file_uploaded_is_uploaded() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        two_bundles(&c, &td);
+        assert_eq!(
+            c.upload_state(&slugs(), "dev1", |_| Some(true)),
+            UploadState::Uploaded
+        );
+    }
+
+    #[test]
+    fn no_answer_for_any_file_is_unknown() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        two_bundles(&c, &td);
+        assert_eq!(
+            c.upload_state(&slugs(), "dev1", |_| None),
+            UploadState::Unknown
+        );
+        // Nothing published at all is no evidence either way.
+        assert_eq!(
+            c.upload_state(&["missing".to_string()], "dev1", |_| Some(false)),
+            UploadState::Unknown
+        );
+    }
+
+    #[test]
+    fn an_evicted_stub_counts_as_uploaded_without_probing() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let dev_dir = c.slug_dir("s").unwrap().join("devices/dev1");
+        fs::create_dir_all(&dev_dir).unwrap();
+        fs::write(dev_dir.join(".000002.bundle.icloud"), "").unwrap();
+        let asked = Default::default();
+        let got = c.upload_state(&slugs(), "dev1", probe_by_name(&[], &asked));
+        assert_eq!(got, UploadState::Uploaded);
+        assert!(asked.borrow().is_empty(), "probed: {:?}", asked.borrow());
+    }
+
+    #[test]
+    fn temp_part_files_are_skipped() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        two_bundles(&c, &td);
+        let dev_dir = c.slug_dir("s").unwrap().join("devices/dev1");
+        fs::write(dev_dir.join(tmp_name("000003.bundle")), "x").unwrap();
+        let asked = Default::default();
+        let answers = [("000001.bundle", Some(true)), ("000002.bundle", Some(true))];
+        let got = c.upload_state(&slugs(), "dev1", probe_by_name(&answers, &asked));
+        assert_eq!(got, UploadState::Uploaded);
+        assert!(!asked.borrow().iter().any(|n| n.ends_with(".part")));
+    }
+
+    #[test]
+    fn other_devices_files_are_ignored() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        two_bundles(&c, &td);
+        let a = src_file(&td, "b.bundle", "two");
+        c.publish_bundle("s", "dev2", 7, &a).unwrap();
+        let asked = Default::default();
+        let answers = [("000007.bundle", Some(false))];
+        let got = c.upload_state(&slugs(), "dev1", probe_by_name(&answers, &asked));
+        assert_eq!(got, UploadState::Unknown);
+        assert!(!asked.borrow().iter().any(|n| n == "000007.bundle"));
+    }
+
+    #[test]
+    fn the_manifest_is_included() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        two_bundles(&c, &td);
+        c.write_manifest_once(&Manifest {
+            slug: "s".into(),
+            display_name: "s".into(),
+            is_agent: false,
+        })
+        .unwrap();
+        let asked = Default::default();
+        let answers = [
+            ("000001.bundle", Some(true)),
+            ("000002.bundle", Some(true)),
+            ("manifest.json", Some(false)),
+        ];
+        let got = c.upload_state(&slugs(), "dev1", probe_by_name(&answers, &asked));
+        assert_eq!(got, UploadState::Uploading(1));
+    }
+
+    /// A tempdir is not in iCloud Drive, so the real probe has no answer.
+    #[test]
+    fn the_real_probe_has_no_answer_outside_icloud() {
+        let td = TempDir::new().unwrap();
+        let f = src_file(&td, "plain", "x");
+        assert_eq!(crate::upload_mac::is_uploaded(&f), None);
     }
 }
