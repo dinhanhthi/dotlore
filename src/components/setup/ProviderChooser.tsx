@@ -11,7 +11,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { errorMessage } from "@/lib/errors";
-import { BLOCKED, icloudDir, listGdriveMounts, setProvider } from "@/lib/ipc";
+import {
+  BLOCKED,
+  icloudDir,
+  listGdriveMounts,
+  reportError,
+  setProvider,
+} from "@/lib/ipc";
 import { middleEllipsis } from "@/lib/path";
 import { pickLocalPath } from "@/lib/pick";
 import { useRoots } from "@/lib/roots";
@@ -48,7 +54,7 @@ type ProviderChooserProps = {
 };
 
 export function ProviderChooser({ onApplied, onCancel }: ProviderChooserProps) {
-  const { applyProvider, locked: appLocked, setBanner } = useRoots();
+  const { applyProvider, locked: appLocked } = useRoots();
   const [provider, setProviderChoice] = useState<Provider | null>(null);
   const [mounts, setMounts] = useState<string[] | null>(null);
   const [account, setAccount] = useState<string | null>(null);
@@ -65,7 +71,12 @@ export function ProviderChooser({ onApplied, onCancel }: ProviderChooserProps) {
    */
   async function apply(target: string) {
     onApplied?.();
-    if ((await setProvider(target)) === BLOCKED) return;
+    try {
+      if ((await setProvider(target)) === BLOCKED) return;
+    } catch {
+      // `runTask()` already logged the failure.
+      return;
+    }
     applyProvider(target);
   }
 
@@ -75,7 +86,7 @@ export function ProviderChooser({ onApplied, onCancel }: ProviderChooserProps) {
     try {
       await action();
     } catch (err) {
-      setBanner(errorMessage(err, "Could not set the cloud folder"));
+      reportError(errorMessage(err, "Could not set the cloud folder"));
     } finally {
       setLocalBusy(false);
     }
@@ -102,7 +113,7 @@ export function ProviderChooser({ onApplied, onCancel }: ProviderChooserProps) {
     void listGdriveMounts()
       .then(setMounts)
       .catch((err) => {
-        setBanner(errorMessage(err, "Could not list Google Drive folders"));
+        reportError(errorMessage(err, "Could not list Google Drive folders"));
       });
   }
 

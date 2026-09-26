@@ -15,7 +15,7 @@ import type { RootRow, RootStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Aggregate = {
-  glyph: "dot" | "warn";
+  glyph: "dot" | "warn" | "spin" | "error";
   color: string;
   text: string;
 };
@@ -48,21 +48,28 @@ function visibleFooterError(
 function aggregateStatus(
   providerDir: string | null,
   roots: RootRow[],
+  commandErrors: number,
+  error: string | null,
 ): Aggregate {
+  if (roots.some((r) => r.status.kind === "GitMissing")) {
+    return { glyph: "error", color: "bg-status-error", text: "git not found" };
+  }
+  if (roots.some((r) => r.status.kind === "RootMissing")) {
+    return { glyph: "error", color: "bg-status-error", text: "Folder missing" };
+  }
+  const errors = roots.filter((r) => r.status.kind === "Error").length + commandErrors;
+  if (errors > 0) {
+    return {
+      glyph: "error",
+      color: "bg-status-error",
+      text: errors === 1 ? "1 error" : `${errors} errors`,
+    };
+  }
   if (providerDir === null) {
     return { glyph: "dot", color: "bg-status-pending", text: "No cloud folder set" };
   }
   if (roots.length === 0) {
     return { glyph: "dot", color: "bg-status-pending", text: "Nothing tracked" };
-  }
-  if (roots.some((r) => r.status.kind === "GitMissing")) {
-    return { glyph: "dot", color: "bg-status-error", text: "git not found" };
-  }
-  if (roots.some((r) => r.status.kind === "RootMissing")) {
-    return { glyph: "dot", color: "bg-status-error", text: "Folder missing" };
-  }
-  if (roots.some((r) => r.status.kind === "Error")) {
-    return { glyph: "dot", color: "bg-status-error", text: "Error" };
   }
   const conflicts = roots.reduce((n, r) => n + conflictCount(r.status), 0);
   if (conflicts > 0) {
@@ -72,8 +79,21 @@ function aggregateStatus(
       text: conflicts === 1 ? "1 conflict" : `${conflicts} conflicts`,
     };
   }
+  if (roots.some((r) => r.status.kind === "Checking")) {
+    // A failed cycle never replaces the placeholder; the error says why.
+    return error === null
+      ? { glyph: "spin", color: "", text: "Syncing…" }
+      : { glyph: "dot", color: "bg-status-pending", text: "Not synced" };
+  }
+  if (roots.some((r) => r.status.kind === "Retrying")) {
+    return {
+      glyph: "dot",
+      color: "bg-status-pending",
+      text: "Files changed during sync — retrying",
+    };
+  }
   if (roots.some((r) => r.status.kind === "Pending")) {
-    return { glyph: "dot", color: "bg-status-pending", text: "Pending" };
+    return { glyph: "dot", color: "bg-status-pending", text: "Waiting for cloud files" };
   }
   return { glyph: "dot", color: "bg-status-synced", text: "Synced" };
 }
@@ -91,13 +111,15 @@ export function Footer() {
     resolvingRel,
     openResolver,
     showConflicts,
+    showErrors,
+    commandErrors,
   } = useRoots();
   // Cloud-only projects are optional on this device, not waiting to sync.
   const roots = allRoots.filter((row) => row.linked);
   const syncing = useSyncing();
   const taskLabel = useTaskLabel();
-  const status = aggregateStatus(providerDir, roots);
   const footerError = visibleFooterError(providerDir, error);
+  const status = aggregateStatus(providerDir, roots, commandErrors.length, footerError);
   const tracked = Object.values(trackedBySlug);
   const filesTracked = tracked.reduce((n, stats) => n + stats.files, 0);
   const bytesTracked = tracked.reduce((n, stats) => n + stats.bytes, 0);
@@ -151,7 +173,7 @@ export function Footer() {
     <footer className="flex h-11 items-center gap-4 border-t border-border px-3 text-[0.8rem] text-muted-foreground">
       <div
         className="flex min-w-0 flex-1 items-center gap-2.5"
-        aria-busy={busy || loadingRoots || taskLabel !== null}
+        aria-busy={busy || loadingRoots || taskLabel !== null || status.glyph === "spin"}
       >
         {taskLabel ? (
           <>
@@ -186,13 +208,29 @@ export function Footer() {
             </span>
             <span className="truncate">{status.text}</span>
           </Button>
+        ) : status.glyph === "spin" ? (
+          <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+        ) : status.glyph === "error" ? (
+          <Button
+            variant="ghost"
+            size="xs"
+            className="-ml-1.5 min-w-0 gap-2.5 px-1.5 font-normal"
+            aria-label={`${status.text} — show details`}
+            onClick={showErrors}
+          >
+            <span
+              className={cn("size-2.5 shrink-0 rounded-full", status.color)}
+              aria-hidden
+            />
+            <span className="truncate">{status.text}</span>
+          </Button>
         ) : (
           <span
             className={cn("size-2.5 shrink-0 rounded-full", status.color)}
             aria-hidden
           />
         )}
-        {!taskLabel && seeding.length === 0 && !loadingRoots && !busy && status.glyph !== "warn" && (
+        {!taskLabel && seeding.length === 0 && !loadingRoots && !busy && status.glyph !== "warn" && status.glyph !== "error" && (
           <span className="truncate">{status.text}</span>
         )}
         <Tooltip>

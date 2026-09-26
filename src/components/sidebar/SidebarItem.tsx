@@ -22,7 +22,9 @@ function statusDotClass(kind: RootStatus["kind"]): string {
       return "bg-status-synced";
     case "Conflicts":
       return "bg-status-conflict";
+    case "Checking":
     case "Pending":
+    case "Retrying":
       return "bg-status-pending";
     case "RootMissing":
     case "GitMissing":
@@ -39,6 +41,8 @@ type SidebarItemProps = {
   statusKind?: RootStatus["kind"];
   leading?: ReactNode;
   conflictCount?: number;
+  /** A plain count badge, for nav rows. */
+  count?: number;
   starred?: boolean;
   linked?: boolean;
   onClick: () => void;
@@ -59,6 +63,7 @@ export function SidebarItem({
   statusKind,
   leading,
   conflictCount = 0,
+  count = 0,
   starred = false,
   linked,
   onClick,
@@ -146,6 +151,11 @@ export function SidebarItem({
             <Trash2 aria-hidden className="size-3.5" />
           </RowAction>
         </HoverOnly>
+      )}
+      {count > 0 && (
+        <Badge variant="secondary" className="h-5 min-w-5 shrink-0 px-1.5 text-xs tabular-nums">
+          {count}
+        </Badge>
       )}
       {onToggleStar && (
         <HoverOnly visible={starred}>

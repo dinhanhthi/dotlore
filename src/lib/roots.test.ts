@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyRootDiscovery,
+  errorTotal,
+  hasError,
   looksLikeAgent,
   mergeRootsBySlug,
   overlayStatuses,
@@ -40,7 +42,7 @@ describe("rootsWithSeeding", () => {
     expect(merged.find((row) => row.slug === "site")).toMatchObject({
       linked: true,
       path: "/Users/thi/src/site",
-      status: { kind: "Pending" },
+      status: { kind: "Checking" },
     });
   });
 
@@ -171,5 +173,33 @@ describe("overlayStatuses", () => {
       kind: "Conflicts",
       detail: 1,
     });
+  });
+});
+
+describe("hasError", () => {
+  it("counts linked roots that stopped syncing", () => {
+    expect(hasError(linkedRow({ status: { kind: "Error", detail: "boom" } }))).toBe(true);
+    expect(hasError(linkedRow({ status: { kind: "RootMissing" } }))).toBe(true);
+    expect(hasError(linkedRow({ status: { kind: "GitMissing" } }))).toBe(true);
+    expect(hasError(linkedRow({ status: { kind: "Pending" } }))).toBe(false);
+    expect(hasError(linkedRow({ status: { kind: "Conflicts", detail: 1 } }))).toBe(false);
+  });
+
+  it("ignores cloud-only rows", () => {
+    const row = linkedRow({ linked: false, status: { kind: "Error", detail: "boom" } });
+    expect(hasError(row)).toBe(false);
+    expect(errorTotal([row, linkedRow({ status: { kind: "RootMissing" } })], [])).toBe(1);
+  });
+});
+
+describe("errorTotal", () => {
+  it("adds command errors to linked roots in error", () => {
+    const failures = [
+      { id: 1, message: "a", at: 0 },
+      { id: 2, message: "b", at: 0 },
+    ];
+    expect(errorTotal([], [])).toBe(0);
+    expect(errorTotal([], failures)).toBe(2);
+    expect(errorTotal([linkedRow({ status: { kind: "Error", detail: "boom" } })], failures)).toBe(3);
   });
 });

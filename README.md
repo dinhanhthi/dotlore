@@ -63,24 +63,27 @@ pnpm format:check
 
 ### Cargo build cache
 
-A debug `target/` on macOS grows past 10 GB. The `dev` profile in `src-tauri/Cargo.toml` already keeps a fresh one small. To share that cache across Rust projects, create `~/.cargo/config.toml` once per Mac (outside git). Cargo does not expand `~`; the path below is `~/.cargo/shared-target`:
+On each new Mac:
 
-```toml
-[build]
-target-dir = ".cargo/shared-target"
+1. Create `~/.cargo/config.toml`:
 
-[profile.dev]
-opt-level = 1
-split-debuginfo = "off"
+   ```toml
+   [build]
+   target-dir = ".cargo/shared-target"
 
-[profile.dev.package."*"]
-debug = "line-tables-only"
-incremental = false
-```
+   [profile.dev]
+   opt-level = 1
+   split-debuginfo = "off"
 
-Keep this profile identical to `src-tauri/Cargo.toml` — keys here override every project. Then delete each project's old `src-tauri/target`. `pnpm tauri dev` and `pnpm test` use the shared directory. `pnpm build` still writes `src-tauri/target`.
+   [profile.dev.package."*"]
+   debug = "line-tables-only"
+   incremental = false
+   ```
 
-Stale artifacts still accumulate. `cargo install cargo-sweep` once, then `pnpm sweep:cargo` drops anything unused for 14 days (`-- --dry-run` to preview, `-- "$HOME/git"` for a whole tree). One sweep covers every project that shares the directory. Build one project at a time. Why the flags look like this is in [CONTRIBUTING.md](CONTRIBUTING.md#cargo-build-cache).
+2. Delete any old `src-tauri/target` directories.
+3. Run `cargo install cargo-sweep`, then `pnpm sweep:cargo` from time to time.
+
+Why, and what each setting does: [CONTRIBUTING.md](CONTRIBUTING.md#cargo-build-cache).
 
 ### 📦 Build
 

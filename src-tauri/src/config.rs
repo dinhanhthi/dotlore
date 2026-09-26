@@ -75,6 +75,9 @@ pub struct Config {
     /// Seed/add folder-total limit in MiB. `None` means 200. Enforced in T3.7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seed_folder_mb: Option<u64>,
+    /// Sensitive-path patterns. `None` means use `project::SECRET_PATTERNS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensitive_patterns: Option<Vec<String>>,
 }
 
 impl Config {
@@ -329,6 +332,7 @@ mod tests {
         assert!(cfg.default_ignore.is_none());
         assert!(cfg.max_file_mb.is_none());
         assert!(cfg.max_seed_folder_mb.is_none());
+        assert!(cfg.sensitive_patterns.is_none());
     }
 
     #[test]

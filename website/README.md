@@ -9,7 +9,7 @@ A push to `main` that touches this folder deploys to GitHub Pages via [`.github/
 From the repo root:
 
 ```sh
-open website/index.html
+pnpm website:dev   # http://localhost:38423
 ```
 
-Or serve the folder with any static server.
+Or open `website/index.html` in a browser.

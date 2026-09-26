@@ -296,6 +296,39 @@ describe("inspect_entry", () => {
       },
     );
   });
+
+  it("marks a secret file the way track_entry asks to confirm it", async () => {
+    const file = { text: "k", binary: false, too_large: false };
+    resetStore({ files: { demo: { "server.pem": file } }, entries: { demo: [] } });
+    await expect(route("inspect_entry", { slug: "demo", rel: "server.pem" })).resolves.toMatchObject({
+      sensitivity: "secret",
+      secret_descendants: [],
+      secret_descendants_more: false,
+    });
+    await expect(route("track_entry", { slug: "demo", rel: "server.pem" })).resolves.toEqual({
+      outcome: "confirm_sensitive",
+      paths: ["server.pem"],
+      more: false,
+    });
+  });
+
+  it("lists up to 20 sorted secret descendants of a folder", async () => {
+    const file = { text: "k", binary: false, too_large: false };
+    const files: Record<string, typeof file> = { "keys/notes.md": file };
+    for (let n = 0; n < 21; n++) files[`keys/k${String(n).padStart(2, "0")}.pem`] = file;
+    resetStore({ files: { demo: files }, entries: { demo: [] } });
+    const expected = Array.from({ length: 20 }, (_, n) => `keys/k${String(n).padStart(2, "0")}.pem`);
+    await expect(route("inspect_entry", { slug: "demo", rel: "keys" })).resolves.toMatchObject({
+      sensitivity: null,
+      secret_descendants: expected,
+      secret_descendants_more: true,
+    });
+    await expect(route("track_entry", { slug: "demo", rel: "keys" })).resolves.toEqual({
+      outcome: "confirm_sensitive",
+      paths: expected,
+      more: true,
+    });
+  });
 });
 
 describe("track_entry", () => {
@@ -327,6 +360,42 @@ describe("track_entry", () => {
       expect.objectContaining({ rel: ".env.production", sensitivity: "secret" }),
       expect.objectContaining({ rel: ".mcp.json", sensitivity: "tokenHint" }),
     ]));
+  });
+
+  it("classifies against the edited sensitive patterns", async () => {
+    const file = { text: "k", binary: false, too_large: false };
+    resetStore({
+      files: { demo: { "x.secret": file, ".env": file, "deep/certs/a.txt": file, "deep/credentials.md": file } },
+      entries: { demo: [] },
+    });
+    const builtin = (await route("sensitive_patterns", {})) as string[];
+    expect(builtin).toEqual(expect.arrayContaining([".env", "!credentials*.md"]));
+    expect(await route("list_entry_children", { slug: "demo", rel: "deep" })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ rel: "deep/credentials.md", sensitivity: null })]),
+    );
+
+    await route("set_sensitive_patterns", { patterns: ["*.secret", "certs/", "!deep/certs/a.txt"] });
+    expect(await route("sensitive_patterns", {})).toEqual(["*.secret", "certs/", "!deep/certs/a.txt"]);
+    expect(await route("list_entry_children", { slug: "demo", rel: "" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ rel: "x.secret", sensitivity: "secret" }),
+        expect.objectContaining({ rel: ".env", sensitivity: null }),
+      ]),
+    );
+    await expect(route("track_entry", { slug: "demo", rel: "x.secret" })).resolves.toMatchObject({
+      outcome: "confirm_sensitive",
+    });
+    await expect(route("track_entry", { slug: "demo", rel: ".env" })).resolves.toEqual({ outcome: "done" });
+    expect(await route("tracked_files", { slug: "demo" })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ rel: ".env", sensitivity: null })]),
+    );
+
+    await route("set_sensitive_patterns", { patterns: ["certs/"] });
+    await expect(route("inspect_entry", { slug: "demo", rel: "deep" })).resolves.toMatchObject({
+      secret_descendants: ["deep/certs/a.txt"],
+    });
+    resetStore();
+    expect(store.sensitivePatterns).toEqual(builtin);
   });
 
   const folderFiles = {
@@ -541,6 +610,7 @@ const MOCK_STATE_KEYS = [
   "pickerExtra",
   "providerDir",
   "roots",
+  "sensitivePatterns",
 ] as const;
 
 describe("store fixtures", () => {

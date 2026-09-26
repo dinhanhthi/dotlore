@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { TrackedFile } from "./types";
-import { buildTree, nodeWeight, type TreeNode } from "./tree";
+import { buildTree, filterTree, nodeWeight, type TreeNode } from "./tree";
 
 function tracked(
   rel: string,
@@ -133,5 +133,63 @@ describe("nodeWeight", () => {
     const folder = tree.find((node) => node.path === "bundle");
     expect(folder).toBeDefined();
     expect(nodeWeight(folder!, limit)).toBe("danger");
+  });
+});
+
+function paths(nodes: TreeNode[]): string[] {
+  return nodes.flatMap((node) => [node.path, ...paths(node.children)]);
+}
+
+describe("filterTree", () => {
+  const tree = buildTree([
+    tracked("a/b/c/secret.pem"),
+    tracked("a/b/c/notes.md"),
+    tracked("a/b/other.md"),
+    tracked("a/readme.md"),
+    tracked("top.md"),
+    tracked("config/credentials.json"),
+  ]);
+  const secrets = new Set(["a/b/c/secret.pem", "config/credentials.json"]);
+  const keep = (rel: string) => secrets.has(rel);
+
+  it("keeps a secret 3+ levels deep with its ancestors and drops its siblings", () => {
+    expect(paths(filterTree(tree, "", keep))).toEqual([
+      "a",
+      "a/b",
+      "a/b/c",
+      "a/b/c/secret.pem",
+      "config",
+      "config/credentials.json",
+    ]);
+  });
+
+  it("intersects the query with keep", () => {
+    expect(paths(filterTree(tree, "pem", keep))).toEqual([
+      "a",
+      "a/b",
+      "a/b/c",
+      "a/b/c/secret.pem",
+    ]);
+    expect(paths(filterTree(tree, "notes", keep))).toEqual([]);
+  });
+
+  it("still filters the children of a folder whose path matches the query", () => {
+    expect(paths(filterTree(tree, "a/b", keep))).toEqual([
+      "a",
+      "a/b",
+      "a/b/c",
+      "a/b/c/secret.pem",
+    ]);
+  });
+
+  it("without keep, a matching folder keeps all its children", () => {
+    expect(paths(filterTree(tree, "a/b/c"))).toEqual([
+      "a",
+      "a/b",
+      "a/b/c",
+      "a/b/c/notes.md",
+      "a/b/c/secret.pem",
+    ]);
+    expect(filterTree(tree, "")).toBe(tree);
   });
 });

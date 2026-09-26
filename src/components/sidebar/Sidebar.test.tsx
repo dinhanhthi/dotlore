@@ -6,14 +6,14 @@ import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roo
 
 import { Sidebar } from "./Sidebar";
 
-const { importInstalledAgents, setBanner, refreshClicks } = vi.hoisted(() => ({
+const { importInstalledAgents, reportError, refreshClicks } = vi.hoisted(() => ({
   importInstalledAgents: vi.fn(
     async (): Promise<{
       added: string[];
       failed: { path: string; message: string }[];
     }> => ({ added: [], failed: [] }),
   ),
-  setBanner: vi.fn(),
+  reportError: vi.fn(),
   refreshClicks: [] as Array<
     (event: { nativeEvent: Event }) => void | Promise<void>
   >,
@@ -22,7 +22,7 @@ const { importInstalledAgents, setBanner, refreshClicks } = vi.hoisted(() => ({
 vi.mock("@/lib/ipc", () => ({
   BLOCKED: Symbol("blocked"),
   importInstalledAgents,
-  setBanner,
+  reportError,
   subscribeWork: () => () => {},
   getWorkSnapshot: () => ({
     inflight: 0,
@@ -30,6 +30,7 @@ vi.mock("@/lib/ipc", () => ({
     banner: null,
     taskLabel: null,
     trackConfirm: null,
+    errors: [],
   }),
   linkRoot: vi.fn(),
   recoverRoot: vi.fn(),
@@ -68,6 +69,7 @@ function renderSidebar(overrides: Partial<RootsContextValue> = {}) {
     showAllProjects: () => {},
     showStarred: () => {},
     showConflicts: () => {},
+    showErrors: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots,
@@ -76,6 +78,7 @@ function renderSidebar(overrides: Partial<RootsContextValue> = {}) {
     busy: false,
     locked: false,
     banner: null,
+    commandErrors: [],
     setBanner: () => {},
     ...overrides,
   };
@@ -95,11 +98,30 @@ function clickRefresh() {
 const REFRESH_DISABLED =
   /<button(?=[^>]*aria-label="Refresh agents")[^>]*\sdisabled=""/;
 
+describe("Sidebar Errors row", () => {
+  it("is hidden when nothing is in error", () => {
+    const { html } = renderSidebar();
+    expect(html).not.toContain(">Errors<");
+  });
+
+  it("shows the command-error count", () => {
+    const { html } = renderSidebar({
+      commandErrors: [
+        { id: 1, message: "a", at: 0 },
+        { id: 2, message: "b", at: 0 },
+      ],
+    });
+    expect(html).toContain(">Errors<");
+    expect(html).toMatch(/>Errors<[\s\S]*?>2</);
+    expect(html.indexOf(">Starred<")).toBeLessThan(html.indexOf(">Errors<"));
+  });
+});
+
 describe("Sidebar agents refresh", () => {
   beforeEach(() => {
     importInstalledAgents.mockReset();
     importInstalledAgents.mockResolvedValue({ added: [], failed: [] });
-    setBanner.mockReset();
+    reportError.mockReset();
   });
 
   it("calls importInstalledAgents and then refreshRoots", async () => {
@@ -138,7 +160,7 @@ describe("Sidebar agents refresh", () => {
 
     await clickRefresh();
 
-    expect(setBanner).toHaveBeenCalledWith("already tracked");
+    expect(reportError).toHaveBeenCalledWith("already tracked");
     expect(refreshRoots).toHaveBeenCalledOnce();
   });
 

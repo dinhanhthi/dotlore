@@ -49,6 +49,7 @@ function wrap(node: React.ReactNode, overrides: Partial<RootsContextValue> = {})
     showAllProjects: () => {},
     showStarred: () => {},
     showConflicts: () => {},
+    showErrors: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},
@@ -56,6 +57,7 @@ function wrap(node: React.ReactNode, overrides: Partial<RootsContextValue> = {})
     busy: false,
     locked: false,
     banner: null,
+    commandErrors: [],
     setBanner: () => {},
     addProject: async () => {},
     ...overrides,
@@ -81,6 +83,60 @@ describe("conflict entry point", () => {
     expect(open).toBeTypeOf("function");
     open?.();
     expect(showConflicts).toHaveBeenCalledOnce();
+  });
+
+  it("makes the footer error status open the Errors view", () => {
+    const showErrors = vi.fn();
+    const html = wrap(<Footer />, {
+      roots: [row("a", { kind: "Error", detail: "boom" }), row("b", { kind: "Error", detail: "x" })],
+      showErrors,
+    });
+    expect(html).toContain("2 errors");
+    const open = clicks.get("2 errors — show details");
+    expect(open).toBeTypeOf("function");
+    open?.();
+    expect(showErrors).toHaveBeenCalledOnce();
+  });
+
+  it("counts a command error with no root in error", () => {
+    const showErrors = vi.fn();
+    const html = wrap(<Footer />, {
+      roots: [row("a", { kind: "Synced" })],
+      commandErrors: [{ id: 1, message: "wipe failed", at: 0 }],
+      showErrors,
+    });
+    expect(html).toContain("1 error");
+    expect(html).not.toContain(">Synced<");
+    const open = clicks.get("1 error — show details");
+    expect(open).toBeTypeOf("function");
+    open?.();
+    expect(showErrors).toHaveBeenCalledOnce();
+  });
+
+  it("shows a command error when nothing is tracked yet", () => {
+    const showErrors = vi.fn();
+    const html = wrap(<Footer />, {
+      roots: [],
+      commandErrors: [{ id: 1, message: "add failed", at: 0 }],
+      showErrors,
+    });
+    expect(html).toContain("1 error");
+    expect(html).not.toContain("Nothing tracked");
+    clicks.get("1 error — show details")?.();
+    expect(showErrors).toHaveBeenCalledOnce();
+  });
+
+  it("shows a command error before a cloud folder is set", () => {
+    const showErrors = vi.fn();
+    const html = wrap(<Footer />, {
+      providerDir: null,
+      commandErrors: [{ id: 1, message: "provider failed", at: 0 }],
+      showErrors,
+    });
+    expect(html).toContain("1 error");
+    expect(html).not.toContain("No cloud folder set");
+    clicks.get("1 error — show details")?.();
+    expect(showErrors).toHaveBeenCalledOnce();
   });
 
   it("keeps the footer status plain text when nothing conflicts", () => {
@@ -125,6 +181,33 @@ describe("conflict entry point", () => {
     expect(html).toContain("Loading projects…");
     expect(html).not.toContain("Nothing tracked");
     expect(html).toMatch(/<button(?=[^>]*aria-label="Sync now")[^>]*\sdisabled=""/);
+  });
+
+  it("shows a spinner while the first cycle has not reported a root yet", () => {
+    const html = wrap(<Footer />, { roots: [row("a", { kind: "Checking" })] });
+    expect(html).toContain("Syncing…");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain("Pending");
+  });
+
+  it("stops the spinner when the cycle failed before reporting", () => {
+    const html = wrap(<Footer />, {
+      roots: [row("a", { kind: "Checking" })],
+      error: "cycle failed",
+    });
+    expect(html).toContain("Not synced");
+    expect(html).not.toContain("Syncing…");
+  });
+
+  it("says a root is waiting for the cloud instead of a bare Pending", () => {
+    const html = wrap(<Footer />, { roots: [row("a", { kind: "Pending" })] });
+    expect(html).toContain("Waiting for cloud files");
+    expect(html).not.toContain(">Pending<");
+  });
+
+  it("says a root will retry after a live edit", () => {
+    const html = wrap(<Footer />, { roots: [row("a", { kind: "Retrying" })] });
+    expect(html).toContain("Files changed during sync — retrying");
   });
 
   it("no longer puts a conflict button in the title bar", () => {

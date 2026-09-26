@@ -2,7 +2,7 @@ import {
   demoConflicts,
   demoResolution,
 } from "../fixtures/conflicts";
-import { demoFiles, type FileRecord } from "../fixtures/files";
+import { SECRET_PATTERNS, demoFiles, type FileRecord } from "../fixtures/files";
 import {
   GDRIVE_MOUNTS,
   ICLOUD_PROVIDER,
@@ -57,6 +57,8 @@ export type MockState = {
   /** Per-catalog overrides. A missing key means the mock builtin; `[]` is an override. */
   agentPatterns: Record<string, string[]>;
   defaultIgnore: string;
+  /** Secret file patterns (gitignore syntax), seeded from the builtin list. */
+  sensitivePatterns: string[];
   maxFileMb: number;
   maxSeedFolderMb: number;
 };
@@ -117,6 +119,7 @@ export function emptyPopulated(): MockState {
     defaultPatterns: [...DEFAULT_PATTERNS],
     agentPatterns: {},
     defaultIgnore: DEFAULT_IGNORE,
+    sensitivePatterns: [...SECRET_PATTERNS],
     maxFileMb: DEFAULT_MAX_FILE_MB,
     maxSeedFolderMb: DEFAULT_MAX_SEED_FOLDER_MB,
   };
@@ -157,6 +160,10 @@ export function resetStore(next?: Partial<MockState>): void {
     next && "defaultIgnore" in next
       ? (next.defaultIgnore ?? "")
       : seed.defaultIgnore;
+  store.sensitivePatterns =
+    next && "sensitivePatterns" in next
+      ? clone(next.sensitivePatterns ?? [])
+      : seed.sensitivePatterns;
   store.maxFileMb =
     next && "maxFileMb" in next
       ? (next.maxFileMb ?? DEFAULT_MAX_FILE_MB)

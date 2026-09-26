@@ -13,7 +13,7 @@
 //! in [`crate::repo`]: a pending one is always recovered *after* the root has
 //! been checked for existence and *before* any new local commit.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -27,22 +27,26 @@ use crate::config::{self, Config, HomeLock, Root};
 use crate::conflict;
 use crate::git::{self, Git};
 use crate::mirror::{self, FileState, Node};
-use crate::project::{self, Limits, Sensitivity, State};
+use crate::project::{self, Limits, SensitiveMatcher, Sensitivity, State};
 use crate::repo::{
     provider_key, remote_ref, unique_id, FetchMode, Repo, ResumeOutcome, Transaction,
 };
 
 /// Where one tracked root stands after a cycle.
 ///
-/// `Pending` is not an error: a linked root whose staging has no `main` yet
-/// because no bundle is readable in the cloud, or an apply that raced a live
-/// edit, is retried on the next cycle with its journal intact.
+/// `Checking`, `Pending` and `Retrying` are not errors. `Checking` is the
+/// placeholder a listing shows before a cycle reports the root. `Pending` is
+/// a linked root whose staging has no `main` yet because no bundle is readable
+/// in the cloud. `Retrying` is an apply that raced a live edit, retried on the
+/// next cycle with its journal intact.
 #[derive(Serialize, Clone, PartialEq, Eq, Debug)]
 #[serde(tag = "kind", content = "detail")]
 pub enum RootStatus {
     Synced,
     Conflicts(usize),
+    Checking,
     Pending,
+    Retrying,
     RootMissing,
     GitMissing,
     Error(String),
@@ -680,6 +684,7 @@ impl Engine {
         let limits = Limits::from_config(&self.cfg);
         let staged = repo.git.ok(&["ls-files", "-z"])?;
         let live_path = root.path.clone();
+        let matcher = self.sensitive_matcher();
         drop(g);
 
         let staged: Vec<String> = staged
@@ -706,7 +711,7 @@ impl Engine {
                 by_rel.insert(
                     rel.clone(),
                     TrackedFile {
-                        sensitivity: project::sensitivity(Path::new(&rel)),
+                        sensitivity: matcher.classify(Path::new(&rel)),
                         rel,
                         bytes,
                         state,
@@ -716,7 +721,7 @@ impl Engine {
         }
         for rel in staged {
             by_rel.entry(rel.clone()).or_insert(TrackedFile {
-                sensitivity: project::sensitivity(Path::new(&rel)),
+                sensitivity: matcher.classify(Path::new(&rel)),
                 rel,
                 bytes: 0,
                 state: FileSync::Pending,
@@ -758,8 +763,9 @@ impl Engine {
         let repo = self.repo_for(&root)?;
         let limits = Limits::from_config(&self.cfg);
         let ignore = repo.ignore_text(&self.home_dir);
+        let matcher = self.sensitive_matcher();
         drop(g);
-        inspect_live(&root.path, rel, &ignore, limits)
+        inspect_live(&root.path, rel, &ignore, limits, &matcher)
     }
 
     /// Track `rel` under `slug`. Uses safe live-path inspection.
@@ -793,7 +799,7 @@ impl Engine {
         let limits = Limits::from_config(&self.cfg);
         let repo = self.repo_for(&root)?;
         let ignore = repo.ignore_text(&self.home_dir);
-        let preview = inspect_live(&root.path, rel, &ignore, limits)?;
+        let preview = inspect_live(&root.path, rel, &ignore, limits, &self.sensitive_matcher())?;
         if preview.kind == EntryKind::File {
             if let Some((_, len)) = preview.skipped_too_large.first() {
                 bail!(
@@ -935,6 +941,48 @@ impl Engine {
                 .insert(catalog.to_string(), patterns);
         }
         self.save(&g)
+    }
+
+    /// Effective sensitive patterns (`None` in config → `SECRET_PATTERNS`).
+    pub fn sensitive_patterns(&self) -> Vec<String> {
+        match &self.cfg.sensitive_patterns {
+            Some(p) => p.clone(),
+            None => lines_owned(project::SECRET_PATTERNS),
+        }
+    }
+
+    /// Store the sensitive list: trimmed, empties dropped, deduplicated.
+    /// An invalid line is rejected without writing config. A list equal to
+    /// the builtin clears the override.
+    pub fn set_sensitive_patterns(&mut self, patterns: Vec<String>) -> Result<()> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let mut seen = BTreeSet::new();
+        let patterns: Vec<String> = patterns
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .filter(|p| seen.insert(p.to_string()))
+            .map(str::to_string)
+            .collect();
+        SensitiveMatcher::new(&patterns)?;
+        self.cfg.sensitive_patterns = if patterns == lines_owned(project::SECRET_PATTERNS) {
+            None
+        } else {
+            Some(patterns)
+        };
+        self.save(&g)
+    }
+
+    /// Matcher for the effective sensitive list. A stored list that no longer
+    /// builds falls back to the builtin one.
+    pub(crate) fn sensitive_matcher(&self) -> SensitiveMatcher {
+        match &self.cfg.sensitive_patterns {
+            Some(p) => {
+                SensitiveMatcher::new(p).unwrap_or_else(|_| SensitiveMatcher::default_secret())
+            }
+            None => SensitiveMatcher::default_secret(),
+        }
     }
 
     /// Effective ignore text (`None` in config → `DEFAULT_NEVER_IGNORE`).
@@ -1633,12 +1681,11 @@ fn cloud_at(provider_dir: &Path) -> Cloud {
 
 /// Why an apply did not finish, as a status a user can act on.
 ///
-/// A path that raced a live edit is genuinely `Pending` — the next cycle picks
-/// it up. A path blocked by a symlink in the live root or by a target entry
-/// that is not a regular file is re-skipped on every attempt forever: the
-/// whole root then stops committing and publishing behind the same `Pending`
-/// the UI shows for "no bundles yet", with nothing to act on. That one is
-/// `Error` naming the paths.
+/// A path that raced a live edit is `Retrying` — the next cycle picks it up.
+/// A path blocked by a symlink in the live root or by a target entry that is
+/// not a regular file is re-skipped on every attempt forever: the whole root
+/// then stops committing and publishing behind a status with nothing to act
+/// on. That one is `Error` naming the paths.
 ///
 /// The root stays frozen as a whole while any path is blocked: finalizing the
 /// unblocked paths would advance `main` past a root that does not match it,
@@ -1646,7 +1693,7 @@ fn cloud_at(provider_dir: &Path) -> Cloud {
 fn stalled(slug: &str, tx: &Transaction) -> RootStatus {
     match stall_message(slug, tx.blocked()) {
         Some(m) => RootStatus::Error(m),
-        None => RootStatus::Pending,
+        None => RootStatus::Retrying,
     }
 }
 
@@ -1951,6 +1998,7 @@ fn inspect_live(
     rel: &Path,
     ignore_text: &str,
     limits: Limits,
+    matcher: &SensitiveMatcher,
 ) -> Result<InspectedEntry> {
     if !plain_rel(rel) {
         bail!("unsafe path {}", rel.display());
@@ -1978,7 +2026,7 @@ fn inspect_live(
                 } else {
                     measured.skipped_too_large
                 },
-                sensitivity: project::sensitivity(rel),
+                sensitivity: matcher.classify(rel),
                 secret_descendants: Vec::new(),
                 secret_descendants_more: false,
             })
@@ -1986,7 +2034,7 @@ fn inspect_live(
         Node::Dir => {
             let measured = mirror::measure_tree(root, &trimmed, ignore_text, limits)?;
             let (secret_descendants, secret_descendants_more) =
-                secret_descendants(root, &trimmed, ignore_text, limits)?;
+                secret_descendants(root, &trimmed, ignore_text, limits, matcher)?;
             Ok(InspectedEntry {
                 kind: EntryKind::Directory,
                 bytes: measured.bytes,
@@ -2006,6 +2054,7 @@ fn secret_descendants(
     rel: &Path,
     ignore_text: &str,
     limits: Limits,
+    matcher: &SensitiveMatcher,
 ) -> Result<(Vec<String>, bool)> {
     let mut entries = project::ProjectFile::default();
     entries.entries.insert(
@@ -2017,7 +2066,7 @@ fn secret_descendants(
     );
     let mut paths: Vec<String> = mirror::list_live(root, &entries.tracked(), ignore_text, limits)?
         .into_iter()
-        .filter(|(path, _, _)| project::sensitivity(path) == Some(Sensitivity::Secret))
+        .filter(|(path, _, _)| matcher.classify(path) == Some(Sensitivity::Secret))
         .map(|(path, _, _)| path.to_string_lossy().into_owned())
         .collect();
     paths.sort();
@@ -2467,6 +2516,96 @@ mod tests {
             Some(project::Sensitivity::TokenHint)
         );
         assert_eq!(tier("docs/notes.md"), None);
+    }
+
+    #[test]
+    fn a_custom_sensitive_list_replaces_the_builtin_secret_patterns() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/x.secret", b"s\n");
+        write(&a, "docs/.env", b"K=V\n");
+        add(&mut a);
+        a.engine
+            .set_sensitive_patterns(vec!["  *.secret ".into(), "".into(), "*.secret".into()])
+            .unwrap();
+        assert_eq!(a.engine.sensitive_patterns(), vec!["*.secret".to_string()]);
+        assert_eq!(
+            Config::load(a.home.path()).unwrap().sensitive_patterns,
+            Some(vec!["*.secret".into()])
+        );
+
+        let files = a.engine.tracked_files("proj-claude").unwrap();
+        let tier = |rel: &str| files.iter().find(|f| f.rel == rel).unwrap().sensitivity;
+        assert_eq!(tier("docs/x.secret"), Some(project::Sensitivity::Secret));
+        assert_ne!(tier("docs/.env"), Some(project::Sensitivity::Secret));
+    }
+
+    #[test]
+    fn set_sensitive_patterns_equal_to_builtin_clears_the_override() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine
+            .set_sensitive_patterns(vec!["*.secret".into()])
+            .unwrap();
+        a.engine
+            .set_sensitive_patterns(lines_owned(project::SECRET_PATTERNS))
+            .unwrap();
+        assert_eq!(
+            Config::load(a.home.path()).unwrap().sensitive_patterns,
+            None
+        );
+        assert_eq!(
+            a.engine.sensitive_patterns(),
+            lines_owned(project::SECRET_PATTERNS)
+        );
+    }
+
+    #[test]
+    fn set_sensitive_patterns_rejects_an_invalid_line_without_writing() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine
+            .set_sensitive_patterns(vec!["*.secret".into()])
+            .unwrap();
+        let before = fs::read(a.home.path().join("config.json")).unwrap();
+        let err = a
+            .engine
+            .set_sensitive_patterns(vec!["*.pem".into(), "bad[z-a]".into()])
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("bad[z-a]"), "{err:#}");
+        let after = fs::read(a.home.path().join("config.json")).unwrap();
+        assert_eq!(before, after);
+        assert_eq!(a.engine.sensitive_patterns(), vec!["*.secret".to_string()]);
+    }
+
+    #[test]
+    fn track_entry_asks_to_confirm_a_custom_sensitive_match() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        write(&a, "notes/x.secret", b"s\n");
+        a.engine
+            .set_sensitive_patterns(vec!["*.secret".into()])
+            .unwrap();
+
+        let outcome = a
+            .engine
+            .track_entry_with_sensitive_confirmation(
+                "proj-claude",
+                Path::new("notes/x.secret"),
+                None,
+                false,
+            )
+            .unwrap();
+        match outcome {
+            TrackOutcome::ConfirmSensitive { paths, more } => {
+                assert_eq!(paths, vec!["notes/x.secret".to_string()]);
+                assert!(!more);
+            }
+            _ => panic!("expected ConfirmSensitive"),
+        }
     }
 
     #[test]

@@ -146,17 +146,59 @@
 
         <section>
           <h2>How it works</h2>
+          <p class="section-lead">
+            Both Macs share one folder that iCloud or Google Drive already
+            syncs. Each writes its own history there and reads the other's.
+          </p>
           <ol class="steps">
-            <li>Add a project folder and pick the entries to sync.</li>
             <li>
-              Dotlore copies the include-list into a private staging git repo
-              under <code>~/Library/Application Support/dotlore/</code>.
+              <h3>A change becomes a commit</h3>
+              <ul>
+                <li>
+                  Chosen entries go into a private git repo at
+                  <code>~/Library/Application Support/dotlore/</code>.
+                </li>
+                <li>A save becomes a commit. File watch, or a poll every 30 seconds.</li>
+              </ul>
             </li>
             <li>
-              It publishes an immutable bundle to
-              <code>&lt;cloud&gt;/dotlore/&lt;slug&gt;/devices/&lt;device-id&gt;/</code>.
+              <h3>That commit is the next bundle</h3>
+              <pre class="tree">&lt;cloud&gt;/dotlore/&lt;project&gt;/
+  manifest.json
+  devices/
+    &lt;this Mac&gt;/
+      000001.bundle
+      000002.bundle
+    &lt;other Mac&gt;/
+      000001.bundle</pre>
+              <ul>
+                <li>
+                  One new file, in this Mac's
+                  <code>devices/&lt;id&gt;/</code>. Left as written.
+                </li>
+                <li>Inside: commits of the include-list — file contents, plus the path list.</li>
+                <li>
+                  <code>000001.bundle</code> is the full snapshot. Later files
+                  hold only the commits since.
+                </li>
+              </ul>
             </li>
-            <li>Other Macs fetch and merge with the system git.</li>
+            <li>
+              <h3>The other Mac reads it back</h3>
+              <ul>
+                <li>The cloud folder copies the new file across.</li>
+                <li>
+                  The other Mac fetches bundles it has not applied, in order,
+                  and writes the merge back with system <code>git</code>.
+                </li>
+                <li>The first link on the second Mac reads every bundle already there.</li>
+                <li>
+                  Same file on both Macs: the newer commit wins. The other copy
+                  stays as
+                  <code>CLAUDE.conflict-&lt;device&gt;-&lt;hash&gt;.md</code>.
+                </li>
+              </ul>
+            </li>
           </ol>
         </section>
       </div>

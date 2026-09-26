@@ -28,7 +28,10 @@ import {
   applyTrackBatch,
   BLOCKED,
   listEntryChildren,
+  reportError,
   untrackEntry,
+  type TrackConfirm,
+  type TrackConfirmAnswer,
 } from "@/lib/ipc";
 import { useRoots, useTrackConfirm } from "@/lib/roots";
 import type { EntryView, PickerRow, TrackedFile } from "@/lib/types";
@@ -46,6 +49,7 @@ import {
   type PendingMap,
   type PickerKind,
 } from "./picker";
+import { SensitivityMark, sensitiveNameClass } from "./SensitivityMark";
 
 /** Left inset shared with the middle-panel tree. */
 const TREE_INSET = "10px";
@@ -76,7 +80,6 @@ export function EntryPickerDialog({
   onOpenChange,
   onMutated,
 }: EntryPickerDialogProps) {
-  const { setBanner } = useRoots();
   const trackedRels = useMemo(
     () => new Set(files.map((file) => file.rel)),
     [files],
@@ -113,12 +116,12 @@ export function EntryPickerDialog({
       .catch((err) => {
         if (cancelled || gen !== requestGen.current) return;
         setChildrenByRel({ "": [] });
-        setBanner(errorMessage(err, "Something went wrong"));
+        reportError(errorMessage(err, "Something went wrong"));
       });
     return () => {
       cancelled = true;
     };
-  }, [open, slug, setBanner]);
+  }, [open, slug]);
 
   function handleOpenChange(next: boolean) {
     if (!next) requestGen.current += 1;
@@ -147,7 +150,7 @@ export function EntryPickerDialog({
       })
       .catch((err) => {
         if (gen !== requestGen.current) return;
-        setBanner(errorMessage(err, "Something went wrong"));
+        reportError(errorMessage(err, "Something went wrong"));
         setExpanded((current) => ({ ...current, [rel]: false }));
       })
       .finally(() => {
@@ -184,7 +187,7 @@ export function EntryPickerDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex h-[min(42rem,calc(100dvh-2rem))] w-full flex-col overflow-hidden sm:max-w-2xl">
+      <DialogContent className="flex h-[min(42rem,calc(100%-2rem))] w-full flex-col overflow-hidden sm:max-w-2xl">
         <DialogHeader className="shrink-0 pr-8">
           <DialogTitle>Add to track</DialogTitle>
           <DialogDescription>
@@ -275,7 +278,7 @@ type PickerNodeProps = {
   onStage: (rel: string, kind: PickerKind, action: "track" | "untrack") => void;
 };
 
-function PickerNode({
+export function PickerNode({
   row,
   entries,
   pending,
@@ -342,10 +345,16 @@ function PickerNode({
             <span className="min-w-0 truncate text-sm">{row.name}</span>
           </button>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-sm text-foreground",
+              sensitiveNameClass(row.sensitivity),
+            )}
+          >
             {row.name}
           </span>
         )}
+        {kind === "file" ? <SensitivityMark sensitivity={row.sensitivity} /> : null}
         <TrackMark
           name={row.name}
           tracked={tracked}
@@ -459,6 +468,57 @@ export function SensitivePathList({
   );
 }
 
+export function trackConfirmTitle(confirm: TrackConfirm | null): string {
+  if (confirm === null) return "Track folder?";
+  if (confirm.kind === "folder_limit") return `Track ${confirm.rel}?`;
+  return confirm.rels.length === 1
+    ? `Track ${confirm.rels[0]}?`
+    : `Track ${confirm.rels.length} items?`;
+}
+
+/** Footer buttons. Escape answers `"cancel"` through the dialog's `onOpenChange`. */
+export function TrackConfirmActions({
+  confirm,
+  onAnswer,
+}: {
+  confirm: TrackConfirm | null;
+  onAnswer: (answer: TrackConfirmAnswer) => void;
+}) {
+  const sensitive = confirm?.kind === "sensitive";
+  return (
+    <>
+      <AlertDialogAction
+        variant="outline"
+        onClick={(event) => {
+          event.preventDefault();
+          onAnswer("cancel");
+        }}
+      >
+        Cancel
+      </AlertDialogAction>
+      {sensitive && confirm.canSkip && (
+        <AlertDialogAction
+          variant="outline"
+          onClick={(event) => {
+            event.preventDefault();
+            onAnswer("skip");
+          }}
+        >
+          Skip sensitive
+        </AlertDialogAction>
+      )}
+      <AlertDialogAction
+        onClick={(event) => {
+          event.preventDefault();
+          onAnswer("all");
+        }}
+      >
+        {sensitive ? "Track all" : "Track"}
+      </AlertDialogAction>
+    </>
+  );
+}
+
 /** Paused inside a background track batch. Does not take the global busy lock. */
 export function TrackConfirmDialog() {
   const confirm = useTrackConfirm();
@@ -467,17 +527,17 @@ export function TrackConfirmDialog() {
     <AlertDialog
       open={confirm !== null}
       onOpenChange={(next) => {
-        if (!next) answerTrackConfirm(false);
+        if (!next) answerTrackConfirm("cancel");
       }}
     >
-      <AlertDialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden">
+      <AlertDialogContent className="flex max-h-[calc(100%-2rem)] flex-col overflow-hidden">
         <AlertDialogHeader className="shrink-0">
           <AlertDialogTitle className="line-clamp-2 break-all">
-            Track {confirm?.rel ?? "folder"}?
+            {trackConfirmTitle(confirm)}
           </AlertDialogTitle>
           <AlertDialogDescription>
             {confirm?.kind === "sensitive"
-              ? "These files may contain secrets. Tracking syncs their contents as plaintext to your cloud folder."
+              ? "These files may contain secrets. Tracking syncs their contents to your cloud folder."
               : confirm?.kind === "folder_limit"
                 ? `${confirm.rel} is ${formatBytes(confirm.bytes)} (limit ${formatBytes(confirm.folderLimit)}). This folder is over the add limit. Confirm to track it.`
                 : ""}
@@ -487,15 +547,7 @@ export function TrackConfirmDialog() {
           <SensitivePathList paths={confirm.paths} more={confirm.more} />
         )}
         <AlertDialogFooter className="shrink-0">
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={(event) => {
-              event.preventDefault();
-              answerTrackConfirm(true);
-            }}
-          >
-            {confirm?.kind === "sensitive" ? "Track anyway" : "Track"}
-          </AlertDialogAction>
+          <TrackConfirmActions confirm={confirm} onAnswer={answerTrackConfirm} />
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

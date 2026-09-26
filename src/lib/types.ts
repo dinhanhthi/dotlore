@@ -2,7 +2,9 @@
 export type RootStatus =
   | { kind: "Synced" }
   | { kind: "Conflicts"; detail: number }
+  | { kind: "Checking" }
   | { kind: "Pending" }
+  | { kind: "Retrying" }
   | { kind: "RootMissing" }
   | { kind: "GitMissing" }
   | { kind: "Error"; detail: string };

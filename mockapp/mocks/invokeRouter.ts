@@ -152,7 +152,7 @@ function inspectPreview(slug: string, rel: string): InspectedEntryDto {
       folder_limit: maxSeedFolderBytes(),
       confirmation_required: false,
       skipped_too_large: over ? [{ rel, bytes }] : [],
-      sensitivity: mockSensitivity(rel),
+      sensitivity: mockSensitivity(rel, store.sensitivePatterns),
       secret_descendants: [],
       secret_descendants_more: false,
     };
@@ -163,7 +163,7 @@ function inspectPreview(slug: string, rel: string): InspectedEntryDto {
   const secrets: string[] = [];
   for (const [path, record] of Object.entries(files)) {
     if (path !== rel && !path.startsWith(prefix)) continue;
-    if (mockSensitivity(path) === "secret") secrets.push(path);
+    if (mockSensitivity(path, store.sensitivePatterns) === "secret") secrets.push(path);
     const size = recordBytes(record);
     if (fileOverLimit(record)) skipped.push({ rel: path, bytes: size });
     else bytes += size;
@@ -214,7 +214,9 @@ function listChildren(slug: string, rel: string): PickerRow[] {
       kind,
       rel: rel ? `${rel}/${name}` : name,
       sensitivity:
-        kind === "file" ? mockSensitivity(rel ? `${rel}/${name}` : name) : null,
+        kind === "file"
+          ? mockSensitivity(rel ? `${rel}/${name}` : name, store.sensitivePatterns)
+          : null,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -304,7 +306,7 @@ const handlers: Record<
     const entries = store.entries[slug] ?? [];
     return Object.entries(store.files[slug] ?? {})
       .filter(([rel]) => coveredBy(rel, entries, store.excludes[slug] ?? []))
-      .map(([rel, record]) => toTrackedFile(rel, record));
+      .map(([rel, record]) => toTrackedFile(rel, record, store.sensitivePatterns));
   },
   read_file: (args) => {
     const slug = argString(args, "slug");
@@ -528,6 +530,10 @@ const handlers: Record<
   default_patterns: () => store.defaultPatterns,
   set_default_patterns: (args) => {
     store.defaultPatterns = stringPatterns(args.patterns);
+  },
+  sensitive_patterns: () => store.sensitivePatterns,
+  set_sensitive_patterns: (args) => {
+    store.sensitivePatterns = stringPatterns(args.patterns);
   },
   pattern_catalogs: () =>
     PATTERN_CATALOGS.map(({ id, label, builtin }) => ({

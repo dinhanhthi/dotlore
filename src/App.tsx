@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import { AppBodyProvider } from "@/components/layout/app-body";
 import {
   MainSkeleton,
   SidebarSkeleton,
@@ -18,6 +19,7 @@ import { AllProjects } from "@/components/main/AllProjects";
 import { ConflictResolver } from "@/components/main/ConflictResolver";
 import { DiscardChangesAlert } from "@/components/main/DiscardChangesAlert";
 import { EmptyState } from "@/components/main/EmptyState";
+import { ErrorsPanel } from "@/components/main/ErrorsPanel";
 import { FileViewer } from "@/components/main/FileViewer";
 import { NoticeToasts } from "@/components/notices/NoticeToasts";
 import { Sidebar } from "@/components/sidebar/Sidebar";
@@ -39,6 +41,7 @@ import {
   listRoots,
   listenStatus,
   providerDir as fetchProviderDir,
+  reportError,
   setBanner,
   subscribeWork,
   trackedFiles,
@@ -70,7 +73,7 @@ async function importAgentsWhenReady(dir: string | null): Promise<void> {
     const report = await importInstalledAgents();
     if (report === BLOCKED) return;
     const first = report.failed[0];
-    if (first) setBanner(first.message);
+    if (first) reportError(first.message);
   } catch {
     // `runTask` already stored the command error for the toast.
   }
@@ -111,6 +114,7 @@ function MainPanel() {
   if (view === "all") return <AllProjects />;
   if (view === "starred") return <AllProjects starredOnly />;
   if (view === "conflicts") return <AllProjects conflictsOnly />;
+  if (view === "errors") return <ErrorsPanel />;
   if (!selectedSlug || !selectedRel) return <EmptyState />;
   if (resolvingRel === selectedRel) {
     return (
@@ -385,6 +389,16 @@ export function App() {
     );
   }, [guardLeave]);
 
+  const showErrors = useCallback(() => {
+    guardLeave(() =>
+      setState((current) => ({
+        ...current,
+        view: "errors",
+        resolvingRel: null,
+      })),
+    );
+  }, [guardLeave]);
+
   const toggleStar = useCallback((slug: string) => {
     const starredSlugs = toggleStarred(slug);
     setState((current) => ({ ...current, starredSlugs }));
@@ -421,7 +435,7 @@ export function App() {
           );
         }
       } catch (err) {
-        setBanner(errorMessage(err, "Could not add project"));
+        reportError(errorMessage(err, "Could not add project"));
         setState((current) => {
           if (current.selectedSlug !== slug) return current;
           return {
@@ -480,6 +494,7 @@ export function App() {
       showAllProjects,
       showStarred,
       showConflicts,
+      showErrors,
       toggleStar,
       applyProvider,
       refreshRoots,
@@ -488,6 +503,7 @@ export function App() {
       busy: work.inflight > 0,
       locked: work.inflight > 0 || work.taskLabel !== null,
       banner: work.banner,
+      commandErrors: work.errors,
       setBanner,
     }),
     [
@@ -501,6 +517,7 @@ export function App() {
       showAllProjects,
       showStarred,
       showConflicts,
+      showErrors,
       toggleStar,
       applyProvider,
       refreshRoots,
@@ -513,33 +530,35 @@ export function App() {
 
   return (
     <TooltipProvider delay={400}>
-      <SidebarQueryProvider query={sidebarQuery} setQuery={setSidebarQuery}>
-        <RootsContext.Provider value={value}>
-          <TrackConfirmDialog />
-          <DiscardChangesAlert
-            open={pendingLeave !== null}
-            fileName={leaveNameRef.current}
-            onCancel={() => setPendingLeave(null)}
-            onDiscard={() => {
-              if (!pendingLeave) return;
-              dirtyRef.current = false;
-              const run = pendingLeave.run;
-              setPendingLeave(null);
-              run();
-            }}
-          />
-          <Toaster>
-            <NoticeToasts banner={work.banner} gitMissing={state.gitMissing} />
-            <Shell
-              hideTree={ready && (onboarding || state.view !== "root")}
-              sidebar={!ready ? <SidebarSkeleton /> : onboarding ? null : <Sidebar />}
-              tree={!ready ? <TreeSkeleton /> : <FileTree />}
-              main={!ready ? <MainSkeleton /> : <MainColumn />}
-              footer={<Footer />}
+      <AppBodyProvider>
+        <SidebarQueryProvider query={sidebarQuery} setQuery={setSidebarQuery}>
+          <RootsContext.Provider value={value}>
+            <TrackConfirmDialog />
+            <DiscardChangesAlert
+              open={pendingLeave !== null}
+              fileName={leaveNameRef.current}
+              onCancel={() => setPendingLeave(null)}
+              onDiscard={() => {
+                if (!pendingLeave) return;
+                dirtyRef.current = false;
+                const run = pendingLeave.run;
+                setPendingLeave(null);
+                run();
+              }}
             />
-          </Toaster>
-        </RootsContext.Provider>
-      </SidebarQueryProvider>
+            <Toaster>
+              <NoticeToasts banner={work.banner} gitMissing={state.gitMissing} />
+              <Shell
+                hideTree={ready && (onboarding || state.view !== "root")}
+                sidebar={!ready ? <SidebarSkeleton /> : onboarding ? null : <Sidebar />}
+                tree={!ready ? <TreeSkeleton /> : <FileTree />}
+                main={!ready ? <MainSkeleton /> : <MainColumn />}
+                footer={<Footer />}
+              />
+            </Toaster>
+          </RootsContext.Provider>
+        </SidebarQueryProvider>
+      </AppBodyProvider>
     </TooltipProvider>
   );
 }

@@ -9,6 +9,7 @@
     "ui:build": "bash scripts/ui-build.sh",
     "mockapp:dev": "bash scripts/mockapp-dev.sh",
     "mockapp:build": "tsc -p mockapp/tsconfig.json --noEmit && vite build --config mockapp/vite.config.ts",
+    "website:dev": "vite --config scripts/website.vite.config.ts",
     "tauri": "bash scripts/tauri.sh",
     "build": "bash scripts/build.sh",
     "test": "bash scripts/test.sh",

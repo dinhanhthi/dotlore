@@ -18,10 +18,28 @@ import type {
   TrackResultDto,
 } from "./types";
 
-/** A pending yes/no before a track batch can continue. */
+/** A pending question before a track batch can continue. */
 export type TrackConfirm =
   | { kind: "folder_limit"; rel: string; bytes: number; folderLimit: number }
-  | { kind: "sensitive"; rel: string; paths: string[]; more: boolean };
+  | {
+      kind: "sensitive";
+      rels: string[];
+      paths: string[];
+      more: boolean;
+      canSkip: boolean;
+    };
+
+/** Folder-limit prompts answer only `"all"` (Track) or `"cancel"`. */
+export type TrackConfirmAnswer = "all" | "skip" | "cancel";
+
+/** Secret paths listed in one sensitive prompt. */
+const SENSITIVE_PATH_CAP = 20;
+
+/** One command failure in this session's log. */
+export type ErrorLogEntry = { id: number; message: string; at: number };
+
+/** Entries kept in the session log; the oldest drop first. */
+const ERROR_LOG_CAP = 50;
 
 export type WorkSnapshot = {
   inflight: number;
@@ -30,6 +48,8 @@ export type WorkSnapshot = {
   /** A background task with its own footer copy. Never counts toward `inflight`. */
   taskLabel: string | null;
   trackConfirm: TrackConfirm | null;
+  /** This session's command failures, newest first. */
+  errors: ErrorLogEntry[];
 };
 
 let inflight = 0;
@@ -37,18 +57,28 @@ let syncing = 0;
 let banner: string | null = null;
 let taskLabel: string | null = null;
 let trackConfirm: TrackConfirm | null = null;
-let confirmResolve: ((yes: boolean) => void) | null = null;
+let confirmResolve: ((answer: TrackConfirmAnswer) => void) | null = null;
+let errorLog: ErrorLogEntry[] = [];
+let nextErrorId = 1;
 let snapshot: WorkSnapshot = {
   inflight: 0,
   syncing: 0,
   banner: null,
   taskLabel: null,
   trackConfirm: null,
+  errors: [],
 };
 const listeners = new Set<() => void>();
 
 function emit(): void {
-  snapshot = { inflight, syncing, banner, taskLabel, trackConfirm };
+  snapshot = {
+    inflight,
+    syncing,
+    banner,
+    taskLabel,
+    trackConfirm,
+    errors: errorLog,
+  };
   for (const listener of listeners) listener();
 }
 
@@ -58,7 +88,7 @@ function setTaskLabel(label: string | null): void {
   emit();
 }
 
-function waitForTrackConfirm(next: TrackConfirm): Promise<boolean> {
+function waitForTrackConfirm(next: TrackConfirm): Promise<TrackConfirmAnswer> {
   trackConfirm = next;
   emit();
   return new Promise((resolve) => {
@@ -67,12 +97,12 @@ function waitForTrackConfirm(next: TrackConfirm): Promise<boolean> {
 }
 
 /** Resolve the paused track confirmation. A second call is a no-op. */
-export function answerTrackConfirm(yes: boolean): void {
+export function answerTrackConfirm(answer: TrackConfirmAnswer): void {
   const resolve = confirmResolve;
   confirmResolve = null;
   trackConfirm = null;
   emit();
-  resolve?.(yes);
+  resolve?.(answer);
 }
 
 export function subscribeWork(listener: () => void): () => void {
@@ -92,6 +122,24 @@ export function setBanner(message: string | null): void {
   emit();
 }
 
+/** Log a command failure and show it in the banner. */
+export function reportError(message: string): void {
+  const entry = { id: nextErrorId++, message, at: Date.now() };
+  errorLog = [entry, ...errorLog].slice(0, ERROR_LOG_CAP);
+  banner = message;
+  emit();
+}
+
+export function dismissError(id: number): void {
+  errorLog = errorLog.filter((entry) => entry.id !== id);
+  emit();
+}
+
+export function clearErrors(): void {
+  errorLog = [];
+  emit();
+}
+
 /**
  * Count in-flight writes; on failure, set the command-error banner. A banner a
  * finished task left behind is not cleared here — the toast dismisses itself.
@@ -102,8 +150,7 @@ async function run<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
   } catch (err) {
-    banner = errorMessage(err, "Something went wrong");
-    emit();
+    reportError(errorMessage(err, "Something went wrong"));
     throw err;
   } finally {
     inflight = Math.max(0, inflight - 1);
@@ -137,7 +184,7 @@ export async function runTask<T>(
   try {
     return await op();
   } catch (err) {
-    setBanner(errorMessage(err, "Something went wrong"));
+    reportError(errorMessage(err, "Something went wrong"));
     throw err;
   } finally {
     setTaskLabel(null);
@@ -352,11 +399,49 @@ export async function applyTrackBatch(
   const declined: string[] = [];
   const stillOver: string[] = [];
   let firstError: string | null = null;
+  let cancelled = false;
+  let runOps = ops;
+  let confirmedOps = new Set<TrackBatchOp>();
   try {
-    for (let i = 0; i < ops.length; i++) {
-      const op = ops[i]!;
+    try {
+      const sensitive = new Set<TrackBatchOp>();
+      const paths: string[] = [];
+      let more = false;
+      for (const op of ops) {
+        if (op.action !== "track") continue;
+        const info = await inspectEntry(slug, op.rel);
+        if (info.sensitivity === "secret") {
+          sensitive.add(op);
+          paths.push(op.rel);
+        } else if (info.secret_descendants.length > 0) {
+          sensitive.add(op);
+          paths.push(...info.secret_descendants);
+        }
+        if (info.secret_descendants_more) more = true;
+      }
+      if (sensitive.size > 0) {
+        const unique = [...new Set(paths)].sort();
+        setTaskLabel("Confirm tracking sensitive files…");
+        const answer = await waitForTrackConfirm({
+          kind: "sensitive",
+          rels: ops.filter((op) => sensitive.has(op)).map((op) => op.rel),
+          paths: unique.slice(0, SENSITIVE_PATH_CAP),
+          more: more || unique.length > SENSITIVE_PATH_CAP,
+          canSkip: ops.some((op) => !sensitive.has(op)),
+        });
+        if (answer === "cancel") cancelled = true;
+        else if (answer === "skip") {
+          runOps = ops.filter((op) => !sensitive.has(op));
+          declined.push(...ops.filter((op) => sensitive.has(op)).map((op) => op.rel));
+        } else confirmedOps = sensitive;
+      }
+    } catch (err) {
+      firstError = errorMessage(err, "Something went wrong");
+    }
+    for (let i = 0; !cancelled && firstError === null && i < runOps.length; i++) {
+      const op = runOps[i]!;
       const verb = op.action === "track" ? "Tracking" : "Untracking";
-      const progress = ops.length > 1 ? ` (${i + 1} of ${ops.length})` : "";
+      const progress = runOps.length > 1 ? ` (${i + 1} of ${runOps.length})` : "";
       setTaskLabel(`${verb} ${op.rel}…${progress}`);
       try {
         if (op.action === "untrack") {
@@ -364,7 +449,7 @@ export async function applyTrackBatch(
           continue;
         }
         let confirmedFolderBytes = op.confirmedFolderBytes ?? null;
-        let confirmedSensitive = false;
+        let confirmedSensitive = confirmedOps.has(op);
         let confirmedFolder = false;
         for (;;) {
           const result = await invoke<TrackResultDto>("track_entry", {
@@ -377,13 +462,14 @@ export async function applyTrackBatch(
           if (result.outcome === "confirm_sensitive") {
             if (confirmedSensitive) throw new Error(`Could not track ${op.rel}`);
             setTaskLabel(`Confirm tracking ${op.rel}…${progress}`);
-            const yes = await waitForTrackConfirm({
+            const answer = await waitForTrackConfirm({
               kind: "sensitive",
-              rel: op.rel,
+              rels: [op.rel],
               paths: result.paths,
               more: result.more,
+              canSkip: false,
             });
-            if (!yes) {
+            if (answer !== "all") {
               declined.push(op.rel);
               break;
             }
@@ -395,13 +481,13 @@ export async function applyTrackBatch(
             break;
           }
           setTaskLabel(`Confirm tracking ${op.rel}…${progress}`);
-          const yes = await waitForTrackConfirm({
+          const answer = await waitForTrackConfirm({
             kind: "folder_limit",
             rel: op.rel,
             bytes: result.bytes,
             folderLimit: result.folder_limit,
           });
-          if (!yes) {
+          if (answer !== "all") {
             declined.push(op.rel);
             break;
           }
@@ -413,8 +499,10 @@ export async function applyTrackBatch(
         break;
       }
     }
-    if (firstError !== null) {
-      setBanner(firstError);
+    if (cancelled) {
+      setBanner("Nothing was changed");
+    } else if (firstError !== null) {
+      reportError(firstError);
     } else if (declined.length > 0 || stillOver.length > 0) {
       const parts: string[] = [];
       if (declined.length === 1) parts.push(`${declined[0]} was not tracked`);
@@ -469,6 +557,14 @@ export function setPatternCatalog(
   patterns: string[],
 ): Promise<void> {
   return run(() => invoke("set_pattern_catalog", { catalog, patterns }));
+}
+
+export function sensitivePatterns(): Promise<string[]> {
+  return invoke("sensitive_patterns");
+}
+
+export function setSensitivePatterns(patterns: string[]): Promise<void> {
+  return run(() => invoke("set_sensitive_patterns", { patterns }));
 }
 
 export function maxFileMb(): Promise<number> {
