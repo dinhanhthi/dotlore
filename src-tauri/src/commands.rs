@@ -782,6 +782,38 @@ pub async fn set_default_patterns(
 }
 
 #[tauri::command]
+pub async fn sensitive_patterns(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .sensitive_patterns()
+    })
+    .await
+    .map_err(front_msg)
+}
+
+#[tauri::command]
+pub async fn set_sensitive_patterns(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    patterns: Vec<String>,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_sensitive_patterns(patterns)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
+}
+
+#[tauri::command]
 pub async fn pattern_catalogs(
     state: State<'_, AppState>,
 ) -> Result<Vec<PatternCatalogDto>, String> {
@@ -1311,14 +1343,18 @@ fn list_entry_children_sync(
         .iter()
         .find(|r| r.slug == slug)
         .ok_or_else(|| front_msg(format!("unknown root {slug}")))?;
-    list_children_in(&root.path, rel)
+    list_children_in(&root.path, rel, &engine.sensitive_matcher())
 }
 
 fn skip_picker_name(name: &str) -> bool {
     name == ".DS_Store" || project::staging_private(name)
 }
 
-fn list_children_in(root: &Path, rel: &str) -> Result<Vec<PickerRow>, String> {
+fn list_children_in(
+    root: &Path,
+    rel: &str,
+    matcher: &project::SensitiveMatcher,
+) -> Result<Vec<PickerRow>, String> {
     if !picker_rel_ok(rel) {
         return Err(front_msg(format!("unsafe path {rel}")));
     }
@@ -1362,7 +1398,7 @@ fn list_children_in(root: &Path, rel: &str) -> Result<Vec<PickerRow>, String> {
         };
         out.push(PickerRow {
             sensitivity: if kind == "file" {
-                project::sensitivity(Path::new(&child_rel))
+                matcher.classify(Path::new(&child_rel))
             } else {
                 None
             },
@@ -1748,6 +1784,26 @@ mod tests {
             }
         );
         assert_eq!(fx.engine.list_entries(&fx.slug).unwrap(), before);
+    }
+
+    #[test]
+    fn list_entry_children_uses_the_custom_sensitive_patterns() {
+        let mut fx = fixture();
+        write(&fx, "x.secret", b"k\n");
+        write(&fx, ".env", b"TOKEN=1\n");
+        fx.engine
+            .set_sensitive_patterns(vec!["*.secret".into()])
+            .unwrap();
+        let picker = list_entry_children_sync(&fx.engine, &fx.slug, "").unwrap();
+        let sensitivity = |rel: &str| {
+            picker
+                .iter()
+                .find(|row| row.rel == rel)
+                .unwrap()
+                .sensitivity
+        };
+        assert_eq!(sensitivity("x.secret"), Some(project::Sensitivity::Secret));
+        assert_eq!(sensitivity(".env"), None);
     }
 
     #[test]

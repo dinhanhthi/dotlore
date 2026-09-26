@@ -43,11 +43,13 @@ import {
   maxSeedFolderMb,
   openAppHome,
   patternCatalogs,
+  sensitivePatterns,
   setDefaultIgnore,
   setLoginItem,
   setMaxFileMb,
   setMaxSeedFolderMb,
   setPatternCatalog,
+  setSensitivePatterns,
   WIPE_LABEL,
   type PatternCatalog,
 } from "@/lib/ipc";
@@ -59,6 +61,7 @@ const SETTINGS_TABS = [
   { id: "sync", label: "Sync" },
   { id: "patterns", label: "Patterns" },
   { id: "never", label: "Never-list" },
+  { id: "sensitive", label: "Sensitive" },
 ] as const;
 
 type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
@@ -326,6 +329,45 @@ export function SettingsNeverList() {
   );
 }
 
+/** Names that mark a file sensitive, so tracking it needs confirmation. */
+export function SettingsSensitive() {
+  const { locked } = useRoots();
+  const [lines, setLines] = useState<string[]>([]);
+
+  useEffect(() => {
+    void sensitivePatterns()
+      .then(setLines)
+      .catch(() => {
+        // getter failed; leave the list empty
+      });
+  }, []);
+
+  async function commit(next: string[]) {
+    if (locked) return;
+    try {
+      await setSensitivePatterns(next);
+      setLines(next);
+    } catch {
+      void sensitivePatterns()
+        .then(setLines)
+        .catch(() => {});
+    }
+  }
+
+  return (
+    <SettingsSeedList
+      id="sensitive-patterns"
+      hint="Files matching these names are marked sensitive and need confirmation before tracking. Lines starting with ! are exceptions."
+      lines={lines}
+      disabled={locked}
+      addPlaceholder="e.g. *.pem"
+      onCommit={(next) => {
+        void commit(next);
+      }}
+    />
+  );
+}
+
 /** Cloud folder and the limits every sync enforces. */
 export function SettingsSync({
   onChangeFolder,
@@ -556,7 +598,7 @@ export function SettingsPanel({
         <div
           role="tablist"
           aria-label="Settings sections"
-          className="grid grid-cols-4 rounded-4xl border border-border p-0.5"
+          className="grid grid-cols-5 rounded-4xl border border-border p-0.5"
         >
           {SETTINGS_TABS.map(({ id, label }) => (
             <Button
@@ -607,6 +649,15 @@ export function SettingsPanel({
             className="flex min-h-0 flex-1 flex-col"
           >
             <SettingsPatterns />
+          </div>
+        ) : tab === "sensitive" ? (
+          <div
+            role="tabpanel"
+            id="settings-panel-sensitive"
+            aria-labelledby="settings-tab-sensitive"
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <SettingsSensitive />
           </div>
         ) : (
           <div

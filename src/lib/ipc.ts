@@ -471,6 +471,14 @@ export function setPatternCatalog(
   return run(() => invoke("set_pattern_catalog", { catalog, patterns }));
 }
 
+export function sensitivePatterns(): Promise<string[]> {
+  return invoke("sensitive_patterns");
+}
+
+export function setSensitivePatterns(patterns: string[]): Promise<void> {
+  return run(() => invoke("set_sensitive_patterns", { patterns }));
+}
+
 export function maxFileMb(): Promise<number> {
   return invoke("max_file_mb");
 }

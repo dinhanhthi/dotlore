@@ -92,6 +92,10 @@ pub const SECRET_PATTERNS: &[&str] = &[
     "secrets*",
     "auth.json",
     ".credentials.json",
+    "!credentials*.md",
+    "!credentials*.txt",
+    "!secrets*.md",
+    "!secrets*.txt",
 ];
 
 /// File-name patterns that may contain tokens but are commonly tracked.
@@ -104,38 +108,59 @@ pub enum Sensitivity {
     TokenHint,
 }
 
-static SECRET_MATCHER: OnceLock<Gitignore> = OnceLock::new();
 static TOKEN_HINT_MATCHER: OnceLock<Gitignore> = OnceLock::new();
 
-fn pattern_matcher(patterns: &[&str]) -> Gitignore {
+fn pattern_matcher<S: AsRef<str>>(patterns: &[S]) -> Result<Gitignore> {
     let mut builder = GitignoreBuilder::new(Path::new("."));
     for pattern in patterns {
+        let pattern = pattern.as_ref();
         builder
             .add_line(None, pattern)
-            .expect("valid sensitivity pattern");
+            .with_context(|| format!("invalid sensitive pattern {pattern:?}"))?;
     }
-    builder.build().expect("valid sensitivity matcher")
+    builder.build().context("building sensitive matcher")
 }
 
-/// Classify a path using its file name, regardless of its parent directory.
-pub fn sensitivity(rel: &Path) -> Option<Sensitivity> {
-    let name = rel.file_name()?.to_str()?;
-    let is_document = (name.ends_with(".md") || name.ends_with(".txt"))
-        && (name.starts_with("credentials") || name.starts_with("secrets"));
-    if !is_document
-        && SECRET_MATCHER
-            .get_or_init(|| pattern_matcher(SECRET_PATTERNS))
-            .matched(Path::new(name), false)
-            .is_ignore()
-    {
-        return Some(Sensitivity::Secret);
+/// Gitignore-style matcher for secret paths. `TOKEN_HINT_PATTERNS` stay builtin.
+pub struct SensitiveMatcher {
+    secret: Gitignore,
+}
+
+impl SensitiveMatcher {
+    /// Build from gitignore lines. An invalid line is an error naming that line.
+    pub fn new(patterns: &[String]) -> Result<Self> {
+        Ok(SensitiveMatcher {
+            secret: pattern_matcher(patterns)?,
+        })
     }
 
-    TOKEN_HINT_MATCHER
-        .get_or_init(|| pattern_matcher(TOKEN_HINT_PATTERNS))
-        .matched(Path::new(name), false)
-        .is_ignore()
-        .then_some(Sensitivity::TokenHint)
+    /// The builtin `SECRET_PATTERNS` matcher.
+    pub fn default_secret() -> Self {
+        SensitiveMatcher {
+            secret: pattern_matcher(SECRET_PATTERNS).expect("valid builtin sensitive patterns"),
+        }
+    }
+
+    /// Classify a root-relative file path with gitignore semantics: a
+    /// slash-free pattern matches at any depth, a pattern with a slash is
+    /// anchored, a directory pattern covers every file under it, `!` wins.
+    pub fn classify(&self, rel: &Path) -> Option<Sensitivity> {
+        if self
+            .secret
+            .matched_path_or_any_parents(rel, false)
+            .is_ignore()
+        {
+            return Some(Sensitivity::Secret);
+        }
+        let name = rel.file_name()?;
+        TOKEN_HINT_MATCHER
+            .get_or_init(|| {
+                pattern_matcher(TOKEN_HINT_PATTERNS).expect("valid builtin token-hint patterns")
+            })
+            .matched(Path::new(name), false)
+            .is_ignore()
+            .then_some(Sensitivity::TokenHint)
+    }
 }
 
 /// Per-agent include-list. Key is the folder `file_name` with the leading
@@ -1304,29 +1329,21 @@ mod tests {
             "config/auth.json",
             "config/.credentials.json",
         ] {
-            assert_eq!(
-                sensitivity(Path::new(rel)),
-                Some(Sensitivity::Secret),
-                "{rel}"
-            );
+            assert_eq!(classify(Path::new(rel)), Some(Sensitivity::Secret), "{rel}");
         }
     }
 
     #[test]
     fn env_lookalike_names_are_not_secret() {
         for rel in ["environment.md", "env.ts", ".envrc.md", "a/b/c/notes.md"] {
-            assert_ne!(
-                sensitivity(Path::new(rel)),
-                Some(Sensitivity::Secret),
-                "{rel}"
-            );
+            assert_ne!(classify(Path::new(rel)), Some(Sensitivity::Secret), "{rel}");
         }
     }
 
     #[test]
     fn token_hint_and_plain_text_names_are_classified() {
         assert_eq!(
-            sensitivity(Path::new("config/.mcp.json")),
+            classify(Path::new("config/.mcp.json")),
             Some(Sensitivity::TokenHint)
         );
         for rel in [
@@ -1336,7 +1353,97 @@ mod tests {
             "notes/credentials.md",
             "notes/secrets.txt",
         ] {
-            assert_eq!(sensitivity(Path::new(rel)), None, "{rel}");
+            assert_eq!(classify(Path::new(rel)), None, "{rel}");
+        }
+    }
+
+    fn classify(rel: &Path) -> Option<Sensitivity> {
+        SensitiveMatcher::default_secret().classify(rel)
+    }
+
+    fn matcher(lines: &[&str]) -> SensitiveMatcher {
+        SensitiveMatcher::new(&lines_owned(lines)).unwrap()
+    }
+
+    fn lines_owned(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn a_slash_free_pattern_matches_at_any_depth() {
+        let m = matcher(&["*.secret"]);
+        assert_eq!(
+            m.classify(Path::new("a/b/c/x.secret")),
+            Some(Sensitivity::Secret)
+        );
+        assert_eq!(m.classify(Path::new("x.secret")), Some(Sensitivity::Secret));
+        assert_eq!(m.classify(Path::new("a/b/c/x.txt")), None);
+    }
+
+    #[test]
+    fn a_pattern_with_a_slash_is_anchored_to_the_root() {
+        let m = matcher(&["certs/*.key"]);
+        assert_eq!(
+            m.classify(Path::new("certs/server.key")),
+            Some(Sensitivity::Secret)
+        );
+        assert_eq!(m.classify(Path::new("a/b/certs/server.key")), None);
+        assert_eq!(m.classify(Path::new("certs/sub/deep/server.key")), None);
+    }
+
+    #[test]
+    fn a_directory_pattern_marks_every_file_under_it() {
+        let m = matcher(&["secrets/"]);
+        for rel in [
+            "secrets/a.txt",
+            "a/b/secrets/c/d.json",
+            "x/secrets/y/z/w.md",
+        ] {
+            assert_eq!(
+                m.classify(Path::new(rel)),
+                Some(Sensitivity::Secret),
+                "{rel}"
+            );
+        }
+        assert_eq!(m.classify(Path::new("a/b/c/secrets")), None);
+    }
+
+    #[test]
+    fn a_negation_wins_over_an_earlier_match() {
+        let m = matcher(&["*.key", "!public.key"]);
+        assert_eq!(m.classify(Path::new("a/b/c/public.key")), None);
+        assert_eq!(
+            m.classify(Path::new("a/b/c/private.key")),
+            Some(Sensitivity::Secret)
+        );
+    }
+
+    #[test]
+    fn a_custom_list_still_reports_the_builtin_token_hint() {
+        let m = matcher(&["*.secret"]);
+        assert_eq!(
+            m.classify(Path::new("a/b/c/.mcp.json")),
+            Some(Sensitivity::TokenHint)
+        );
+    }
+
+    #[test]
+    fn an_invalid_pattern_is_rejected_by_name() {
+        let err = SensitiveMatcher::new(&lines_owned(&["*.pem", "bad[z-a]"]))
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("bad[z-a]"), "{err}");
+    }
+
+    #[test]
+    fn document_exceptions_are_builtin_negations() {
+        for line in [
+            "!credentials*.md",
+            "!credentials*.txt",
+            "!secrets*.md",
+            "!secrets*.txt",
+        ] {
+            assert!(SECRET_PATTERNS.contains(&line), "{line}");
         }
     }
 

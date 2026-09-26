@@ -10,13 +10,29 @@ import {
   SettingsNeverList,
   SettingsPanel,
   SettingsPatterns,
+  SettingsSensitive,
   SettingsGeneral,
   SettingsSync,
 } from "./SettingsPopover";
 import { WipeCloudDataAlert } from "./WipeCloudDataAlert";
 
-const { BLOCKED, wipeCloudData, setBanner, clicks } = vi.hoisted(() => ({
+const {
+  BLOCKED,
+  wipeCloudData,
+  setBanner,
+  clicks,
+  seedLists,
+  syncEffects,
+  sensitivePatterns,
+  setSensitivePatterns,
+} = vi.hoisted(() => ({
   BLOCKED: Symbol("blocked"),
+  seedLists: new Map<string, { lines: string[]; onCommit: (lines: string[]) => void }>(),
+  syncEffects: { on: false },
+  sensitivePatterns: vi.fn((): Promise<string[]> => Promise.resolve([])),
+  setSensitivePatterns: vi.fn(
+    async (_patterns: string[]): Promise<void> => {},
+  ),
   wipeCloudData: vi.fn(
     async (): Promise<{
       readded: string[];
@@ -50,6 +66,36 @@ vi.mock("@/components/ui/button", async () => {
         );
       }
       return actual.Button(props);
+    },
+  };
+});
+
+// Server rendering never runs effects; run them inline where a test asks.
+vi.mock("react", async () => {
+  const actual = await vi.importActual<typeof import("react")>("react");
+  return {
+    ...actual,
+    useEffect: (...args: Parameters<typeof actual.useEffect>) => {
+      if (syncEffects.on) {
+        args[0]();
+        return;
+      }
+      actual.useEffect(...args);
+    },
+  };
+});
+
+vi.mock("@/components/settings/SettingsSeedList", async () => {
+  const actual = await vi.importActual<
+    typeof import("@/components/settings/SettingsSeedList")
+  >("@/components/settings/SettingsSeedList");
+  return {
+    ...actual,
+    SettingsSeedList: (
+      props: ComponentProps<typeof actual.SettingsSeedList>,
+    ) => {
+      seedLists.set(props.id, props);
+      return actual.SettingsSeedList(props);
     },
   };
 });
@@ -94,6 +140,8 @@ vi.mock("@/lib/ipc", () => ({
   setLoginItem: () => Promise.resolve(),
   patternCatalogs: () => Promise.resolve([]),
   setPatternCatalog: () => Promise.resolve(),
+  sensitivePatterns,
+  setSensitivePatterns,
 }));
 
 function wrap(
@@ -145,6 +193,19 @@ describe("SettingsPanel", () => {
     expect(html).not.toContain('data-slot="popover-content"');
   });
 
+  it("has a Sensitive tab after Never-list", () => {
+    const html = wrap(
+      <Dialog open>
+        <SettingsPanel />
+      </Dialog>,
+    );
+    expect(html).toMatch(/role="tab"[^>]*>Sensitive</);
+    expect(html).toContain('id="settings-tab-sensitive"');
+    expect(html.indexOf(">Sensitive<")).toBeGreaterThan(
+      html.indexOf(">Never-list<"),
+    );
+  });
+
   it("shows only appearance and login on the General tab", () => {
     const html = wrap(
       <Dialog open>
@@ -191,6 +252,75 @@ describe("SettingsNeverList", () => {
     expect(html).not.toContain("DropdownMenuRadioGroup");
     expect(html).not.toContain("Default never-list");
     expect(html).toContain("agent folders");
+  });
+});
+
+describe("SettingsSensitive", () => {
+  const loaded = ["*.pem", "id_rsa", "!credentials*.md"];
+
+  beforeEach(() => {
+    clicks.clear();
+    seedLists.clear();
+    setSensitivePatterns.mockReset();
+    setSensitivePatterns.mockResolvedValue(undefined);
+    let served = false;
+    // A synchronous thenable, served once, so the load lands during render.
+    sensitivePatterns.mockReset();
+    sensitivePatterns.mockImplementation(
+      () =>
+        ({
+          then(done: (lines: string[]) => void) {
+            if (!served) {
+              served = true;
+              done(loaded);
+            }
+            return { catch() {} };
+          },
+        }) as unknown as Promise<string[]>,
+    );
+    syncEffects.on = true;
+    return () => {
+      syncEffects.on = false;
+    };
+  });
+
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it("shows the loaded patterns with the hint and placeholder", () => {
+    const html = wrap(<SettingsSensitive />);
+    expect(html).toContain('id="sensitive-patterns"');
+    expect(html).toContain('placeholder="e.g. *.pem"');
+    expect(html).toContain(
+      "Files matching these names are marked sensitive and need confirmation before tracking. Lines starting with ! are exceptions.",
+    );
+    for (const line of loaded) expect(html).toContain(`Remove ${line}`);
+  });
+
+  it("saves the new list when a line is added", async () => {
+    wrap(<SettingsSensitive />);
+    seedLists.get("sensitive-patterns")?.onCommit([...loaded, "*.secret"]);
+    await settle();
+    expect(setSensitivePatterns).toHaveBeenCalledWith([...loaded, "*.secret"]);
+  });
+
+  it("saves the new list when a line is removed", async () => {
+    wrap(<SettingsSensitive />);
+    await clicks.get("Remove id_rsa")?.({ preventDefault: () => {} });
+    await settle();
+    expect(setSensitivePatterns).toHaveBeenCalledWith([
+      "*.pem",
+      "!credentials*.md",
+    ]);
+  });
+
+  it("does not save while locked", async () => {
+    const html = wrap(<SettingsSensitive />, { locked: true });
+    expect(html).toMatch(/id="sensitive-patterns"[^>]*disabled/);
+    seedLists.get("sensitive-patterns")?.onCommit(["*.pem"]);
+    await settle();
+    expect(setSensitivePatterns).not.toHaveBeenCalled();
   });
 });
 

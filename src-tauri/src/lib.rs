@@ -100,6 +100,8 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::untrack_entry,
             commands::default_patterns,
             commands::set_default_patterns,
+            commands::sensitive_patterns,
+            commands::set_sensitive_patterns,
             commands::pattern_catalogs,
             commands::set_pattern_catalog,
             commands::default_ignore,

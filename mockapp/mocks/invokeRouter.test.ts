@@ -329,6 +329,42 @@ describe("track_entry", () => {
     ]));
   });
 
+  it("classifies against the edited sensitive patterns", async () => {
+    const file = { text: "k", binary: false, too_large: false };
+    resetStore({
+      files: { demo: { "x.secret": file, ".env": file, "deep/certs/a.txt": file, "deep/credentials.md": file } },
+      entries: { demo: [] },
+    });
+    const builtin = (await route("sensitive_patterns", {})) as string[];
+    expect(builtin).toEqual(expect.arrayContaining([".env", "!credentials*.md"]));
+    expect(await route("list_entry_children", { slug: "demo", rel: "deep" })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ rel: "deep/credentials.md", sensitivity: null })]),
+    );
+
+    await route("set_sensitive_patterns", { patterns: ["*.secret", "certs/", "!deep/certs/a.txt"] });
+    expect(await route("sensitive_patterns", {})).toEqual(["*.secret", "certs/", "!deep/certs/a.txt"]);
+    expect(await route("list_entry_children", { slug: "demo", rel: "" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ rel: "x.secret", sensitivity: "secret" }),
+        expect.objectContaining({ rel: ".env", sensitivity: null }),
+      ]),
+    );
+    await expect(route("track_entry", { slug: "demo", rel: "x.secret" })).resolves.toMatchObject({
+      outcome: "confirm_sensitive",
+    });
+    await expect(route("track_entry", { slug: "demo", rel: ".env" })).resolves.toEqual({ outcome: "done" });
+    expect(await route("tracked_files", { slug: "demo" })).toEqual(
+      expect.arrayContaining([expect.objectContaining({ rel: ".env", sensitivity: null })]),
+    );
+
+    await route("set_sensitive_patterns", { patterns: ["certs/"] });
+    await expect(route("inspect_entry", { slug: "demo", rel: "deep" })).resolves.toMatchObject({
+      secret_descendants: ["deep/certs/a.txt"],
+    });
+    resetStore();
+    expect(store.sensitivePatterns).toEqual(builtin);
+  });
+
   const folderFiles = {
     "big/a.bin": {
       text: null,
@@ -541,6 +577,7 @@ const MOCK_STATE_KEYS = [
   "pickerExtra",
   "providerDir",
   "roots",
+  "sensitivePatterns",
 ] as const;
 
 describe("store fixtures", () => {

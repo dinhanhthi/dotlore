@@ -20,6 +20,8 @@ import {
   listLinkable,
   removeRoot,
   runTask,
+  sensitivePatterns,
+  setSensitivePatterns,
   trackEntry,
   trackedFiles,
 } from "./ipc";
@@ -50,6 +52,22 @@ describe("trackEntry", () => {
       rel: "config/credentials.json",
       confirmedFolderBytes: null,
       confirmedSensitive: true,
+    });
+  });
+});
+
+describe("sensitive patterns", () => {
+  it("reads the list through sensitive_patterns", async () => {
+    invokeMock.mockResolvedValue(["*.pem"]);
+    await expect(sensitivePatterns()).resolves.toEqual(["*.pem"]);
+    expect(invokeMock).toHaveBeenCalledWith("sensitive_patterns");
+  });
+
+  it("saves the list through set_sensitive_patterns", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    await setSensitivePatterns(["*.secret", "!x.secret"]);
+    expect(invokeMock).toHaveBeenCalledWith("set_sensitive_patterns", {
+      patterns: ["*.secret", "!x.secret"],
     });
   });
 });

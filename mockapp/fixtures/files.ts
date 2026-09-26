@@ -169,26 +169,82 @@ export function toFileContent(record: FileRecord): FileContent {
   };
 }
 
-export function mockSensitivity(rel: string): TrackedFile["sensitivity"] {
+/** Mirrors `project::SECRET_PATTERNS` in `src-tauri/src/project.rs`. */
+export const SECRET_PATTERNS: readonly string[] = [
+  ".env",
+  ".env.*",
+  "*.env",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.p8",
+  "id_rsa*",
+  "id_ed25519*",
+  ".npmrc",
+  ".netrc",
+  ".pypirc",
+  "credentials*",
+  "secrets*",
+  "auth.json",
+  ".credentials.json",
+  "!credentials*.md",
+  "!credentials*.txt",
+  "!secrets*.md",
+  "!secrets*.txt",
+];
+
+function globRegex(glob: string): RegExp {
+  const body = glob
+    .split("")
+    .map((ch) => (ch === "*" ? "[^/]*" : ch === "?" ? "[^/]" : ch.replace(/[\\^$.|+()[\]{}]/g, "\\$&")))
+    .join("");
+  return new RegExp(`^${body}$`);
+}
+
+/**
+ * A small gitignore-like matcher: a slash-free pattern matches a name at any
+ * depth, a pattern with a slash is anchored to the root, a trailing `/` matches
+ * a folder (so every file under it), `!` negates, and the last match wins. The
+ * path itself is checked before its parent folders, as in Rust.
+ */
+function secretMatch(rel: string, patterns: readonly string[]): boolean {
+  const parts = rel.split("/");
+  for (let depth = parts.length; depth > 0; depth -= 1) {
+    const isDir = depth < parts.length;
+    let hit: boolean | null = null;
+    for (const raw of patterns) {
+      const negate = raw.startsWith("!");
+      let body = negate ? raw.slice(1) : raw;
+      const dirOnly = body.endsWith("/");
+      if (dirOnly) body = body.slice(0, -1);
+      if (body.length === 0 || (dirOnly && !isDir)) continue;
+      const anchored = body.includes("/");
+      const subject = anchored ? parts.slice(0, depth).join("/") : parts[depth - 1];
+      if (globRegex(body.replace(/^\//, "")).test(subject)) hit = !negate;
+    }
+    if (hit !== null) return hit;
+  }
+  return false;
+}
+
+export function mockSensitivity(
+  rel: string,
+  patterns: readonly string[] = SECRET_PATTERNS,
+): TrackedFile["sensitivity"] {
+  if (secretMatch(rel, patterns)) return "secret";
   const name = rel.split("/").at(-1) ?? rel;
-  const credentialName = name.startsWith("credentials") || name.startsWith("secrets");
-  const document = credentialName && (name.endsWith(".md") || name.endsWith(".txt"));
-  if (!document && (
-    name === ".env" || name.startsWith(".env.") || name.endsWith(".env") ||
-    name.endsWith(".pem") || name.endsWith(".key") || name.endsWith(".p12") ||
-    name.endsWith(".p8") ||
-    name.startsWith("id_rsa") || name.startsWith("id_ed25519") ||
-    name === ".npmrc" || name === ".netrc" || name === ".pypirc" ||
-    credentialName || name === "auth.json" || name === ".credentials.json"
-  )) return "secret";
   return name === ".mcp.json" ? "tokenHint" : null;
 }
 
-export function toTrackedFile(rel: string, record: FileRecord): TrackedFile {
+export function toTrackedFile(
+  rel: string,
+  record: FileRecord,
+  patterns: readonly string[] = SECRET_PATTERNS,
+): TrackedFile {
   return {
     rel,
     bytes: toFileContent(record).bytes_len,
     state: record.state ?? (record.too_large ? "TooLarge" : "Synced"),
-    sensitivity: mockSensitivity(rel),
+    sensitivity: mockSensitivity(rel, patterns),
   };
 }
