@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Loader2, Plus, RefreshCw } from "lucide-react";
+import { KeyRound, Loader2, Plus, RefreshCw } from "lucide-react";
 
 import { TreeSkeleton } from "@/components/layout/AppSkeleton";
 import { RootOverflowMenu, StarRootButton } from "@/components/layout/RootActions";
@@ -160,6 +160,7 @@ export function FileTree() {
   const [untrackTarget, setUntrackTarget] = useState<EntryView | null>(null);
   const [quickTarget, setQuickTarget] = useState<QuickResolveTarget | null>(null);
   const [query, setQuery] = useState("");
+  const [sensitiveOnly, setSensitiveOnly] = useState(false);
   const loadId = useRef({ slug: selectedSlug, linked: !!root?.linked });
 
   const statusKey = root ? JSON.stringify(root.status) : "";
@@ -228,6 +229,7 @@ export function FileTree() {
     setUntrackTarget(next.untrackTarget);
     setQuickTarget(null);
     setQuery("");
+    setSensitiveOnly(false);
   }, [selectedSlug, root?.linked]);
 
   useEffect(() => {
@@ -254,8 +256,28 @@ export function FileTree() {
 
   const tree = useMemo(() => (awaiting ? [] : buildTree(files)), [awaiting, files]);
   const sensitivityByRel = useMemo(() => fileSensitivityMap(files), [files]);
-  const filtering = query.trim().length > 0;
-  const visibleTree = useMemo(() => filterTree(tree, query), [tree, query]);
+  const hasSecret = useMemo(
+    () => files.some((file) => file.sensitivity === "secret"),
+    [files],
+  );
+  const showSensitiveOnly = sensitiveOnly && hasSecret;
+  const querying = query.trim().length > 0;
+  const filtering = querying || showSensitiveOnly;
+  const visibleTree = useMemo(
+    () =>
+      filterTree(
+        tree,
+        query,
+        showSensitiveOnly
+          ? (rel) => sensitivityByRel.get(rel) === "secret"
+          : undefined,
+      ),
+    [tree, query, showSensitiveOnly, sensitivityByRel],
+  );
+
+  useEffect(() => {
+    if (!hasSecret) setSensitiveOnly(false);
+  }, [hasSecret]);
 
   const isOpen = useCallback(
     (path: string, depth: number): boolean => {
@@ -369,7 +391,7 @@ export function FileTree() {
           <RootOverflowMenu />
         </div>
       </header>
-      <div className="flex shrink-0 border-b border-border px-3 py-2">
+      <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-2">
         <SearchBar
           value={query}
           onChange={setQuery}
@@ -382,11 +404,33 @@ export function FileTree() {
             }
           }}
         />
+        <Tooltip>
+          <TooltipTrigger render={<span className="inline-flex" />}>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={cn(
+                showSensitiveOnly
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground",
+              )}
+              disabled={!hasSecret}
+              aria-label="Show only sensitive files"
+              aria-pressed={showSensitiveOnly}
+              onClick={() => setSensitiveOnly((current) => !current)}
+            >
+              <KeyRound aria-hidden />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Show only sensitive files</TooltipContent>
+        </Tooltip>
       </div>
       <div className="panel-scroll min-h-0 min-w-0 flex-1 overflow-auto">
         <div className="flex flex-col gap-0.5 px-1.5 py-1">
         {filtering && visibleTree.length === 0 ? (
-          <p className="px-2 py-1.5 text-sm text-muted-foreground">No matches</p>
+          <p className="px-2 py-1.5 text-sm text-muted-foreground">
+            {querying ? "No matches" : "No sensitive files"}
+          </p>
         ) : null}
         {!root.linked ? (
           <p className="px-2 py-1.5 text-sm text-muted-foreground">

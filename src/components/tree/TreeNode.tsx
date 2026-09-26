@@ -1,5 +1,5 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { ChevronDown, ChevronRight, Info, TriangleAlert } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 
 import {
   ContextMenu,
@@ -11,7 +11,6 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { composeLivePath } from "@/lib/path";
 import type { FileStatus, NodeWeight, TreeNode as TreeNodeData } from "@/lib/tree";
 import { nodeStatus, nodeWeight } from "@/lib/tree";
@@ -20,6 +19,7 @@ import { cn } from "@/lib/utils";
 
 import { coveringEntry, formatBytes, untrackTarget } from "./entries";
 import { quickResolveItems } from "./quick-resolve";
+import { SensitivityMark, sensitiveNameClass } from "./SensitivityMark";
 
 /** Left inset shared by every row. */
 const TREE_INSET = "10px";
@@ -100,12 +100,6 @@ export function TreeNode({
   const quick = views && views.length > 0 ? quickResolveItems(views) : null;
   const quickDisabled = quickResolveDisabled?.(node.path) ?? false;
   const sensitivity = node.kind === "file" ? sensitivityByRel.get(node.path) : null;
-  const sensitivityLabel =
-    sensitivity === "secret"
-      ? "Sensitive file — may contain secrets"
-      : sensitivity === "tokenHint"
-        ? "May contain API tokens"
-        : null;
 
   return (
     <>
@@ -146,31 +140,13 @@ export function TreeNode({
               className="flex min-w-0 flex-1 items-center text-left text-foreground"
             >
               <span
-                className={cn(
-                  "min-w-0 truncate text-sm",
-                  sensitivity === "secret" && "text-status-conflict",
-                )}
+                className={cn("min-w-0 truncate text-sm", sensitiveNameClass(sensitivity))}
               >
                 {node.name}
               </span>
             </button>
           )}
-          {sensitivityLabel ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <span className="inline-flex shrink-0" aria-label={sensitivityLabel} />
-                }
-              >
-                {sensitivity === "secret" ? (
-                  <TriangleAlert aria-hidden className="size-3.5 text-status-conflict" />
-                ) : (
-                  <Info aria-hidden className="size-3.5 text-muted-foreground" />
-                )}
-              </TooltipTrigger>
-              <TooltipContent>{sensitivityLabel}</TooltipContent>
-            </Tooltip>
-          ) : null}
+          <SensitivityMark sensitivity={sensitivity} />
           <span
             className={cn(
               "ml-auto shrink-0 text-right tabular-nums text-xs",

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roots";
+import { buildTree, filterTree } from "@/lib/tree";
 import type { RootRow } from "@/lib/types";
 
 import { pickerStateAfterIdentityChange } from "./picker";
@@ -179,6 +180,12 @@ describe("FileTree header", () => {
     expect(html).not.toContain('aria-label="Add to track"');
   });
 
+  it("renders the sensitive-only toggle off and disabled without secret files", () => {
+    const toggle = buttonWithLabel(renderTree(unlinked), "Show only sensitive files");
+    expect(toggle).toContain('aria-pressed="false"');
+    expect(isDisabled(toggle)).toBe(true);
+  });
+
   it("disables Add to track on an unlinked row", () => {
     expect(isDisabled(buttonWithLabel(renderTree(unlinked), "Add to track"))).toBe(
       true,
@@ -222,5 +229,26 @@ describe("fileSensitivityMap", () => {
       ["config/credentials.json", "secret"],
       [".mcp.json", "tokenHint"],
     ]));
+  });
+});
+
+describe("sensitive-only filter", () => {
+  it("hides plain files and keeps secret files with their folders", () => {
+    const files = [
+      { rel: "config/credentials.json", bytes: 4, state: "Synced" as const, sensitivity: "secret" as const },
+      { rel: "config/app.json", bytes: 2, state: "Synced" as const, sensitivity: null },
+      { rel: ".mcp.json", bytes: 2, state: "Synced" as const, sensitivity: "tokenHint" as const },
+      { rel: "notes.md", bytes: 2, state: "Synced" as const, sensitivity: null },
+    ];
+    const sensitivityByRel = fileSensitivityMap(files);
+    const visible = filterTree(
+      buildTree(files),
+      "",
+      (rel) => sensitivityByRel.get(rel) === "secret",
+    );
+    expect(visible.map((node) => node.path)).toEqual(["config"]);
+    expect(visible[0]!.children.map((node) => node.path)).toEqual([
+      "config/credentials.json",
+    ]);
   });
 });

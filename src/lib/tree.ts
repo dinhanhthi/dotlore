@@ -79,24 +79,38 @@ function rollupBytes(nodes: TreeNode[]): number {
   return total;
 }
 
-/** Keep nodes whose path matches `query`, plus ancestor folders of a match. */
-export function filterTree(nodes: TreeNode[], query: string): TreeNode[] {
+/**
+ * Keep nodes whose path matches `query`, plus ancestor folders of a match.
+ * With `keep`, a file must also pass `keep(rel)`, and folders keep only such files.
+ */
+export function filterTree(
+  nodes: TreeNode[],
+  query: string,
+  keep?: (rel: string) => boolean,
+): TreeNode[] {
   const needle = query.trim().toLowerCase();
-  if (!needle) return nodes;
+  if (!needle && !keep) return nodes;
   const filtered: TreeNode[] = [];
   for (const node of nodes) {
-    const next = filterNode(node, needle);
+    const next = filterNode(node, needle, keep);
     if (next) filtered.push(next);
   }
   return filtered;
 }
 
-function filterNode(node: TreeNode, needle: string): TreeNode | null {
-  if (node.path.toLowerCase().includes(needle)) return node;
-  if (node.kind === "file") return null;
+function filterNode(
+  node: TreeNode,
+  needle: string,
+  keep?: (rel: string) => boolean,
+): TreeNode | null {
+  const matches = !needle || node.path.toLowerCase().includes(needle);
+  if (node.kind === "file") {
+    return matches && (!keep || keep(node.path)) ? node : null;
+  }
+  if (matches && needle && !keep) return node;
   const children: TreeNode[] = [];
   for (const child of node.children) {
-    const next = filterNode(child, needle);
+    const next = filterNode(child, needle, keep);
     if (next) children.push(next);
   }
   if (children.length === 0) return null;

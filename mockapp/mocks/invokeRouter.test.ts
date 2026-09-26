@@ -296,6 +296,39 @@ describe("inspect_entry", () => {
       },
     );
   });
+
+  it("marks a secret file the way track_entry asks to confirm it", async () => {
+    const file = { text: "k", binary: false, too_large: false };
+    resetStore({ files: { demo: { "server.pem": file } }, entries: { demo: [] } });
+    await expect(route("inspect_entry", { slug: "demo", rel: "server.pem" })).resolves.toMatchObject({
+      sensitivity: "secret",
+      secret_descendants: [],
+      secret_descendants_more: false,
+    });
+    await expect(route("track_entry", { slug: "demo", rel: "server.pem" })).resolves.toEqual({
+      outcome: "confirm_sensitive",
+      paths: ["server.pem"],
+      more: false,
+    });
+  });
+
+  it("lists up to 20 sorted secret descendants of a folder", async () => {
+    const file = { text: "k", binary: false, too_large: false };
+    const files: Record<string, typeof file> = { "keys/notes.md": file };
+    for (let n = 0; n < 21; n++) files[`keys/k${String(n).padStart(2, "0")}.pem`] = file;
+    resetStore({ files: { demo: files }, entries: { demo: [] } });
+    const expected = Array.from({ length: 20 }, (_, n) => `keys/k${String(n).padStart(2, "0")}.pem`);
+    await expect(route("inspect_entry", { slug: "demo", rel: "keys" })).resolves.toMatchObject({
+      sensitivity: null,
+      secret_descendants: expected,
+      secret_descendants_more: true,
+    });
+    await expect(route("track_entry", { slug: "demo", rel: "keys" })).resolves.toEqual({
+      outcome: "confirm_sensitive",
+      paths: expected,
+      more: true,
+    });
+  });
 });
 
 describe("track_entry", () => {
