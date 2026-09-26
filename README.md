@@ -3,6 +3,7 @@
   <h1>Dotlore</h1>
   <p>Sync your AI stuff and keep it away from your main codebase.</p>
   <p>
+    <a href="https://github.com/dinhanhthi/dotlore/releases/latest/download/Dotlore-universal.dmg">Download</a> ·
     <a href="https://dotlore.dinhanhthi.com">Website</a> ·
     <a href="https://github.com/dinhanhthi/dotlore">GitHub</a> ·
     <a href="https://github.com/dinhanhthi/dotlore/releases">Releases</a> ·
