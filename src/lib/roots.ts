@@ -1,10 +1,10 @@
 import { createContext, useContext, useSyncExternalStore } from "react";
 
-import { getWorkSnapshot, subscribeWork } from "./ipc";
+import { getWorkSnapshot, subscribeWork, type ErrorLogEntry } from "./ipc";
 
 import type { LinkableRow, RootRow } from "./types";
 
-export type AppView = "root" | "all" | "starred" | "conflicts";
+export type AppView = "root" | "all" | "starred" | "conflicts" | "errors";
 
 export type FocusRequest = {
   slug: string;
@@ -64,6 +64,7 @@ export type RootsContextValue = RootsState & {
   showAllProjects: () => void;
   showStarred: () => void;
   showConflicts: () => void;
+  showErrors: () => void;
   toggleStar: (slug: string) => void;
   /** Set `providerDir` immediately so onboarding unmounts, then refresh roots. */
   applyProvider: (dir: string) => void;
@@ -76,6 +77,8 @@ export type RootsContextValue = RootsState & {
   /** A write is in flight: the global lock, or a background footer task. */
   locked: boolean;
   banner: string | null;
+  /** This session's command failures, newest first. */
+  commandErrors: ErrorLogEntry[];
   setBanner: (message: string | null) => void;
 };
 
@@ -103,6 +106,18 @@ export function conflictCount(row: RootRow): number {
 /** Unresolved conflicts across every root. */
 export function conflictTotal(rows: RootRow[]): number {
   return rows.reduce((total, row) => total + conflictCount(row), 0);
+}
+
+/** A linked root that stopped syncing and needs the user. */
+export function hasError(row: RootRow): boolean {
+  if (!row.linked) return false;
+  const kind = row.status.kind;
+  return kind === "Error" || kind === "RootMissing" || kind === "GitMissing";
+}
+
+/** Linked roots in error plus logged command failures. */
+export function errorTotal(rows: RootRow[], commandErrors: ErrorLogEntry[]): number {
+  return rows.filter(hasError).length + commandErrors.length;
 }
 
 /** Last path segment, or the slug when the path has none. */

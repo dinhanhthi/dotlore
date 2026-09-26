@@ -35,6 +35,12 @@ export type TrackConfirmAnswer = "all" | "skip" | "cancel";
 /** Secret paths listed in one sensitive prompt. */
 const SENSITIVE_PATH_CAP = 20;
 
+/** One command failure in this session's log. */
+export type ErrorLogEntry = { id: number; message: string; at: number };
+
+/** Entries kept in the session log; the oldest drop first. */
+const ERROR_LOG_CAP = 50;
+
 export type WorkSnapshot = {
   inflight: number;
   syncing: number;
@@ -42,6 +48,8 @@ export type WorkSnapshot = {
   /** A background task with its own footer copy. Never counts toward `inflight`. */
   taskLabel: string | null;
   trackConfirm: TrackConfirm | null;
+  /** This session's command failures, newest first. */
+  errors: ErrorLogEntry[];
 };
 
 let inflight = 0;
@@ -50,17 +58,27 @@ let banner: string | null = null;
 let taskLabel: string | null = null;
 let trackConfirm: TrackConfirm | null = null;
 let confirmResolve: ((answer: TrackConfirmAnswer) => void) | null = null;
+let errorLog: ErrorLogEntry[] = [];
+let nextErrorId = 1;
 let snapshot: WorkSnapshot = {
   inflight: 0,
   syncing: 0,
   banner: null,
   taskLabel: null,
   trackConfirm: null,
+  errors: [],
 };
 const listeners = new Set<() => void>();
 
 function emit(): void {
-  snapshot = { inflight, syncing, banner, taskLabel, trackConfirm };
+  snapshot = {
+    inflight,
+    syncing,
+    banner,
+    taskLabel,
+    trackConfirm,
+    errors: errorLog,
+  };
   for (const listener of listeners) listener();
 }
 
@@ -104,6 +122,24 @@ export function setBanner(message: string | null): void {
   emit();
 }
 
+/** Log a command failure and show it in the banner. */
+export function reportError(message: string): void {
+  const entry = { id: nextErrorId++, message, at: Date.now() };
+  errorLog = [entry, ...errorLog].slice(0, ERROR_LOG_CAP);
+  banner = message;
+  emit();
+}
+
+export function dismissError(id: number): void {
+  errorLog = errorLog.filter((entry) => entry.id !== id);
+  emit();
+}
+
+export function clearErrors(): void {
+  errorLog = [];
+  emit();
+}
+
 /**
  * Count in-flight writes; on failure, set the command-error banner. A banner a
  * finished task left behind is not cleared here — the toast dismisses itself.
@@ -114,8 +150,7 @@ async function run<T>(op: () => Promise<T>): Promise<T> {
   try {
     return await op();
   } catch (err) {
-    banner = errorMessage(err, "Something went wrong");
-    emit();
+    reportError(errorMessage(err, "Something went wrong"));
     throw err;
   } finally {
     inflight = Math.max(0, inflight - 1);
@@ -149,7 +184,7 @@ export async function runTask<T>(
   try {
     return await op();
   } catch (err) {
-    setBanner(errorMessage(err, "Something went wrong"));
+    reportError(errorMessage(err, "Something went wrong"));
     throw err;
   } finally {
     setTaskLabel(null);
@@ -467,7 +502,7 @@ export async function applyTrackBatch(
     if (cancelled) {
       setBanner("Nothing was changed");
     } else if (firstError !== null) {
-      setBanner(firstError);
+      reportError(firstError);
     } else if (declined.length > 0 || stillOver.length > 0) {
       const parts: string[] = [];
       if (declined.length === 1) parts.push(`${declined[0]} was not tracked`);

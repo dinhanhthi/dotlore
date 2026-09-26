@@ -8,7 +8,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { BLOCKED, setBanner, wipeCloudData } from "@/lib/ipc";
+import { BLOCKED, reportError, wipeCloudData } from "@/lib/ipc";
 import { useRoots, useTaskLabel } from "@/lib/roots";
 
 type WipeCloudDataAlertProps = {
@@ -33,7 +33,7 @@ export function WipeCloudDataAlert({
       await refreshRoots();
       if (report.failed.length > 0) {
         const slugs = report.failed.map((f) => f.slug).join(", ");
-        setBanner(
+        reportError(
           `Could not rebuild: ${slugs}. Add them again from the sidebar.`,
         );
       }

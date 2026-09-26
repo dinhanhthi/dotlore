@@ -16,9 +16,12 @@ import {
   answerTrackConfirm,
   applyTrackBatch,
   BLOCKED,
+  clearErrors,
+  dismissError,
   getWorkSnapshot,
   listLinkable,
   removeRoot,
+  reportError,
   runTask,
   sensitivePatterns,
   setSensitivePatterns,
@@ -33,6 +36,7 @@ const invokeMock = vi.mocked(invoke);
 
 beforeEach(() => {
   invokeMock.mockReset();
+  clearErrors();
 });
 
 describe("trackedFiles", () => {
@@ -86,6 +90,45 @@ describe("listLinkable", () => {
     ];
     invokeMock.mockResolvedValue(rows);
     await expect(listLinkable()).resolves.toEqual(rows);
+  });
+});
+
+describe("error log", () => {
+  it("logs a failing run() op exactly once", async () => {
+    invokeMock.mockRejectedValue(new Error("disk full"));
+    await expect(setSensitivePatterns(["*.pem"])).rejects.toThrow("disk full");
+    expect(getWorkSnapshot().errors.map((e) => e.message)).toEqual(["disk full"]);
+    expect(getWorkSnapshot().banner).toBe("disk full");
+  });
+
+  it("logs a failing runTask() once", async () => {
+    await expect(
+      runTask("Linking x…", () => Promise.reject(new Error("boom"))),
+    ).rejects.toThrow("boom");
+    expect(getWorkSnapshot().errors.map((e) => e.message)).toEqual(["boom"]);
+  });
+
+  it("keeps the newest 50 and drops the oldest", () => {
+    for (let i = 0; i < 51; i++) reportError(`e${i}`);
+    const messages = getWorkSnapshot().errors.map((e) => e.message);
+    expect(messages).toHaveLength(50);
+    expect(messages[0]).toBe("e50");
+    expect(messages).not.toContain("e0");
+  });
+
+  it("dismisses one entry by id", () => {
+    reportError("a");
+    reportError("b");
+    const [b] = getWorkSnapshot().errors;
+    dismissError(b!.id);
+    expect(getWorkSnapshot().errors.map((e) => e.message)).toEqual(["a"]);
+  });
+
+  it("clears every entry", () => {
+    reportError("a");
+    reportError("b");
+    clearErrors();
+    expect(getWorkSnapshot().errors).toEqual([]);
   });
 });
 
@@ -255,6 +298,7 @@ describe("applyTrackBatch", () => {
       },
     ]);
     expect(getWorkSnapshot().banner).toBe("config/credentials.json was not tracked");
+    expect(getWorkSnapshot().errors).toEqual([]);
   });
 
   it("changes nothing when the prompt is cancelled", async () => {
@@ -272,6 +316,7 @@ describe("applyTrackBatch", () => {
     expect(callsOf("track_entry")).toEqual([]);
     expect(callsOf("untrack_entry")).toEqual([]);
     expect(getWorkSnapshot().banner).toBe("Nothing was changed");
+    expect(getWorkSnapshot().errors).toEqual([]);
   });
 
   it("offers no skip when every item is sensitive", async () => {
@@ -352,6 +397,9 @@ describe("applyTrackBatch", () => {
     expect(callsOf("track_entry")).toEqual([]);
     expect(callsOf("untrack_entry")).toEqual([]);
     expect(getWorkSnapshot().banner).toBe("unsafe path ../x");
+    expect(getWorkSnapshot().errors.map((e) => e.message)).toEqual([
+      "unsafe path ../x",
+    ]);
   });
 
   it("completes both confirmations for an oversized sensitive folder", async () => {

@@ -1,6 +1,7 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useState } from "react";
 import {
+  CircleAlert,
   Eye,
   EyeOff,
   LayoutGrid,
@@ -16,10 +17,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { BLOCKED, importInstalledAgents, linkRoot, recoverRoot, setBanner } from "@/lib/ipc";
+import { BLOCKED, importInstalledAgents, linkRoot, recoverRoot, reportError } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { compareRoots } from "@/lib/order";
-import { conflictCount, conflictTotal, useRoots } from "@/lib/roots";
+import { conflictCount, conflictTotal, errorTotal, useRoots } from "@/lib/roots";
 import { matchesRootQuery, useSidebarQuery } from "@/lib/sidebar-query";
 import { defaultSlug } from "@/lib/slug";
 import type { RootRow } from "@/lib/types";
@@ -126,14 +127,17 @@ export function Sidebar() {
     showAllProjects,
     showStarred,
     showConflicts,
+    showErrors,
     toggleStar,
     refreshRoots,
     locked,
     seeding,
     loadingRoots,
+    commandErrors,
   } = useRoots();
   const { query, setQuery } = useSidebarQuery();
   const conflicts = conflictTotal(roots);
+  const errors = errorTotal(roots, commandErrors);
   const [refreshingAgents, setRefreshingAgents] = useState(false);
   const refreshing = refreshingAgents || loadingRoots;
   const [collapsed, setCollapsed] = useState<string[]>(() =>
@@ -235,7 +239,7 @@ export function Sidebar() {
         const report = await importInstalledAgents();
         if (report === BLOCKED) return;
         const first = report.failed[0];
-        if (first) setBanner(first.message);
+        if (first) reportError(first.message);
       } catch {
         // Banner is set by `runTask()`.
         return;
@@ -328,6 +332,17 @@ export function Sidebar() {
           }
           onClick={showStarred}
         />
+        {errors > 0 && (
+          <SidebarItem
+            label="Errors"
+            selected={view === "errors"}
+            count={errors}
+            leading={
+              <CircleAlert aria-hidden className="size-4 shrink-0 text-status-error" />
+            }
+            onClick={showErrors}
+          />
+        )}
         {conflicts > 0 && (
           <SidebarItem
             label="Conflicts"

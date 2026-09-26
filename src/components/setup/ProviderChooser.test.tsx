@@ -15,6 +15,7 @@ vi.mock("@/lib/ipc", () => ({
   setProvider,
   icloudDir,
   listGdriveMounts,
+  reportError: vi.fn(),
 }));
 
 vi.mock("@/lib/pick", () => ({ pickLocalPath }));
@@ -45,6 +46,7 @@ function wrap(
     showAllProjects: () => {},
     showStarred: () => {},
     showConflicts: () => {},
+    showErrors: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},
@@ -52,6 +54,7 @@ function wrap(
     busy: false,
     locked: false,
     banner: null,
+    commandErrors: [],
     setBanner: () => {},
     addProject: async () => {},
     ...overrides,

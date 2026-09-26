@@ -35,6 +35,7 @@ function renderViewer(): string {
     showAllProjects: () => {},
     showStarred: () => {},
     showConflicts: () => {},
+    showErrors: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},
@@ -42,6 +43,7 @@ function renderViewer(): string {
     busy: false,
     locked: false,
     banner: null,
+    commandErrors: [],
     setBanner: () => {},
     addProject: async () => {},
   };

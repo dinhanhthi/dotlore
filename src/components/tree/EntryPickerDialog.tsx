@@ -28,6 +28,7 @@ import {
   applyTrackBatch,
   BLOCKED,
   listEntryChildren,
+  reportError,
   untrackEntry,
   type TrackConfirm,
   type TrackConfirmAnswer,
@@ -79,7 +80,6 @@ export function EntryPickerDialog({
   onOpenChange,
   onMutated,
 }: EntryPickerDialogProps) {
-  const { setBanner } = useRoots();
   const trackedRels = useMemo(
     () => new Set(files.map((file) => file.rel)),
     [files],
@@ -116,12 +116,12 @@ export function EntryPickerDialog({
       .catch((err) => {
         if (cancelled || gen !== requestGen.current) return;
         setChildrenByRel({ "": [] });
-        setBanner(errorMessage(err, "Something went wrong"));
+        reportError(errorMessage(err, "Something went wrong"));
       });
     return () => {
       cancelled = true;
     };
-  }, [open, slug, setBanner]);
+  }, [open, slug]);
 
   function handleOpenChange(next: boolean) {
     if (!next) requestGen.current += 1;
@@ -150,7 +150,7 @@ export function EntryPickerDialog({
       })
       .catch((err) => {
         if (gen !== requestGen.current) return;
-        setBanner(errorMessage(err, "Something went wrong"));
+        reportError(errorMessage(err, "Something went wrong"));
         setExpanded((current) => ({ ...current, [rel]: false }));
       })
       .finally(() => {

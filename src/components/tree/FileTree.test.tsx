@@ -47,6 +47,7 @@ function renderTree(row: RootRow): string {
     showAllProjects: () => {},
     showStarred: () => {},
     showConflicts: () => {},
+    showErrors: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},
@@ -54,6 +55,7 @@ function renderTree(row: RootRow): string {
     busy: false,
     locked: false,
     banner: null,
+    commandErrors: [],
     setBanner: () => {},
     addProject: async () => {},
   };
@@ -105,6 +107,7 @@ describe("FileTree seeding", () => {
       showAllProjects: () => {},
       showStarred: () => {},
       showConflicts: () => {},
+      showErrors: () => {},
       toggleStar: () => {},
       applyProvider: () => {},
       refreshRoots: async () => {},
@@ -113,6 +116,7 @@ describe("FileTree seeding", () => {
       busy: false,
       locked: false,
       banner: null,
+      commandErrors: [],
       setBanner: () => {},
     };
     const html = renderToStaticMarkup(

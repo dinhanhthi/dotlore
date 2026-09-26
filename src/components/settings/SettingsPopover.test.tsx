@@ -19,7 +19,7 @@ import { WipeCloudDataAlert } from "./WipeCloudDataAlert";
 const {
   BLOCKED,
   wipeCloudData,
-  setBanner,
+  reportError,
   clicks,
   seedLists,
   syncEffects,
@@ -39,7 +39,7 @@ const {
       failed: { slug: string; error: string }[];
     }> => ({ readded: [], failed: [] }),
   ),
-  setBanner: vi.fn(),
+  reportError: vi.fn(),
   clicks: new Map<
     string,
     (event: { preventDefault: () => void }) => void | Promise<void>
@@ -116,7 +116,7 @@ vi.mock("@/components/ui/alert-dialog", async () => {
 vi.mock("@/lib/ipc", () => ({
   BLOCKED,
   wipeCloudData,
-  setBanner,
+  reportError,
   WIPE_LABEL: "Wiping cloud data…",
   subscribeWork: () => () => {},
   getWorkSnapshot: () => ({
@@ -125,6 +125,7 @@ vi.mock("@/lib/ipc", () => ({
     banner: null,
     taskLabel: null,
     trackConfirm: null,
+    errors: [],
   }),
   defaultPatterns: () => Promise.resolve(["CLAUDE.md", "docs/"]),
   defaultIgnore: () => Promise.resolve("/chats/\n"),
@@ -160,6 +161,7 @@ function wrap(
     showAllProjects: () => {},
     showStarred: () => {},
     showConflicts: () => {},
+    showErrors: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},
@@ -167,6 +169,7 @@ function wrap(
     busy: false,
     locked: false,
     banner: null,
+    commandErrors: [],
     setBanner: () => {},
     addProject: async () => {},
     ...overrides,
@@ -400,7 +403,7 @@ describe("Wipe cloud data", () => {
     clicks.clear();
     wipeCloudData.mockReset();
     wipeCloudData.mockResolvedValue({ readded: [], failed: [] });
-    setBanner.mockReset();
+    reportError.mockReset();
   });
 
   async function clickWipe() {
@@ -449,7 +452,7 @@ describe("Wipe cloud data", () => {
     expect(wipeCloudData).toHaveBeenCalledOnce();
     expect(refreshRoots).toHaveBeenCalledOnce();
     expect(onOpenChange).toHaveBeenCalledWith(false);
-    expect(setBanner).not.toHaveBeenCalled();
+    expect(reportError).not.toHaveBeenCalled();
   });
 
   it("closes before the wipe finishes, so the window stays usable", async () => {
@@ -481,7 +484,7 @@ describe("Wipe cloud data", () => {
     await clickWipe();
 
     expect(refreshRoots).not.toHaveBeenCalled();
-    expect(setBanner).not.toHaveBeenCalled();
+    expect(reportError).not.toHaveBeenCalled();
   });
 
   it("banners the projects that could not be rebuilt", async () => {
@@ -496,7 +499,7 @@ describe("Wipe cloud data", () => {
 
     await clickWipe();
 
-    expect(setBanner).toHaveBeenCalledWith(
+    expect(reportError).toHaveBeenCalledWith(
       "Could not rebuild: beta, gamma. Add them again from the sidebar.",
     );
   });
