@@ -35,6 +35,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { serviceLabel } from "@/lib/cloud-mounts";
 import {
   appHome,
   defaultIgnore,
@@ -393,7 +394,7 @@ export function SettingsSync({
                   variant="secondary"
                   className="max-w-32 truncate font-normal"
                 >
-                  {providerServiceLabel(providerDir)}
+                  {serviceLabel(providerDir)}
                 </Badge>
               )}
             </div>
@@ -713,19 +714,6 @@ export const GIT_MISSING_BANNER = "git not found — run: xcode-select --install
 
 function tildePath(path: string): string {
   return path.replace(/^\/Users\/[^/]+/, "~");
-}
-
-/** Short service label from the connected folder path. */
-function providerServiceLabel(path: string): string {
-  const gdrive = /\/CloudStorage\/GoogleDrive-([^/]+)/.exec(path);
-  if (gdrive?.[1]) {
-    const account = gdrive[1].includes("@")
-      ? gdrive[1].slice(0, gdrive[1].indexOf("@"))
-      : gdrive[1];
-    return `GDrive ${account}`;
-  }
-  if (path.includes("/Mobile Documents/com~apple~CloudDocs")) return "iCloud";
-  return "Other";
 }
 
 export function SettingsPopover() {

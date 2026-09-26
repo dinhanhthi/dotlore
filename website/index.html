@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="Keep AI files and custom patterns out of git, and sync them across your machines through iCloud, Google Drive, and more."
+      content="Keep AI files and custom patterns out of git, and sync them across your machines through iCloud, Google Drive, Dropbox, OneDrive, or any folder your cloud app syncs."
     />
     <title>Dotlore — Sync your AI stuff away from your codebase</title>
     <link rel="icon" href="logo.png" type="image/png" />
@@ -82,7 +82,8 @@
           <p>
             Keep AI files, folders, and any custom patterns out of the repository
             without losing them. Dotlore syncs them across your machines through
-            your own cloud — iCloud, Google Drive, and more to come.
+            your own cloud — iCloud, Google Drive, Dropbox, OneDrive, MEGA, or any
+            folder your cloud app syncs.
           </p>
           <div class="actions">
             <a
@@ -127,7 +128,10 @@
               <code>.claude/</code>, <code>CLAUDE.md</code>, <code>.agents/</code>,
               <code>docs/</code>, and <code>~/.claude</code> are entries inside it.
             </li>
-            <li>Sync through a local cloud folder path, not a cloud API.</li>
+            <li>
+              Sync through any local folder your cloud app keeps in sync — a
+              folder path, not a cloud API.
+            </li>
             <li>
               Each Mac publishes an immutable git bundle. Nothing in the cloud
               folder is rewritten or deleted.
@@ -147,8 +151,8 @@
         <section>
           <h2>How it works</h2>
           <p class="section-lead">
-            Both Macs share one folder that iCloud or Google Drive already
-            syncs. Each writes its own history there and reads the other's.
+            Both Macs share one folder that a cloud app (iCloud, Google Drive,
+            Dropbox, OneDrive, …) already syncs. Each writes its own history there and reads the other's.
           </p>
           <ol class="steps">
             <li>

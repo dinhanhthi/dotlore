@@ -21,7 +21,7 @@ Dotlore syncs the AI-agent config your projects git-ignore (`.claude/`, `CLAUDE.
 
 - **Files stay put** — never moved, never symlinked, never added to git history.
 - **Project folders** — each project is a folder with an include-list of entries to sync.
-- **Cloud folder, not a cloud API** — sync through iCloud Drive or Google Drive desktop.
+- **Cloud folder, not a cloud API** — sync through any folder your cloud app keeps in sync: iCloud Drive, Google Drive, Dropbox, OneDrive, Box, MEGA, …
 - **Immutable bundles** — each Mac publishes its own git bundle; nothing in the cloud is rewritten.
 - **Conflicts without markers** — the newer commit wins; the other version is kept as a sibling file.
 - **Desktop + menu bar** — a three-column window and a compact status item.
@@ -35,6 +35,15 @@ Each project gets a private staging git repo under `~/Library/Application Suppor
 ```
 
 Other devices fetch and merge those bundles with the system `git`. On overlapping edits the newer commit wins everywhere, and the other version is saved as `<stem>.conflict-<device>-<blob>.<ext>`. Nothing is lost and all devices converge.
+
+### ☁️ Cloud folders
+
+Dotlore only needs a folder that a cloud app syncs to every Mac; it never talks to the cloud service itself.
+
+- **Listed automatically** — iCloud Drive, and every account mounted under `~/Library/CloudStorage` (Google Drive, Dropbox, OneDrive, Box, Proton Drive, …).
+- **Any other folder** — pick it with "Other…", e.g. a MEGA sync folder or a legacy `~/Dropbox`.
+- **Requirements** — the folder must support hard links; FUSE-style drives such as pCloud Drive may refuse to publish, and Dotlore shows the error.
+- **Upload status** — the footer's "Synced to cloud" is iCloud-only; other folders show "Synced".
 
 ## 🛠️ Tech stack
 

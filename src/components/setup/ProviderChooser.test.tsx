@@ -1,11 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-const { setProvider, icloudDir, listGdriveMounts, pickLocalPath } = vi.hoisted(
+const { setProvider, icloudDir, listCloudMounts, pickLocalPath } = vi.hoisted(
   () => ({
     setProvider: vi.fn(),
     icloudDir: vi.fn(),
-    listGdriveMounts: vi.fn(),
+    listCloudMounts: vi.fn(),
     pickLocalPath: vi.fn(),
   }),
 );
@@ -14,7 +14,7 @@ vi.mock("@/lib/ipc", () => ({
   BLOCKED: Symbol("blocked"),
   setProvider,
   icloudDir,
-  listGdriveMounts,
+  listCloudMounts,
   reportError: vi.fn(),
 }));
 
@@ -24,12 +24,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
 
 import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roots";
 
-import {
-  accountDir,
-  APPLY_LABEL,
-  CANCEL_LABEL,
-  ProviderChooser,
-} from "./ProviderChooser";
+import { APPLY_LABEL, CANCEL_LABEL, ProviderChooser } from "./ProviderChooser";
 
 function wrap(
   overrides: Partial<RootsContextValue> = {},
@@ -88,13 +83,5 @@ describe("ProviderChooser cancel", () => {
   it("offers a way out only when the caller can be dismissed", () => {
     expect(wrap()).not.toContain(CANCEL_LABEL);
     expect(wrap({}, { onCancel: () => {} })).toContain(CANCEL_LABEL);
-  });
-});
-
-describe("accountDir", () => {
-  it("syncs through the account's own My Drive root", () => {
-    expect(accountDir("/Users/me/Library/CloudStorage/GoogleDrive-a@b.com")).toBe(
-      "/Users/me/Library/CloudStorage/GoogleDrive-a@b.com/My Drive",
-    );
   });
 });

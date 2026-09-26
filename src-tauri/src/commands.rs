@@ -41,7 +41,8 @@ use crate::updater;
 
 /// Inside `~`, where iCloud Drive's Documents folder lives.
 const ICLOUD: &str = "Library/Mobile Documents/com~apple~CloudDocs";
-/// Inside `~`, where the Google Drive client mounts each account.
+/// Inside `~`, where File Provider clients such as Google Drive, Dropbox and
+/// OneDrive mount each account.
 const CLOUD_STORAGE: &str = "Library/CloudStorage";
 
 /// Files larger than this are not loaded into the webview.
@@ -974,8 +975,8 @@ pub async fn set_max_seed_folder_mb(
 }
 
 #[tauri::command]
-pub fn list_gdrive_mounts(state: State<'_, AppState>) -> Vec<String> {
-    google_drive_dirs(&state.home_dir)
+pub fn list_cloud_mounts(state: State<'_, AppState>) -> Vec<String> {
+    cloud_storage_mounts(&state.home_dir)
         .into_iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
@@ -1113,14 +1114,14 @@ fn status_payload(state: &AppState) -> StatusPayload {
     }
 }
 
-/// Google Drive account mounts under `~/Library/CloudStorage`.
-fn google_drive_dirs(home_dir: &Path) -> Vec<PathBuf> {
+/// Every cloud account mount under `~/Library/CloudStorage`, hidden entries skipped.
+fn cloud_storage_mounts(home_dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(home_dir.join(CLOUD_STORAGE))
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.is_dir() && name_of(p).starts_with("GoogleDrive-"))
+        .filter(|p| p.is_dir() && !name_of(p).starts_with('.'))
         .collect();
     out.sort();
     out
@@ -1649,6 +1650,35 @@ mod tests {
     use crate::config::Config;
     use crate::engine::Engine;
     use tempfile::TempDir;
+
+    #[test]
+    fn cloud_storage_mounts_lists_every_visible_dir_sorted() {
+        let home = TempDir::new().unwrap();
+        let cs = home.path().join(CLOUD_STORAGE);
+        for name in [
+            "OneDrive-Personal",
+            "GoogleDrive-a@b.com",
+            "Dropbox",
+            ".hidden",
+        ] {
+            fs::create_dir_all(cs.join(name)).unwrap();
+        }
+        fs::write(cs.join("stray.txt"), b"x").unwrap();
+        assert_eq!(
+            cloud_storage_mounts(home.path()),
+            vec![
+                cs.join("Dropbox"),
+                cs.join("GoogleDrive-a@b.com"),
+                cs.join("OneDrive-Personal"),
+            ]
+        );
+    }
+
+    #[test]
+    fn cloud_storage_mounts_is_empty_without_cloud_storage() {
+        let home = TempDir::new().unwrap();
+        assert!(cloud_storage_mounts(home.path()).is_empty());
+    }
 
     #[test]
     fn cloud_folder_target_opens_the_dotlore_folder_inside_the_provider() {

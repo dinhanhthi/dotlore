@@ -112,7 +112,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::set_max_file_mb,
             commands::max_seed_folder_mb,
             commands::set_max_seed_folder_mb,
-            commands::list_gdrive_mounts,
+            commands::list_cloud_mounts,
             commands::icloud_dir,
             commands::login_item_enabled,
             commands::set_login_item,
