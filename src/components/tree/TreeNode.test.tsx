@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import type { TreeNode as TreeNodeData } from "@/lib/tree";
-import type { EntryView } from "@/lib/types";
+import type { EntryView, Sensitivity } from "@/lib/types";
 
 import { TreeNode } from "./TreeNode";
 
@@ -20,7 +20,7 @@ const entries: EntryView[] = [
   { key: "CLAUDE.md", kind: "file", covering: [] },
 ];
 
-function renderNode(path: string): string {
+function renderNode(path: string, sensitivity: Sensitivity | null = null): string {
   return renderToStaticMarkup(
     <TreeNode
       node={file(path)}
@@ -34,6 +34,7 @@ function renderNode(path: string): string {
       onUntrack={() => {}}
       rootPath="/Users/demo/git/dotlore"
       maxFileBytes={50 * 1024 * 1024}
+      sensitivityByRel={new Map([[path, sensitivity]])}
     />,
   );
 }
@@ -51,5 +52,40 @@ describe("TreeNode untrack", () => {
 
   it("identifies the covering entry on an inherited-only node", () => {
     expect(renderNode("docs/readme.md")).toContain("Covered by docs/");
+  });
+});
+
+describe("TreeNode sensitivity", () => {
+  it("shows the amber warning for a Secret file, immediately before size", () => {
+    const html = renderNode("config/credentials.json", "secret");
+    expect(html).toContain('aria-label="Sensitive file — synced as plaintext. Protect it to encrypt."');
+    expect(html.indexOf('aria-label="Sensitive file')).toBeLessThan(html.indexOf("0 bytes"));
+  });
+
+  it("shows a muted hint for a TokenHint file", () => {
+    expect(renderNode(".mcp.json", "tokenHint")).toContain(
+      'aria-label="May contain API tokens"',
+    );
+  });
+
+  it("shows a Secret file's name in the warning color", () => {
+    const html = renderNode("config/credentials.json", "secret");
+    expect(html).toMatch(/<span class="[^"]*text-status-conflict[^"]*">credentials\.json<\/span>/);
+  });
+
+  it("keeps the normal name color on a protected Secret file, a TokenHint file and a plain file", () => {
+    const protectedSecret = renderNode("config/credentials.json", "secret", {
+      "config/credentials.json": { inheritedFrom: null },
+    });
+    expect(protectedSecret).toMatch(/<span class="[^"]*">credentials\.json<\/span>/);
+    expect(protectedSecret).not.toMatch(/text-status-conflict[^"]*">credentials\.json/);
+    expect(renderNode(".mcp.json", "tokenHint")).not.toMatch(/text-status-conflict[^"]*">\.mcp\.json/);
+    expect(renderNode("CLAUDE.md")).not.toMatch(/text-status-conflict[^"]*">CLAUDE\.md/);
+  });
+
+  it("does not show either icon for a plain file", () => {
+    const html = renderNode("CLAUDE.md");
+    expect(html).not.toContain('aria-label="Sensitive file');
+    expect(html).not.toContain('aria-label="May contain API tokens"');
   });
 });

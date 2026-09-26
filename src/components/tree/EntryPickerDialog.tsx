@@ -434,6 +434,31 @@ function TrackMark({
   );
 }
 
+export function SensitivePathList({
+  paths,
+  more,
+}: {
+  paths: string[];
+  more: boolean;
+}) {
+  return (
+    <>
+      <ul className="min-h-0 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-border px-3 py-2 text-xs text-muted-foreground">
+        {paths.map((path) => (
+          <li key={path} className="break-all">
+            {path}
+          </li>
+        ))}
+      </ul>
+      {more && (
+        <p className="shrink-0 text-xs font-medium text-foreground">
+          Plus additional secret files not shown.
+        </p>
+      )}
+    </>
+  );
+}
+
 /** Paused inside a background track batch. Does not take the global busy lock. */
 export function TrackConfirmDialog() {
   const confirm = useTrackConfirm();
@@ -445,16 +470,23 @@ export function TrackConfirmDialog() {
         if (!next) answerTrackConfirm(false);
       }}
     >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>Track {confirm?.rel ?? "folder"}?</AlertDialogTitle>
+      <AlertDialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden">
+        <AlertDialogHeader className="shrink-0">
+          <AlertDialogTitle className="line-clamp-2 break-all">
+            Track {confirm?.rel ?? "folder"}?
+          </AlertDialogTitle>
           <AlertDialogDescription>
-            {confirm
-              ? `${confirm.rel} is ${formatBytes(confirm.bytes)} (limit ${formatBytes(confirm.folderLimit)}). This folder is over the add limit. Confirm to track it.`
-              : ""}
+            {confirm?.kind === "sensitive"
+              ? "These files may contain secrets. Tracking syncs their contents as plaintext to your cloud folder."
+              : confirm?.kind === "folder_limit"
+                ? `${confirm.rel} is ${formatBytes(confirm.bytes)} (limit ${formatBytes(confirm.folderLimit)}). This folder is over the add limit. Confirm to track it.`
+                : ""}
           </AlertDialogDescription>
         </AlertDialogHeader>
-        <AlertDialogFooter>
+        {confirm?.kind === "sensitive" && (
+          <SensitivePathList paths={confirm.paths} more={confirm.more} />
+        )}
+        <AlertDialogFooter className="shrink-0">
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             onClick={(event) => {
@@ -462,7 +494,7 @@ export function TrackConfirmDialog() {
               answerTrackConfirm(true);
             }}
           >
-            Track
+            {confirm?.kind === "sensitive" ? "Track anyway" : "Track"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

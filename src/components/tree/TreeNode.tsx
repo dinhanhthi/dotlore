@@ -1,5 +1,5 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Info, TriangleAlert } from "lucide-react";
 
 import {
   ContextMenu,
@@ -11,10 +11,11 @@ import {
   ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { composeLivePath } from "@/lib/path";
 import type { FileStatus, NodeWeight, TreeNode as TreeNodeData } from "@/lib/tree";
 import { nodeStatus, nodeWeight } from "@/lib/tree";
-import type { ConflictView, EntryView } from "@/lib/types";
+import type { ConflictView, EntryView, Sensitivity } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { coveringEntry, formatBytes, untrackTarget } from "./entries";
@@ -62,6 +63,7 @@ type TreeNodeProps = {
   onUntrack: (entry: EntryView) => void;
   rootPath: string;
   maxFileBytes: number;
+  sensitivityByRel: ReadonlyMap<string, Sensitivity | null>;
   conflictViews?: (rel: string) => ConflictView[] | undefined;
   onQuickResolve?: (rel: string, keep: "live" | "other", siblingRel?: string) => void;
   quickResolveDisabled?: (rel: string) => boolean;
@@ -79,6 +81,7 @@ export function TreeNode({
   onUntrack,
   rootPath,
   maxFileBytes,
+  sensitivityByRel,
   conflictViews,
   onQuickResolve,
   quickResolveDisabled,
@@ -96,6 +99,13 @@ export function TreeNode({
   const views = node.kind === "file" ? conflictViews?.(node.path) : undefined;
   const quick = views && views.length > 0 ? quickResolveItems(views) : null;
   const quickDisabled = quickResolveDisabled?.(node.path) ?? false;
+  const sensitivity = node.kind === "file" ? sensitivityByRel.get(node.path) : null;
+  const sensitivityLabel =
+    sensitivity === "secret"
+      ? "Sensitive file — synced as plaintext. Protect it to encrypt."
+      : sensitivity === "tokenHint"
+        ? "May contain API tokens"
+        : null;
 
   return (
     <>
@@ -135,9 +145,32 @@ export function TreeNode({
               onClick={() => onSelect(node.path)}
               className="flex min-w-0 flex-1 items-center text-left text-foreground"
             >
-              <span className="min-w-0 truncate text-sm">{node.name}</span>
+              <span
+                className={cn(
+                  "min-w-0 truncate text-sm",
+                  sensitivity === "secret" && !protection && "text-status-conflict",
+                )}
+              >
+                {node.name}
+              </span>
             </button>
           )}
+          {sensitivityLabel ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span className="inline-flex shrink-0" aria-label={sensitivityLabel} />
+                }
+              >
+                {sensitivity === "secret" ? (
+                  <TriangleAlert aria-hidden className="size-3.5 text-amber-500" />
+                ) : (
+                  <Info aria-hidden className="size-3.5 text-muted-foreground" />
+                )}
+              </TooltipTrigger>
+              <TooltipContent>{sensitivityLabel}</TooltipContent>
+            </Tooltip>
+          ) : null}
           <span
             className={cn(
               "ml-auto shrink-0 text-right tabular-nums text-xs",
@@ -236,6 +269,7 @@ export function TreeNode({
               onUntrack={onUntrack}
               rootPath={rootPath}
               maxFileBytes={maxFileBytes}
+              sensitivityByRel={sensitivityByRel}
               conflictViews={conflictViews}
               onQuickResolve={onQuickResolve}
               quickResolveDisabled={quickResolveDisabled}

@@ -27,11 +27,15 @@ export type LinkableRow = {
 /** Mirrors `engine::FileSync` (no rename_all — PascalCase variants). */
 export type FileSync = "Synced" | "TooLarge" | "Pending";
 
+/** Mirrors `project::Sensitivity` (`rename_all = "camelCase"`). */
+export type Sensitivity = "secret" | "tokenHint";
+
 /** Mirrors `engine::TrackedFile` (snake_case fields, no rename). */
 export type TrackedFile = {
   rel: string;
   bytes: number;
   state: FileSync;
+  sensitivity: Sensitivity | null;
 };
 
 /** Mirrors `engine::EntryKind` (`rename_all = "lowercase"`). */
@@ -49,6 +53,7 @@ export type PickerRow = {
   name: string;
   kind: string;
   rel: string;
+  sensitivity: Sensitivity | null;
 };
 
 /** Mirrors `commands::SkippedFileDto` (snake_case fields). */
@@ -64,6 +69,9 @@ export type InspectedEntryDto = {
   folder_limit: number;
   confirmation_required: boolean;
   skipped_too_large: SkippedFileDto[];
+  sensitivity: Sensitivity | null;
+  secret_descendants: string[];
+  secret_descendants_more: boolean;
 };
 
 /** Mirrors `commands::ImportAgentFailureDto` (snake_case fields). */
@@ -81,6 +89,7 @@ export type ImportAgentsDto = {
 /** Mirrors `commands::TrackResultDto` (`tag = "outcome"`, snake_case). */
 export type TrackResultDto =
   | { outcome: "done" }
+  | { outcome: "confirm_sensitive"; paths: string[]; more: boolean }
   | {
       outcome: "needs_confirmation";
       bytes: number;

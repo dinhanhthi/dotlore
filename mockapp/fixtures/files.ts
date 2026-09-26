@@ -169,10 +169,26 @@ export function toFileContent(record: FileRecord): FileContent {
   };
 }
 
+export function mockSensitivity(rel: string): TrackedFile["sensitivity"] {
+  const name = rel.split("/").at(-1) ?? rel;
+  const credentialName = name.startsWith("credentials") || name.startsWith("secrets");
+  const document = credentialName && (name.endsWith(".md") || name.endsWith(".txt"));
+  if (!document && (
+    name === ".env" || name.startsWith(".env.") || name.endsWith(".env") ||
+    name.endsWith(".pem") || name.endsWith(".key") || name.endsWith(".p12") ||
+    name.endsWith(".p8") ||
+    name.startsWith("id_rsa") || name.startsWith("id_ed25519") ||
+    name === ".npmrc" || name === ".netrc" || name === ".pypirc" ||
+    credentialName || name === "auth.json" || name === ".credentials.json"
+  )) return "secret";
+  return name === ".mcp.json" ? "tokenHint" : null;
+}
+
 export function toTrackedFile(rel: string, record: FileRecord): TrackedFile {
   return {
     rel,
     bytes: toFileContent(record).bytes_len,
     state: record.state ?? (record.too_large ? "TooLarge" : "Synced"),
+    sensitivity: mockSensitivity(rel),
   };
 }

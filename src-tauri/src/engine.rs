@@ -27,7 +27,7 @@ use crate::config::{self, Config, HomeLock, Root};
 use crate::conflict;
 use crate::git::{self, Git};
 use crate::mirror::{self, FileState, Node};
-use crate::project::{self, Limits, State};
+use crate::project::{self, Limits, Sensitivity, State};
 use crate::repo::{
     provider_key, remote_ref, unique_id, FetchMode, Repo, ResumeOutcome, Transaction,
 };
@@ -114,6 +114,7 @@ pub struct TrackedFile {
     pub rel: String,
     pub bytes: u64,
     pub state: FileSync,
+    pub sensitivity: Option<Sensitivity>,
 }
 
 /// Whether a listed file is on disk and within the per-file limit.
@@ -237,6 +238,9 @@ pub struct InspectedEntry {
     pub folder_limit: u64,
     pub confirmation_required: bool,
     pub skipped_too_large: Vec<(PathBuf, u64)>,
+    pub sensitivity: Option<Sensitivity>,
+    pub secret_descendants: Vec<String>,
+    pub secret_descendants_more: bool,
 }
 
 /// Result of [`Engine::track_entry`].
@@ -244,6 +248,7 @@ pub struct InspectedEntry {
 pub enum TrackOutcome {
     Done(RootStatus),
     NeedsConfirmation(InspectedEntry),
+    ConfirmSensitive { paths: Vec<String>, more: bool },
 }
 
 /// Outcome of a save from the resolver.
@@ -698,11 +703,20 @@ impl Engine {
                 } else {
                     FileSync::Synced
                 };
-                by_rel.insert(rel.clone(), TrackedFile { rel, bytes, state });
+                by_rel.insert(
+                    rel.clone(),
+                    TrackedFile {
+                        sensitivity: project::sensitivity(Path::new(&rel)),
+                        rel,
+                        bytes,
+                        state,
+                    },
+                );
             }
         }
         for rel in staged {
             by_rel.entry(rel.clone()).or_insert(TrackedFile {
+                sensitivity: project::sensitivity(Path::new(&rel)),
                 rel,
                 bytes: 0,
                 state: FileSync::Pending,
@@ -758,6 +772,17 @@ impl Engine {
         rel: &Path,
         confirmed_folder_bytes: Option<u64>,
     ) -> Result<TrackOutcome> {
+        self.track_entry_with_sensitive_confirmation(slug, rel, confirmed_folder_bytes, true)
+    }
+
+    /// Track with a sensitive-path confirmation checked before any mutation.
+    pub fn track_entry_with_sensitive_confirmation(
+        &mut self,
+        slug: &str,
+        rel: &Path,
+        confirmed_folder_bytes: Option<u64>,
+        confirmed_sensitive: bool,
+    ) -> Result<TrackOutcome> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
         let cloud = self.cloud();
@@ -769,16 +794,30 @@ impl Engine {
         let repo = self.repo_for(&root)?;
         let ignore = repo.ignore_text(&self.home_dir);
         let preview = inspect_live(&root.path, rel, &ignore, limits)?;
-        match preview.kind {
-            EntryKind::File => {
-                if let Some((_, len)) = preview.skipped_too_large.first() {
-                    bail!(
-                        "{} is {len} bytes (limit {} bytes)",
-                        rel.display(),
-                        limits.max_file_bytes
-                    );
-                }
+        if preview.kind == EntryKind::File {
+            if let Some((_, len)) = preview.skipped_too_large.first() {
+                bail!(
+                    "{} is {len} bytes (limit {} bytes)",
+                    rel.display(),
+                    limits.max_file_bytes
+                );
             }
+        }
+        if !confirmed_sensitive {
+            let (paths, more) = if preview.sensitivity == Some(Sensitivity::Secret) {
+                (vec![rel.to_string_lossy().into_owned()], false)
+            } else {
+                (
+                    preview.secret_descendants.clone(),
+                    preview.secret_descendants_more,
+                )
+            };
+            if !paths.is_empty() {
+                return Ok(TrackOutcome::ConfirmSensitive { paths, more });
+            }
+        }
+        match preview.kind {
+            EntryKind::File => {}
             EntryKind::Directory => {
                 if preview.confirmation_required {
                     let approved = confirmed_folder_bytes.unwrap_or(0);
@@ -1939,19 +1978,52 @@ fn inspect_live(
                 } else {
                     measured.skipped_too_large
                 },
+                sensitivity: project::sensitivity(rel),
+                secret_descendants: Vec::new(),
+                secret_descendants_more: false,
             })
         }
         Node::Dir => {
             let measured = mirror::measure_tree(root, &trimmed, ignore_text, limits)?;
+            let (secret_descendants, secret_descendants_more) =
+                secret_descendants(root, &trimmed, ignore_text, limits)?;
             Ok(InspectedEntry {
                 kind: EntryKind::Directory,
                 bytes: measured.bytes,
                 folder_limit: limits.max_seed_folder_bytes,
                 confirmation_required: measured.bytes > limits.max_seed_folder_bytes,
                 skipped_too_large: measured.skipped_too_large,
+                sensitivity: None,
+                secret_descendants,
+                secret_descendants_more,
             })
         }
     }
+}
+
+fn secret_descendants(
+    root: &Path,
+    rel: &Path,
+    ignore_text: &str,
+    limits: Limits,
+) -> Result<(Vec<String>, bool)> {
+    let mut entries = project::ProjectFile::default();
+    entries.entries.insert(
+        format!("{}/", rel.display()),
+        project::EntryRecord {
+            gen: 1,
+            state: State::Tracked,
+        },
+    );
+    let mut paths: Vec<String> = mirror::list_live(root, &entries.tracked(), ignore_text, limits)?
+        .into_iter()
+        .filter(|(path, _, _)| project::sensitivity(path) == Some(Sensitivity::Secret))
+        .map(|(path, _, _)| path.to_string_lossy().into_owned())
+        .collect();
+    paths.sort();
+    let more = paths.len() > 20;
+    paths.truncate(20);
+    Ok((paths, more))
 }
 
 /// Every version the resolver showed, still exactly as it was shown. Bytes are
@@ -2375,6 +2447,29 @@ mod tests {
     }
 
     #[test]
+    fn tracked_files_reports_sensitivity() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/credentials.json", b"{}\n");
+        write(&a, "docs/.mcp.json", b"{}\n");
+        write(&a, "docs/notes.md", b"notes\n");
+        add(&mut a);
+
+        let files = a.engine.tracked_files("proj-claude").unwrap();
+        let tier = |rel: &str| files.iter().find(|f| f.rel == rel).unwrap().sensitivity;
+        assert_eq!(
+            tier("docs/credentials.json"),
+            Some(project::Sensitivity::Secret)
+        );
+        assert_eq!(
+            tier("docs/.mcp.json"),
+            Some(project::Sensitivity::TokenHint)
+        );
+        assert_eq!(tier("docs/notes.md"), None);
+    }
+
+    #[test]
     fn tracked_files_reports_a_size_for_every_entry() {
         let provider = TempDir::new().unwrap();
         let mut a = device(provider.path(), 'a');
@@ -2390,11 +2485,13 @@ mod tests {
                     rel: "CLAUDE.md".into(),
                     bytes: 4,
                     state: FileSync::Synced,
+                    sensitivity: None,
                 },
                 TrackedFile {
                     rel: "docs/a.md".into(),
                     bytes: 4,
                     state: FileSync::Synced,
+                    sensitivity: None,
                 },
             ]
         );
@@ -2415,6 +2512,7 @@ mod tests {
                 rel: "CLAUDE.md".into(),
                 bytes: 0,
                 state: FileSync::Pending,
+                sensitivity: None,
             }]
         );
     }
@@ -2437,11 +2535,13 @@ mod tests {
                     rel: "CLAUDE.md".into(),
                     bytes: 0,
                     state: FileSync::Pending,
+                    sensitivity: None,
                 },
                 TrackedFile {
                     rel: "docs/a.md".into(),
                     bytes: 0,
                     state: FileSync::Pending,
+                    sensitivity: None,
                 },
             ]
         );
@@ -3450,7 +3550,7 @@ mod tests {
                 assert_eq!(info.bytes, preview.bytes);
                 assert!(info.confirmation_required);
             }
-            TrackOutcome::Done(s) => panic!("expected confirmation, got {s:?}"),
+            other => panic!("expected confirmation, got {other:?}"),
         }
         assert_eq!(a.engine.list_entries("proj-claude").unwrap(), before);
     }
@@ -3532,7 +3632,7 @@ mod tests {
                 assert_eq!(info.bytes, 1_600_000);
                 assert!(info.bytes > preview.bytes);
             }
-            TrackOutcome::Done(s) => panic!("growth must require a new confirmation, got {s:?}"),
+            other => panic!("growth must require a new confirmation, got {other:?}"),
         }
         assert!(!a
             .engine

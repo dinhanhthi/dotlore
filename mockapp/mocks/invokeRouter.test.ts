@@ -125,7 +125,7 @@ describe("tracked_files", () => {
       entries: { demo: [{ key: "CLAUDE.md", kind: "file", covering: [] }] },
     });
     await expect(route("tracked_files", { slug: "demo" })).resolves.toEqual([
-      { rel: "CLAUDE.md", bytes: 3, state: "Synced" },
+      { rel: "CLAUDE.md", bytes: 3, state: "Synced", sensitivity: null },
     ]);
   });
 
@@ -139,8 +139,8 @@ describe("tracked_files", () => {
       },
     });
     await expect(route("tracked_files", { slug: "demo" })).resolves.toEqual([
-      { rel: "CLAUDE.md", bytes: 3, state: "Synced" },
-      { rel: "huge.bin", bytes: 2_000_000, state: "TooLarge" },
+      { rel: "CLAUDE.md", bytes: 3, state: "Synced", sensitivity: null },
+      { rel: "huge.bin", bytes: 2_000_000, state: "TooLarge", sensitivity: null },
     ]);
   });
 });
@@ -194,7 +194,7 @@ describe("remove_root", () => {
       conflicts: {},
       entries: { demo: [{ key: "a.md", kind: "file", covering: [] }] },
       pickerExtra: {
-        demo: { "": [{ name: "extra", kind: "file", rel: "extra" }] },
+        demo: { "": [{ name: "extra", kind: "file", rel: "extra", sensitivity: null }] },
       },
     });
 
@@ -266,13 +266,13 @@ describe("list_entry_children", () => {
       },
       pickerExtra: {
         demo: {
-          "": [{ name: "link", kind: "symlink", rel: "link" }],
+          "": [{ name: "link", kind: "symlink", rel: "link", sensitivity: null }],
         },
       },
     });
     await expect(
       route("list_entry_children", { slug: "demo", rel: "" }),
-    ).resolves.toEqual([{ name: "a.md", kind: "file", rel: "a.md" }]);
+    ).resolves.toEqual([{ name: "a.md", kind: "file", rel: "a.md", sensitivity: null }]);
   });
 });
 
@@ -290,12 +290,45 @@ describe("inspect_entry", () => {
         folder_limit: 200 * 1024 * 1024,
         confirmation_required: false,
         skipped_too_large: [],
+        sensitivity: null,
+        secret_descendants: [],
+        secret_descendants_more: false,
       },
     );
   });
 });
 
 describe("track_entry", () => {
+  it("requires confirmation for a secret file without mutating entries", async () => {
+    resetStore({ files: { demo: { "config/credentials.json": { text: "secret", binary: false, too_large: false } } }, entries: { demo: [] } });
+    await expect(route("track_entry", { slug: "demo", rel: "config/credentials.json" })).resolves.toEqual({
+      outcome: "confirm_sensitive",
+      paths: ["config/credentials.json"],
+      more: false,
+    });
+    expect(store.entries.demo).toEqual([]);
+    await expect(route("track_entry", { slug: "demo", rel: "config/credentials.json", confirmedSensitive: true })).resolves.toEqual({ outcome: "done" });
+    expect(store.entries.demo).toEqual(expect.arrayContaining([expect.objectContaining({ key: "config/credentials.json" })]));
+  });
+
+  it("shows sensitivity on tracked files and picker rows", async () => {
+    resetStore({ files: { demo: {
+      ".env.production": { text: "secret", binary: false, too_large: false },
+      ".mcp.json": { text: "{}", binary: false, too_large: false },
+    } }, entries: { demo: [
+      { key: ".env.production", kind: "file", covering: [] },
+      { key: ".mcp.json", kind: "file", covering: [] },
+    ] } });
+    expect(await route("tracked_files", { slug: "demo" })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rel: ".env.production", sensitivity: "secret" }),
+      expect.objectContaining({ rel: ".mcp.json", sensitivity: "tokenHint" }),
+    ]));
+    expect(await route("list_entry_children", { slug: "demo", rel: "" })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rel: ".env.production", sensitivity: "secret" }),
+      expect.objectContaining({ rel: ".mcp.json", sensitivity: "tokenHint" }),
+    ]));
+  });
+
   const folderFiles = {
     "big/a.bin": {
       text: null,
@@ -619,10 +652,12 @@ describe("mockapp scenarios", () => {
         "unlinked-project",
         "include-list-editor",
         "oversized-entry",
+        "sensitive-files",
       ]),
     );
     expect(afterMountFor("unlinked-project")).toEqual(expect.any(Function));
     expect(afterMountFor("include-list-editor")).toEqual(expect.any(Function));
     expect(afterMountFor("oversized-entry")).toEqual(expect.any(Function));
+    expect(afterMountFor("sensitive-files")).toEqual(expect.any(Function));
   });
 });

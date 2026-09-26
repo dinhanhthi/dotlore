@@ -8,6 +8,7 @@ import type {
 } from "@/lib/types";
 
 import {
+  mockSensitivity,
   toFileContent,
   toTrackedFile,
   type FileRecord,
@@ -151,13 +152,18 @@ function inspectPreview(slug: string, rel: string): InspectedEntryDto {
       folder_limit: maxSeedFolderBytes(),
       confirmation_required: false,
       skipped_too_large: over ? [{ rel, bytes }] : [],
+      sensitivity: mockSensitivity(rel),
+      secret_descendants: [],
+      secret_descendants_more: false,
     };
   }
   const prefix = `${rel}/`;
   let bytes = 0;
   const skipped: InspectedEntryDto["skipped_too_large"] = [];
+  const secrets: string[] = [];
   for (const [path, record] of Object.entries(files)) {
     if (path !== rel && !path.startsWith(prefix)) continue;
+    if (mockSensitivity(path) === "secret") secrets.push(path);
     const size = recordBytes(record);
     if (fileOverLimit(record)) skipped.push({ rel: path, bytes: size });
     else bytes += size;
@@ -168,6 +174,9 @@ function inspectPreview(slug: string, rel: string): InspectedEntryDto {
     folder_limit: maxSeedFolderBytes(),
     confirmation_required: bytes > maxSeedFolderBytes(),
     skipped_too_large: skipped,
+    sensitivity: null,
+    secret_descendants: secrets.sort().slice(0, 20),
+    secret_descendants_more: secrets.length > 20,
   };
 }
 
@@ -204,6 +213,8 @@ function listChildren(slug: string, rel: string): PickerRow[] {
       name,
       kind,
       rel: rel ? `${rel}/${name}` : name,
+      sensitivity:
+        kind === "file" ? mockSensitivity(rel ? `${rel}/${name}` : name) : null,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -438,6 +449,23 @@ const handlers: Record<
     const slug = argString(args, "slug");
     const rel = argString(args, "rel");
     const preview = inspectPreview(slug, rel);
+    const secrets =
+      preview.kind === "file"
+        ? preview.sensitivity === "secret"
+          ? [rel]
+          : []
+        : preview.secret_descendants;
+    if (
+      secrets.length > 0 &&
+      args.confirmedSensitive !== true &&
+      args.confirmed_sensitive !== true
+    ) {
+      return {
+        outcome: "confirm_sensitive",
+        paths: secrets,
+        more: preview.secret_descendants_more,
+      };
+    }
     if (preview.kind === "file") {
       const skipped = preview.skipped_too_large[0];
       if (skipped) {

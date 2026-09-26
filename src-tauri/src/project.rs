@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -25,8 +26,6 @@ pub const PROJECT_FILE: &str = ".dotloreproject";
 
 /// Default include-list patterns for a project folder (not an agent home).
 pub const DEFAULT_PATTERNS: &[&str] = &[
-    ".env",
-    ".env.local",
     "CLAUDE.md",
     "CLAUDE.local.md",
     "AGENTS.md",
@@ -74,6 +73,70 @@ pub const DEFAULT_PATTERNS: &[&str] = &[
     ".github/agents/",
     ".github/skills/",
 ];
+
+/// File-name patterns that may contain credentials and need a warning before tracking.
+pub const SECRET_PATTERNS: &[&str] = &[
+    ".env",
+    ".env.*",
+    "*.env",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.p8",
+    "id_rsa*",
+    "id_ed25519*",
+    ".npmrc",
+    ".netrc",
+    ".pypirc",
+    "credentials*",
+    "secrets*",
+    "auth.json",
+    ".credentials.json",
+];
+
+/// File-name patterns that may contain tokens but are commonly tracked.
+pub const TOKEN_HINT_PATTERNS: &[&str] = &[".mcp.json"];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Sensitivity {
+    Secret,
+    TokenHint,
+}
+
+static SECRET_MATCHER: OnceLock<Gitignore> = OnceLock::new();
+static TOKEN_HINT_MATCHER: OnceLock<Gitignore> = OnceLock::new();
+
+fn pattern_matcher(patterns: &[&str]) -> Gitignore {
+    let mut builder = GitignoreBuilder::new(Path::new("."));
+    for pattern in patterns {
+        builder
+            .add_line(None, pattern)
+            .expect("valid sensitivity pattern");
+    }
+    builder.build().expect("valid sensitivity matcher")
+}
+
+/// Classify a path using its file name, regardless of its parent directory.
+pub fn sensitivity(rel: &Path) -> Option<Sensitivity> {
+    let name = rel.file_name()?.to_str()?;
+    let is_document = (name.ends_with(".md") || name.ends_with(".txt"))
+        && (name.starts_with("credentials") || name.starts_with("secrets"));
+    if !is_document
+        && SECRET_MATCHER
+            .get_or_init(|| pattern_matcher(SECRET_PATTERNS))
+            .matched(Path::new(name), false)
+            .is_ignore()
+    {
+        return Some(Sensitivity::Secret);
+    }
+
+    TOKEN_HINT_MATCHER
+        .get_or_init(|| pattern_matcher(TOKEN_HINT_PATTERNS))
+        .matched(Path::new(name), false)
+        .is_ignore()
+        .then_some(Sensitivity::TokenHint)
+}
 
 /// Per-agent include-list. Key is the folder `file_name` with the leading
 /// dot stripped (`~/.claude` → `claude`, `~/.config/opencode` → `opencode`).
@@ -1034,7 +1097,7 @@ mod tests {
             seed(root, &default_pattern_strings(), "", Limits::default()).unwrap();
         assert!(skipped.is_empty());
         let keys = tracked_keys(&file);
-        assert_eq!(keys, vec![".env", "CLAUDE.md", "docs/"]);
+        assert_eq!(keys, vec!["CLAUDE.md", "docs/"]);
         for k in &keys {
             assert_eq!(file.entries[k].gen, 1);
             assert_eq!(file.entries[k].state, State::Tracked);
@@ -1047,7 +1110,7 @@ mod tests {
             Limits::default(),
         )
         .unwrap();
-        assert_eq!(tracked_keys(&ignored), vec![".env", "docs/"]);
+        assert_eq!(tracked_keys(&ignored), vec!["docs/"]);
     }
 
     #[test]
@@ -1203,10 +1266,70 @@ mod tests {
     }
 
     #[test]
-    fn default_patterns_include_docs_and_env_files() {
+    fn default_patterns_include_docs_but_not_env_files() {
         assert!(DEFAULT_PATTERNS.contains(&"docs/"));
-        assert!(DEFAULT_PATTERNS.contains(&".env"));
-        assert!(DEFAULT_PATTERNS.contains(&".env.local"));
+        assert!(!DEFAULT_PATTERNS.contains(&".env"));
+        assert!(!DEFAULT_PATTERNS.contains(&".env.local"));
+    }
+
+    #[test]
+    fn secret_file_names_are_classified_in_any_directory() {
+        for rel in [
+            ".env",
+            ".env.production",
+            "certs/server.pem",
+            "certs/server.key",
+            "certs/server.p12",
+            "certs/AuthKey_ABC123.p8",
+            "config/prod.env",
+            "deploy/local.env",
+            "ssh/id_rsa",
+            "ssh/id_rsa.pub",
+            "ssh/id_ed25519",
+            "ssh/id_ed25519.pub",
+            "home/.npmrc",
+            "home/.netrc",
+            "home/.pypirc",
+            "config/credentials.json",
+            "config/secrets.yaml",
+            "config/auth.json",
+            "config/.credentials.json",
+        ] {
+            assert_eq!(
+                sensitivity(Path::new(rel)),
+                Some(Sensitivity::Secret),
+                "{rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn token_hint_and_plain_text_names_are_classified() {
+        assert_eq!(
+            sensitivity(Path::new("config/.mcp.json")),
+            Some(Sensitivity::TokenHint)
+        );
+        for rel in [
+            "CLAUDE.md",
+            "docs/secrets-rotation.md",
+            "notes/credentials.txt",
+            "notes/credentials.md",
+            "notes/secrets.txt",
+        ] {
+            assert_eq!(sensitivity(Path::new(rel)), None, "{rel}");
+        }
+    }
+
+    #[test]
+    fn sensitivity_serializes_with_camel_case_names() {
+        assert_eq!(
+            serde_json::to_string(&Sensitivity::Secret).unwrap(),
+            "\"secret\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Sensitivity::TokenHint).unwrap(),
+            "\"tokenHint\""
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ export const scenarios: Scenario[] = [
   { id: "unlinked-project", label: "Unlinked project", detail: "Cloud project not yet bound" },
   { id: "include-list-editor", label: "Include-list editor", detail: "Settings Patterns tab" },
   { id: "oversized-entry", label: "Oversized entry", detail: "TooLarge file weight" },
+  { id: "sensitive-files", label: "Sensitive files", detail: "Secret and token hints in the tree" },
 ];
 
 export const defaultScenarioId = "populated";

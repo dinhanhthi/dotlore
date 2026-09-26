@@ -18,12 +18,10 @@ import type {
   TrackResultDto,
 } from "./types";
 
-/** A folder over the add limit, waiting for a yes/no while the batch is paused. */
-export type TrackConfirm = {
-  rel: string;
-  bytes: number;
-  folderLimit: number;
-};
+/** A pending yes/no before a track batch can continue. */
+export type TrackConfirm =
+  | { kind: "folder_limit"; rel: string; bytes: number; folderLimit: number }
+  | { kind: "sensitive"; rel: string; paths: string[]; more: boolean };
 
 export type WorkSnapshot = {
   inflight: number;
@@ -68,7 +66,7 @@ function waitForTrackConfirm(next: TrackConfirm): Promise<boolean> {
   });
 }
 
-/** Resolve the paused folder confirmation. A second call is a no-op. */
+/** Resolve the paused track confirmation. A second call is a no-op. */
 export function answerTrackConfirm(yes: boolean): void {
   const resolve = confirmResolve;
   confirmResolve = null;
@@ -313,13 +311,14 @@ export function inspectEntry(
 export function trackEntry(
   slug: string,
   rel: string,
-  confirmedFolderBytes?: number | null,
+  options: { confirmedFolderBytes?: number | null; confirmedSensitive?: boolean } = {},
 ): Promise<TrackResultDto> {
   return run(() =>
     invoke("track_entry", {
       slug,
       rel,
-      confirmedFolderBytes: confirmedFolderBytes ?? null,
+      confirmedFolderBytes: options.confirmedFolderBytes ?? null,
+      confirmedSensitive: options.confirmedSensitive ?? false,
     }),
   );
 }
@@ -364,28 +363,50 @@ export async function applyTrackBatch(
           await invoke("untrack_entry", { slug, rel: op.rel });
           continue;
         }
-        let result = await invoke<TrackResultDto>("track_entry", {
-          slug,
-          rel: op.rel,
-          confirmedFolderBytes: op.confirmedFolderBytes ?? null,
-        });
-        if (result.outcome === "needs_confirmation") {
+        let confirmedFolderBytes = op.confirmedFolderBytes ?? null;
+        let confirmedSensitive = false;
+        let confirmedFolder = false;
+        for (;;) {
+          const result = await invoke<TrackResultDto>("track_entry", {
+            slug,
+            rel: op.rel,
+            confirmedFolderBytes,
+            confirmedSensitive,
+          });
+          if (result.outcome === "done") break;
+          if (result.outcome === "confirm_sensitive") {
+            if (confirmedSensitive) throw new Error(`Could not track ${op.rel}`);
+            setTaskLabel(`Confirm tracking ${op.rel}…${progress}`);
+            const yes = await waitForTrackConfirm({
+              kind: "sensitive",
+              rel: op.rel,
+              paths: result.paths,
+              more: result.more,
+            });
+            if (!yes) {
+              declined.push(op.rel);
+              break;
+            }
+            confirmedSensitive = true;
+            continue;
+          }
+          if (confirmedFolder) {
+            stillOver.push(op.rel);
+            break;
+          }
           setTaskLabel(`Confirm tracking ${op.rel}…${progress}`);
           const yes = await waitForTrackConfirm({
+            kind: "folder_limit",
             rel: op.rel,
             bytes: result.bytes,
             folderLimit: result.folder_limit,
           });
           if (!yes) {
             declined.push(op.rel);
-            continue;
+            break;
           }
-          result = await invoke<TrackResultDto>("track_entry", {
-            slug,
-            rel: op.rel,
-            confirmedFolderBytes: result.bytes,
-          });
-          if (result.outcome === "needs_confirmation") stillOver.push(op.rel);
+          confirmedFolderBytes = result.bytes;
+          confirmedFolder = true;
         }
       } catch (err) {
         firstError = errorMessage(err, "Something went wrong");
@@ -398,7 +419,7 @@ export async function applyTrackBatch(
       const parts: string[] = [];
       if (declined.length === 1) parts.push(`${declined[0]} was not tracked`);
       else if (declined.length > 1) {
-        parts.push(`${declined.length} folders were not tracked`);
+        parts.push(`${declined.length} items were not tracked`);
       }
       if (stillOver.length === 1) {
         parts.push(`${stillOver[0]} is over the folder limit and was not tracked`);

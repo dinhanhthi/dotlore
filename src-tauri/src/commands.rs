@@ -102,6 +102,7 @@ pub struct PickerRow {
     pub name: String,
     pub kind: String,
     pub rel: String,
+    pub sensitivity: Option<project::Sensitivity>,
 }
 
 /// Preview of a path the user may add.
@@ -112,6 +113,9 @@ pub struct InspectedEntryDto {
     pub folder_limit: u64,
     pub confirmation_required: bool,
     pub skipped_too_large: Vec<SkippedFileDto>,
+    pub sensitivity: Option<project::Sensitivity>,
+    pub secret_descendants: Vec<String>,
+    pub secret_descendants_more: bool,
 }
 
 /// One file excluded from a folder measurement by the per-file limit.
@@ -154,6 +158,10 @@ pub struct WipeFailureDto {
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum TrackResultDto {
     Done,
+    ConfirmSensitive {
+        paths: Vec<String>,
+        more: bool,
+    },
     NeedsConfirmation {
         bytes: u64,
         folder_limit: u64,
@@ -702,11 +710,18 @@ pub async fn track_entry(
     slug: String,
     rel: String,
     confirmed_folder_bytes: Option<u64>,
+    confirmed_sensitive: Option<bool>,
 ) -> Result<TrackResultDto, String> {
     let engine = state.shared_engine().map_err(front_msg)?;
     let result = tauri::async_runtime::spawn_blocking(move || {
         let mut e = engine.lock().unwrap_or_else(PoisonError::into_inner);
-        track_entry_sync(&mut e, &slug, &rel, confirmed_folder_bytes)
+        track_entry_sync(
+            &mut e,
+            &slug,
+            &rel,
+            confirmed_folder_bytes,
+            confirmed_sensitive.unwrap_or(false),
+        )
     })
     .await
     .map_err(front_msg)??;
@@ -1199,6 +1214,9 @@ fn inspected_dto(info: &InspectedEntry) -> InspectedEntryDto {
         folder_limit: info.folder_limit,
         confirmation_required: info.confirmation_required,
         skipped_too_large: skipped_dto(&info.skipped_too_large),
+        sensitivity: info.sensitivity,
+        secret_descendants: info.secret_descendants.clone(),
+        secret_descendants_more: info.secret_descendants_more,
     }
 }
 
@@ -1207,13 +1225,22 @@ fn track_entry_sync(
     slug: &str,
     rel: &str,
     confirmed_folder_bytes: Option<u64>,
+    confirmed_sensitive: bool,
 ) -> Result<TrackResultDto, String> {
     require_plain_rel(rel)?;
     match engine
-        .track_entry(slug, Path::new(rel), confirmed_folder_bytes)
+        .track_entry_with_sensitive_confirmation(
+            slug,
+            Path::new(rel),
+            confirmed_folder_bytes,
+            confirmed_sensitive,
+        )
         .map_err(front_err)?
     {
         TrackOutcome::Done(_) => Ok(TrackResultDto::Done),
+        TrackOutcome::ConfirmSensitive { paths, more } => {
+            Ok(TrackResultDto::ConfirmSensitive { paths, more })
+        }
         TrackOutcome::NeedsConfirmation(info) => Ok(TrackResultDto::NeedsConfirmation {
             bytes: info.bytes,
             folder_limit: info.folder_limit,
@@ -1334,6 +1361,11 @@ fn list_children_in(root: &Path, rel: &str) -> Result<Vec<PickerRow>, String> {
             format!("{rel}/{name_str}")
         };
         out.push(PickerRow {
+            sensitivity: if kind == "file" {
+                project::sensitivity(Path::new(&child_rel))
+            } else {
+                None
+            },
             name: name_str,
             kind,
             rel: child_rel,
@@ -1660,11 +1692,11 @@ mod tests {
         let mut fx = fixture();
         let before = fx.engine.list_entries(&fx.slug).unwrap();
         assert!(
-            track_entry_sync(&mut fx.engine, &fx.slug, "../secret", None).is_err(),
+            track_entry_sync(&mut fx.engine, &fx.slug, "../secret", None, false).is_err(),
             "a relative escape must be rejected"
         );
         assert!(
-            track_entry_sync(&mut fx.engine, &fx.slug, "/tmp/secret", None).is_err(),
+            track_entry_sync(&mut fx.engine, &fx.slug, "/tmp/secret", None, false).is_err(),
             "an absolute path must be rejected"
         );
         assert_eq!(
@@ -1680,7 +1712,7 @@ mod tests {
         fx.engine.set_max_file_mb(1).unwrap();
         fill(&fx, "huge.bin", 1024 * 1024 + 1);
         let before = fx.engine.list_entries(&fx.slug).unwrap();
-        let err = track_entry_sync(&mut fx.engine, &fx.slug, "huge.bin", None)
+        let err = track_entry_sync(&mut fx.engine, &fx.slug, "huge.bin", None, false)
             .expect_err("over-limit file must be rejected");
         assert!(
             err.contains("bytes") || err.contains("limit") || err.contains("huge.bin"),
@@ -1691,6 +1723,135 @@ mod tests {
             before,
             "rejecting an over-limit file must not add it"
         );
+    }
+
+    #[test]
+    fn track_entry_asks_to_confirm_a_secret_file_without_mutating() {
+        let mut fx = fixture();
+        write(&fx, ".env.production", b"TOKEN=1\n");
+        let picker = list_entry_children_sync(&fx.engine, &fx.slug, "").unwrap();
+        let row = picker
+            .iter()
+            .find(|row| row.rel == ".env.production")
+            .unwrap();
+        assert_eq!(row.sensitivity, Some(project::Sensitivity::Secret));
+        let inspected = inspect_entry_sync(&mut fx.engine, &fx.slug, ".env.production").unwrap();
+        assert_eq!(inspected.sensitivity, Some(project::Sensitivity::Secret));
+        let before = fx.engine.list_entries(&fx.slug).unwrap();
+        let result =
+            track_entry_sync(&mut fx.engine, &fx.slug, ".env.production", None, false).unwrap();
+        assert_eq!(
+            result,
+            TrackResultDto::ConfirmSensitive {
+                paths: vec![".env.production".into()],
+                more: false,
+            }
+        );
+        assert_eq!(fx.engine.list_entries(&fx.slug).unwrap(), before);
+    }
+
+    #[test]
+    fn folder_preview_and_track_list_secret_descendants_with_a_cap() {
+        let mut fx = fixture();
+        for n in 0..21 {
+            write(&fx, &format!("notes/credentials-{n:02}.json"), b"{}\n");
+        }
+        write(&fx, "notes/plain.md", b"ok\n");
+
+        let picker = list_entry_children_sync(&fx.engine, &fx.slug, "").unwrap();
+        let folder = picker.iter().find(|row| row.rel == "notes").unwrap();
+        let row_json = serde_json::to_value(folder).unwrap();
+        assert!(
+            row_json.get("secret_descendants").is_none(),
+            "listing a folder must defer the descendant scan"
+        );
+
+        let inspected = inspect_entry_sync(&mut fx.engine, &fx.slug, "notes").unwrap();
+        assert_eq!(inspected.secret_descendants.len(), 20);
+        assert!(inspected.secret_descendants_more);
+        let before = fx.engine.list_entries(&fx.slug).unwrap();
+        let result = track_entry_sync(&mut fx.engine, &fx.slug, "notes", None, false).unwrap();
+        match result {
+            TrackResultDto::ConfirmSensitive { paths, more } => {
+                assert_eq!(paths.len(), 20);
+                assert!(
+                    more,
+                    "the confirmation must disclose additional secret files"
+                );
+                assert!(paths
+                    .iter()
+                    .all(|path| path.starts_with("notes/credentials-")));
+            }
+            other => panic!("expected secret confirmation, got {other:?}"),
+        }
+        assert_eq!(fx.engine.list_entries(&fx.slug).unwrap(), before);
+        assert_eq!(
+            track_entry_sync(&mut fx.engine, &fx.slug, "notes", None, true).unwrap(),
+            TrackResultDto::Done
+        );
+        assert!(fx
+            .engine
+            .list_entries(&fx.slug)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.key == "notes/"));
+    }
+
+    #[test]
+    fn oversized_secret_descendant_still_requires_confirmation() {
+        let mut fx = fixture();
+        fx.engine.set_max_file_mb(1).unwrap();
+        fill(&fx, "notes/credentials.json", 1024 * 1024 + 1);
+        let before = fx.engine.list_entries(&fx.slug).unwrap();
+
+        let result = track_entry_sync(&mut fx.engine, &fx.slug, "notes", None, false).unwrap();
+        assert_eq!(
+            result,
+            TrackResultDto::ConfirmSensitive {
+                paths: vec!["notes/credentials.json".into()],
+                more: false,
+            }
+        );
+        assert_eq!(fx.engine.list_entries(&fx.slug).unwrap(), before);
+    }
+
+    #[test]
+    fn confirmed_sensitive_track_adds_the_file() {
+        let mut fx = fixture();
+        write(&fx, "certs/server.pem", b"certificate\n");
+        assert_eq!(
+            track_entry_sync(&mut fx.engine, &fx.slug, "certs/server.pem", None, true).unwrap(),
+            TrackResultDto::Done
+        );
+        assert!(fx
+            .engine
+            .list_entries(&fx.slug)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.key == "certs/server.pem"));
+    }
+
+    #[test]
+    fn token_hint_and_plain_file_track_without_secret_confirmation() {
+        let mut fx = fixture();
+        write(&fx, ".mcp.json", b"{}\n");
+        write(&fx, "plain.txt", b"ok\n");
+        let picker = list_entry_children_sync(&fx.engine, &fx.slug, "").unwrap();
+        assert_eq!(
+            picker
+                .iter()
+                .find(|row| row.rel == ".mcp.json")
+                .unwrap()
+                .sensitivity,
+            Some(project::Sensitivity::TokenHint)
+        );
+        for rel in [".mcp.json", "plain.txt"] {
+            assert_eq!(
+                track_entry_sync(&mut fx.engine, &fx.slug, rel, None, false).unwrap(),
+                TrackResultDto::Done,
+                "{rel}"
+            );
+        }
     }
 
     #[test]
@@ -1764,7 +1925,7 @@ mod tests {
     fn untrack_missing_explicit_entry_succeeds() {
         let mut fx = fixture();
         write(&fx, "gone.md", b"bye\n");
-        track_entry_sync(&mut fx.engine, &fx.slug, "gone.md", None)
+        track_entry_sync(&mut fx.engine, &fx.slug, "gone.md", None, false)
             .expect("tracking gone.md should succeed");
         fs::remove_file(fx.root.path().join("gone.md")).unwrap();
 
@@ -1796,8 +1957,14 @@ mod tests {
 
         fill(&fx, "notes/d.md", 400_000);
         let before = fx.engine.list_entries(&fx.slug).unwrap();
-        match track_entry_sync(&mut fx.engine, &fx.slug, "notes", Some(preview.bytes))
-            .expect("stale confirmation is not an error")
+        match track_entry_sync(
+            &mut fx.engine,
+            &fx.slug,
+            "notes",
+            Some(preview.bytes),
+            false,
+        )
+        .expect("stale confirmation is not an error")
         {
             TrackResultDto::NeedsConfirmation {
                 bytes,
@@ -1812,6 +1979,9 @@ mod tests {
                 );
             }
             TrackResultDto::Done => panic!("stale smaller byte count must not mutate"),
+            TrackResultDto::ConfirmSensitive { .. } => {
+                panic!("plain notes folder must not ask for sensitive confirmation")
+            }
         }
         assert_eq!(
             fx.engine.list_entries(&fx.slug).unwrap(),

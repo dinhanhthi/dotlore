@@ -31,7 +31,7 @@ import {
 } from "@/lib/ipc";
 import { useRoots, useSyncing, useTaskLabel } from "@/lib/roots";
 import { buildTree, filterTree } from "@/lib/tree";
-import type { ConflictView, EntryView, RootRow, TrackedFile } from "@/lib/types";
+import type { ConflictView, EntryView, RootRow, Sensitivity, TrackedFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -108,6 +108,10 @@ export function projectSizeLabel(files: TrackedFile[], linked: boolean): string 
   const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
   const fileLabel = `${files.length} ${files.length === 1 ? "file" : "files"}`;
   return `${fileLabel} · ${formatBytes(totalBytes)}`;
+}
+
+export function fileSensitivityMap(files: TrackedFile[]): Map<string, Sensitivity | null> {
+  return new Map(files.map((file) => [file.rel, file.sensitivity]));
 }
 
 function TreeSeeding({ name }: { name: string }) {
@@ -249,6 +253,7 @@ export function FileTree() {
   const maxFileBytes = treeReady && snapshot ? snapshot.maxFileBytes : DEFAULT_MAX_FILE_BYTES;
 
   const tree = useMemo(() => (awaiting ? [] : buildTree(files)), [awaiting, files]);
+  const sensitivityByRel = useMemo(() => fileSensitivityMap(files), [files]);
   const filtering = query.trim().length > 0;
   const visibleTree = useMemo(() => filterTree(tree, query), [tree, query]);
 
@@ -415,6 +420,7 @@ export function FileTree() {
             onUntrack={setUntrackTarget}
             rootPath={root.path}
             maxFileBytes={maxFileBytes}
+            sensitivityByRel={sensitivityByRel}
             conflictViews={conflictViews}
             onQuickResolve={onQuickResolve}
             quickResolveDisabled={quickResolveDisabled}

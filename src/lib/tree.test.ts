@@ -8,7 +8,7 @@ function tracked(
   bytes = 0,
   state: TrackedFile["state"] = "Synced",
 ): TrackedFile {
-  return { rel, bytes, state };
+  return { rel, bytes, state, sensitivity: null };
 }
 
 function fileNode(

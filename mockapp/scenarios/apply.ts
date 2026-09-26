@@ -1,10 +1,26 @@
 import { LINKABLE_ROWS } from "../fixtures/roots";
-import { resetStore, type MockState } from "../mocks/store";
+import { emptyPopulated, resetStore, type MockState } from "../mocks/store";
 import { defaultScenarioId, getScenario, scenarios } from "./index";
 
 export const STORAGE_KEY = "dotlore.web-scenario";
 
 export type ScenarioSeed = Partial<MockState>;
+
+const sensitiveSeed = emptyPopulated();
+sensitiveSeed.files.dotlore![".env.production"] = {
+  text: "API_KEY=example-only\n",
+  binary: false,
+  too_large: false,
+};
+sensitiveSeed.files.dotlore![".mcp.json"] = {
+  text: "{\"servers\":{}}\n",
+  binary: false,
+  too_large: false,
+};
+sensitiveSeed.entries.dotlore!.push(
+  { key: ".env.production", kind: "file", covering: [] },
+  { key: ".mcp.json", kind: "file", covering: [] },
+);
 
 const seeds: Record<string, ScenarioSeed> = {
   setup: { providerDir: null, roots: [], files: {}, conflicts: {} },
@@ -22,11 +38,12 @@ const seeds: Record<string, ScenarioSeed> = {
   "include-list-editor": {
     pickerExtra: {
       dotlore: {
-        "": [{ name: "NOTES.md", kind: "file", rel: "NOTES.md" }],
+        "": [{ name: "NOTES.md", kind: "file", rel: "NOTES.md", sensitivity: null }],
       },
     },
   },
   "oversized-entry": {},
+  "sensitive-files": sensitiveSeed,
 };
 
 function clickWhen(find: () => HTMLElement | null, timeoutMs = 2500): void {
@@ -106,6 +123,13 @@ export function afterMountFor(id: string): (() => void) | undefined {
       window.setTimeout(() => {
         clickWhen(() => buttonByText("dump.bin"));
       }, 80);
+    };
+  }
+  if (id === "sensitive-files") {
+    return () => {
+      clickWhen(() =>
+        document.querySelector<HTMLElement>("#sidebar-root-dotlore button"),
+      );
     };
   }
   return undefined;

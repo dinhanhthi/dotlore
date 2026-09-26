@@ -456,7 +456,7 @@ export function SettingsGeneral() {
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-8">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm">Appearance</span>
         <div className="flex rounded-4xl border border-border p-0.5">
@@ -495,7 +495,7 @@ export function SettingsGeneral() {
       </div>
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-col">
-          <span className="text-sm">App data</span>
+          <span className="text-sm mb-2">App data</span>
           {home !== null && (
             <Tooltip>
               <TooltipTrigger

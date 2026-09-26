@@ -23,8 +23,6 @@ export const DEFAULT_MAX_SEED_FOLDER_MB = 200;
 
 /** Built-in project seed patterns shown in Settings until the user edits them. */
 export const DEFAULT_PATTERNS = [
-  ".env",
-  ".env.local",
   "CLAUDE.md",
   "AGENTS.md",
   "docs/",

@@ -8,6 +8,7 @@ import type { RootRow } from "@/lib/types";
 import { pickerStateAfterIdentityChange } from "./picker";
 import {
   FileTree,
+  fileSensitivityMap,
   projectSizeLabel,
   showAgentEmptyHint,
   treeAwaitingLoad,
@@ -202,12 +203,24 @@ describe("FileTree agent empty hint", () => {
 
 describe("projectSizeLabel", () => {
   it("counts files for a linked root", () => {
-    expect(projectSizeLabel([{ rel: "a", bytes: 2048, state: "Synced" }], true)).toBe(
+    expect(projectSizeLabel([{ rel: "a", bytes: 2048, state: "Synced", sensitivity: null }], true)).toBe(
       "1 file · 2.0 KB",
     );
   });
 
   it("says Not linked instead of counting a list that was never loaded", () => {
     expect(projectSizeLabel([], false)).toBe("Not linked");
+  });
+});
+
+describe("fileSensitivityMap", () => {
+  it("keeps the sensitivity of each tracked path for TreeNode", () => {
+    expect(fileSensitivityMap([
+      { rel: "config/credentials.json", bytes: 4, state: "Synced", sensitivity: "secret" },
+      { rel: ".mcp.json", bytes: 2, state: "Synced", sensitivity: "tokenHint" },
+    ])).toEqual(new Map([
+      ["config/credentials.json", "secret"],
+      [".mcp.json", "tokenHint"],
+    ]));
   });
 });
