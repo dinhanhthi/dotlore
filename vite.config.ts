@@ -26,9 +26,6 @@ export default defineConfig({
     outDir: "dist",
   },
   test: {
-    include: [
-      "src/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      "mockapp/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-    ],
+    include: ["src/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
   },
 });
