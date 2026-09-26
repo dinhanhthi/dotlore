@@ -190,10 +190,18 @@
   transition-timing-function: var(--ease-out);
 }
 
-/* WKWebView repaints a rotating inline SVG every frame and pixel-snaps its
-   bounding box, so spinners wobble off-center. Its own layer rotates cleanly. */
+/* The 15px root puts icons at fractional pixels (size-4 = 15px, h-11 =
+   41.25px). Rotating the <svg> box makes WebKit re-snap its bounds each frame,
+   so spinners wobble. Rotate the drawing about the viewBox center instead: the
+   box never moves, so there is nothing to snap. */
 .animate-spin {
-  will-change: transform;
+  animation: none;
+}
+
+.animate-spin > * {
+  transform-box: view-box;
+  transform-origin: center;
+  animation: var(--animate-spin);
 }
 
 /* Classic 6px bars, flush with the panel edge. The outer side of the thumb is
