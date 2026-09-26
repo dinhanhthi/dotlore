@@ -1,4 +1,4 @@
-import { Info, TriangleAlert } from "lucide-react";
+import { Info, KeyRound } from "lucide-react";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Sensitivity } from "@/lib/types";
@@ -10,7 +10,7 @@ export function sensitiveNameClass(
   return sensitivity === "secret" ? "text-status-conflict" : undefined;
 }
 
-/** Warning or hint icon with a tooltip; renders nothing for a plain file. */
+/** Key or hint icon with a tooltip; renders nothing for a plain file. */
 export function SensitivityMark({
   sensitivity,
 }: {
@@ -30,7 +30,7 @@ export function SensitivityMark({
         render={<span className="inline-flex shrink-0" aria-label={label} />}
       >
         {sensitivity === "secret" ? (
-          <TriangleAlert aria-hidden className="size-3.5 text-status-conflict" />
+          <KeyRound aria-hidden className="size-3.5 text-status-conflict" />
         ) : (
           <Info aria-hidden className="size-3.5 text-muted-foreground" />
         )}

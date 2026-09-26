@@ -56,9 +56,11 @@ describe("TreeNode untrack", () => {
 });
 
 describe("TreeNode sensitivity", () => {
-  it("shows the warning for a Secret file, immediately before size", () => {
+  it("shows the key mark for a Secret file, immediately before size", () => {
     const html = renderNode("config/credentials.json", "secret");
     expect(html).toContain('aria-label="Sensitive file — may contain secrets"');
+    expect(html).toContain("lucide-key-round");
+    expect(html).not.toContain("lucide-triangle-alert");
     expect(html).not.toContain("text-amber-500");
     expect(html.indexOf('aria-label="Sensitive file')).toBeLessThan(html.indexOf("0 bytes"));
   });

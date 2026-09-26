@@ -35,9 +35,11 @@ function renderRow(
 }
 
 describe("PickerNode sensitivity", () => {
-  it("shows the warning and the warning-colored name on a secret file", () => {
+  it("shows the key mark and the warning-colored name on a secret file", () => {
     const html = renderRow("credentials.json", "secret");
     expect(html).toContain('aria-label="Sensitive file — may contain secrets"');
+    expect(html).toContain("lucide-key-round");
+    expect(html).not.toContain("lucide-triangle-alert");
     expect(html).toMatch(/<span class="[^"]*text-status-conflict[^"]*">credentials\.json<\/span>/);
     expect(html.indexOf('aria-label="Sensitive file')).toBeLessThan(
       html.indexOf('aria-label="Track credentials.json"'),
