@@ -27,6 +27,7 @@ import {
   answerTrackConfirm,
   applyTrackBatch,
   BLOCKED,
+  inspectEntry,
   listEntryChildren,
   reportError,
   untrackEntry,
@@ -41,11 +42,13 @@ import { formatBytes, untrackCopy } from "./entries";
 import {
   hasTrackedInside,
   isShownTracked,
+  entryKey,
   orderedPendingOps,
   pickerRowMatchesQuery,
   pickerStateAfterIdentityChange,
   sortPickerRows,
   stagePending,
+  stagedTrackTotal,
   type PendingMap,
   type PickerKind,
 } from "./picker";
@@ -85,6 +88,7 @@ export function EntryPickerDialog({
     [files],
   );
   const [pending, setPending] = useState<PendingMap>({});
+  const [bytesByKey, setBytesByKey] = useState<Record<string, number | null>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [childrenByRel, setChildrenByRel] = useState<Record<string, PickerRow[]>>(
     {},
@@ -93,10 +97,15 @@ export function EntryPickerDialog({
   const [query, setQuery] = useState("");
   const requestGen = useRef(0);
   const applying = useRef(false);
+  const pendingRef = useRef(pending);
+  const measuring = useRef(new Set<string>());
+  pendingRef.current = pending;
 
   useEffect(() => {
     const next = pickerStateAfterIdentityChange();
     setPending(next.pending);
+    setBytesByKey({});
+    measuring.current.clear();
     setExpanded(next.expanded);
     setChildrenByRel({});
     setLoadingRel({});
@@ -129,9 +138,34 @@ export function EntryPickerDialog({
   }
 
   function stage(rel: string, kind: PickerKind, action: "track" | "untrack") {
-    setPending((current) =>
-      stagePending(current, rel, kind, action, entries, trackedRels),
-    );
+    const key = entryKey(rel, kind);
+    const current = pendingRef.current;
+    const next = stagePending(current, rel, kind, action, entries, trackedRels);
+    pendingRef.current = next;
+    setPending(next);
+    if (next[key] === "track" && current[key] !== "track") measureTracked(rel, kind);
+  }
+
+  function measureTracked(rel: string, kind: PickerKind) {
+    const key = entryKey(rel, kind);
+    if (typeof bytesByKey[key] === "number" || measuring.current.has(key)) return;
+    measuring.current.add(key);
+    const gen = requestGen.current;
+    void inspectEntry(slug, rel)
+      .then((info) => {
+        if (gen !== requestGen.current) return;
+        const skipped = info.skipped_too_large.reduce((sum, file) => sum + file.bytes, 0);
+        setBytesByKey((current) => ({ ...current, [key]: info.bytes + skipped }));
+      })
+      .catch((err) => {
+        if (gen !== requestGen.current) return;
+        setBytesByKey((current) => ({ ...current, [key]: null }));
+        reportError(errorMessage(err, "Something went wrong"));
+      })
+      .finally(() => {
+        if (gen !== requestGen.current) return;
+        measuring.current.delete(key);
+      });
   }
 
   function toggle(rel: string) {
@@ -184,6 +218,7 @@ export function EntryPickerDialog({
           )
         : rootRows;
   const changeCount = Object.keys(pending).length;
+  const stagedSize = stagedTrackTotal(pending, bytesByKey);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -244,21 +279,40 @@ export function EntryPickerDialog({
             )}
           </div>
         </div>
-        <DialogFooter className="shrink-0">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => handleOpenChange(false)}
+        <DialogFooter className="shrink-0 flex-row items-center justify-between sm:justify-between">
+          <p
+            className="flex min-w-0 items-center gap-1.5 text-sm tabular-nums text-muted-foreground"
+            aria-live="polite"
+            aria-busy={stagedSize.complete ? undefined : true}
           >
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            disabled={changeCount === 0}
-            onClick={apply}
-          >
-            Apply
-          </Button>
+            <span className="sr-only">
+              {stagedSize.complete
+                ? "Total size to track: "
+                : "Measuring total size to track: "}
+            </span>
+            {stagedSize.complete ? null : (
+              <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden />
+            )}
+            {stagedSize.complete || stagedSize.bytes > 0 ? (
+              <span className="truncate">{formatBytes(stagedSize.bytes)}</span>
+            ) : null}
+          </p>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => handleOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={changeCount === 0}
+              onClick={apply}
+            >
+              Apply
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

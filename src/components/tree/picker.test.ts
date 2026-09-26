@@ -7,6 +7,7 @@ import {
   isShownTracked,
   orderedPendingOps,
   stagePending,
+  stagedTrackTotal,
   type PendingMap,
 } from "./picker";
 
@@ -103,5 +104,56 @@ describe("orderedPendingOps", () => {
         "docs/readme.md": "track",
       }).map((op) => `${op.action} ${op.rel}`),
     ).toEqual(["untrack docs", "track docs/readme.md"]);
+  });
+});
+
+describe("stagedTrackTotal", () => {
+  it("sums staged tracks and counts a folder instead of the tracks inside it", () => {
+    expect(
+      stagedTrackTotal(
+        {
+          "docs/": "track",
+          "docs/a.md": "track",
+          "docs/sub/": "track",
+          "notes.md": "track",
+          "old.md": "untrack",
+        },
+        {
+          "docs/": 100,
+          "docs/a.md": 40,
+          "docs/sub/": 30,
+          "notes.md": 5,
+          "old.md": 9,
+        },
+      ),
+    ).toEqual({ bytes: 105, complete: true });
+  });
+
+  it("counts a track inside a folder that is only staged to untrack", () => {
+    expect(
+      stagedTrackTotal(
+        { "docs/": "untrack", "docs/readme.md": "track" },
+        { "docs/": 100, "docs/readme.md": 40 },
+      ),
+    ).toEqual({ bytes: 40, complete: true });
+  });
+
+  it("stays incomplete until every included track has a size", () => {
+    expect(
+      stagedTrackTotal({ "docs/": "track", "docs/a.md": "track" }, { "docs/a.md": 40 }),
+    ).toEqual({ bytes: 0, complete: false });
+  });
+
+  it("skips a measurement that failed", () => {
+    expect(
+      stagedTrackTotal(
+        { "a.md": "track", "b.md": "track" },
+        { "a.md": 4, "b.md": null },
+      ),
+    ).toEqual({ bytes: 4, complete: true });
+  });
+
+  it("is zero when nothing is staged to track", () => {
+    expect(stagedTrackTotal({}, {})).toEqual({ bytes: 0, complete: true });
   });
 });

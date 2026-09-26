@@ -192,3 +192,37 @@ export function pickerStateAfterIdentityChange(): {
 } {
   return { pending: {}, expanded: {} };
 }
+
+/**
+ * Total size of staged track marks.
+ * A track inside a staged parent folder counts once, as the parent.
+ * `null` is a measurement that failed and adds nothing.
+ * `complete` is false while any included mark has not been measured yet.
+ */
+export function stagedTrackTotal(
+  pending: PendingMap,
+  bytesByKey: Readonly<Record<string, number | null>>,
+): { bytes: number; complete: boolean } {
+  const keys = Object.keys(pending).filter((key) => pending[key] === "track");
+  let bytes = 0;
+  let complete = true;
+  for (const key of keys) {
+    if (coveredByStagedFolder(key, keys)) continue;
+    const size = bytesByKey[key];
+    if (size === undefined) {
+      complete = false;
+      continue;
+    }
+    if (size !== null) bytes += size;
+  }
+  return { bytes, complete };
+}
+
+function coveredByStagedFolder(key: string, trackKeys: readonly string[]): boolean {
+  const path = key.endsWith("/") ? key.slice(0, -1) : key;
+  return trackKeys.some((other) => {
+    if (other === key || !other.endsWith("/")) return false;
+    const base = other.slice(0, -1);
+    return path.startsWith(`${base}/`);
+  });
+}
