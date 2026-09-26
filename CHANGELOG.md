@@ -1,3 +1,50 @@
+## v0.3.0 (2026-09-26)
+
+### Sensitive data
+
+- Entries that look sensitive — private keys, secrets, credentials — are classified and flagged in the file tree, with the patterns editable in Settings and a mark plus one confirmation dialog in the picker before they're tracked. [#925fa223](https://github.com/dinhanhthi/dotlore/commit/925fa223) [#e6d86dae](https://github.com/dinhanhthi/dotlore/commit/e6d86dae) [#c2ad86ab](https://github.com/dinhanhthi/dotlore/commit/c2ad86ab)
+
+### Errors
+
+- A dedicated Errors view lists every root whose sync has stopped, with a plain-language cause, a suggested remedy, and a Recover action that rebuilds a damaged local copy from the cloud. [#fb1e70c3](https://github.com/dinhanhthi/dotlore/commit/fb1e70c3)
+
+### Conflicts
+
+- A GitKraken-style resolver: a live chunk counter, keep-mine/keep-theirs quick-resolve, synced scrolling between panes, a chunk toggle gutter with decorated results, a full-window mode, and a leave guard so an in-progress resolution isn't lost. [#6f31ef08](https://github.com/dinhanhthi/dotlore/commit/6f31ef08) [#82a85a50](https://github.com/dinhanhthi/dotlore/commit/82a85a50) [#e6f40f3c](https://github.com/dinhanhthi/dotlore/commit/e6f40f3c) [#578b52a6](https://github.com/dinhanhthi/dotlore/commit/578b52a6) [#e0fb630e](https://github.com/dinhanhthi/dotlore/commit/e0fb630e)
+- The resolver shows a spinner while a resolution is being applied. [#02f46250](https://github.com/dinhanhthi/dotlore/commit/02f46250)
+- Untracked paths no longer inflate a project's conflict count. [#57e981c2](https://github.com/dinhanhthi/dotlore/commit/57e981c2)
+
+### Cloud
+
+- Every mounted `CloudStorage` provider is detected as a candidate cloud folder, not just the well-known ones. [#4e9b49fc](https://github.com/dinhanhthi/dotlore/commit/4e9b49fc)
+- The footer shows cloud upload status, and ignores unlinked cloud projects when reporting sync state. [#81b33e73](https://github.com/dinhanhthi/dotlore/commit/81b33e73) [#0919f551](https://github.com/dinhanhthi/dotlore/commit/0919f551)
+
+### Editor
+
+- The file viewer syntax-highlights code instead of showing plain text. [#359c2165](https://github.com/dinhanhthi/dotlore/commit/359c2165)
+- Spinning icons no longer wobble off-center while rotating — the earlier centering fix didn't hold on a 15px root font size. [#c538209e](https://github.com/dinhanhthi/dotlore/commit/c538209e)
+
+### Sidebar & picker
+
+- The picker shows the total size of staged tracks and badges folders that already contain tracked items. [#0d5d0d72](https://github.com/dinhanhthi/dotlore/commit/0d5d0d72) [#a40467fb](https://github.com/dinhanhthi/dotlore/commit/a40467fb)
+- The footer shows linked vs. total root count, and the vague "Pending" status is now a spinner with a specific reason. [#5c546dab](https://github.com/dinhanhthi/dotlore/commit/5c546dab) [#0ef97f8e](https://github.com/dinhanhthi/dotlore/commit/0ef97f8e)
+- The sidebar and footer stay in a loading state until roots are actually listed, instead of flashing an empty state first. [#6ac384b5](https://github.com/dinhanhthi/dotlore/commit/6ac384b5)
+
+### Settings & about
+
+- Settings can show and open the app's data folder, and the title bar can open the Dotlore cloud folder directly. [#766e8f3e](https://github.com/dinhanhthi/dotlore/commit/766e8f3e) [#c1693dd2](https://github.com/dinhanhthi/dotlore/commit/c1693dd2)
+- The About panel credits an author line under the GitHub link. [#7ca96bcc](https://github.com/dinhanhthi/dotlore/commit/7ca96bcc)
+
+### Desktop app
+
+- Dialogs are confined to the app body instead of escaping it. [#a92bb06b](https://github.com/dinhanhthi/dotlore/commit/a92bb06b)
+- The onboarding "no runtime" error no longer shows before a folder has been chosen. [#4dfcf5a2](https://github.com/dinhanhthi/dotlore/commit/4dfcf5a2)
+- The cloud upload probe drains its autoreleased objects instead of leaking them. [#3fddcbd6](https://github.com/dinhanhthi/dotlore/commit/3fddcbd6)
+
+### Platform
+
+- Dev builds shrink their macOS artifacts, and the shared Cargo build cache is documented for new projects. [#96347802](https://github.com/dinhanhthi/dotlore/commit/96347802)
+
 ## v0.2.1 (2026-09-23)
 
 ### Sync
