@@ -241,6 +241,7 @@ describe("list_entries", () => {
     resetStore();
     await expect(route("list_entries", { slug: "dotlore" })).resolves.toEqual([
       { key: ".claude/", kind: "directory", covering: [] },
+      { key: ".codex/", kind: "directory", covering: [] },
       { key: "CLAUDE.md", kind: "file", covering: [] },
       { key: "docs/", kind: "directory", covering: [] },
     ]);

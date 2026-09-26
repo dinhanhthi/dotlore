@@ -116,6 +116,8 @@ export function demoFiles(): Record<string, Record<string, FileRecord>> {
     dotlore: {
       "CLAUDE.md": textFile(DOTLORE_CLAUDE),
       ".claude/settings.json": textFile(DOTLORE_SETTINGS),
+      ".claude/hooks/format.py": textFile("def run():\n    return 1\n"),
+      ".codex/config.toml": textFile('model = "gpt"\n'),
       "docs/architecture.md": textFile(DOTLORE_ARCH),
       "docs/video.bin": {
         text: null,

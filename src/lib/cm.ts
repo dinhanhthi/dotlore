@@ -1,13 +1,29 @@
-import { json } from "@codemirror/lang-json";
+import { css, cssLanguage } from "@codemirror/lang-css";
+import { html, htmlLanguage } from "@codemirror/lang-html";
+import {
+  javascript,
+  javascriptLanguage,
+  jsxLanguage,
+  tsxLanguage,
+  typescriptLanguage,
+} from "@codemirror/lang-javascript";
+import { json, jsonLanguage } from "@codemirror/lang-json";
 import { markdown } from "@codemirror/lang-markdown";
-import { yaml } from "@codemirror/lang-yaml";
+import { python, pythonLanguage } from "@codemirror/lang-python";
+import { yaml, yamlLanguage } from "@codemirror/lang-yaml";
 import {
   HighlightStyle,
+  LanguageSupport,
+  StreamLanguage,
   syntaxHighlighting,
+  type Language,
 } from "@codemirror/language";
+import { shell } from "@codemirror/legacy-modes/mode/shell";
+import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { EditorState, type Extension } from "@codemirror/state";
 import { drawSelection, EditorView, lineNumbers } from "@codemirror/view";
-import { tags as t } from "@lezer/highlight";
+import { styleTags, tags as t } from "@lezer/highlight";
+import { jsoncLanguage } from "@shopify/lang-jsonc";
 
 /** Chrome + gutters — Linear tokens from `index.css`, not a third-party theme. */
 export const linearTheme = EditorView.theme(
@@ -79,6 +95,12 @@ export const linearHighlight = HighlightStyle.define([
   { tag: t.operator, color: "var(--muted-foreground)" },
   { tag: t.processingInstruction, color: "var(--muted-foreground)" },
   { tag: t.monospace, fontFamily: "var(--font-mono)" },
+  { tag: t.tagName, color: "var(--primary)" },
+  { tag: t.standard(t.tagName), color: "var(--primary)" },
+  { tag: t.angleBracket, color: "var(--muted-foreground)" },
+  { tag: t.attributeValue, color: "var(--status-synced)" },
+  { tag: t.function(t.variableName), color: "var(--primary)" },
+  { tag: t.definition(t.function(t.variableName)), color: "var(--primary)" },
 ]);
 
 function fileExt(rel: string): string {
@@ -88,17 +110,92 @@ function fileExt(rel: string): string {
   return base.slice(dot).toLowerCase();
 }
 
-/** Markdown / JSON / YAML only; everything else stays plain text. */
+const shellSupport = new LanguageSupport(StreamLanguage.define(shell));
+const tomlSupport = new LanguageSupport(StreamLanguage.define(toml));
+// jsonc tags line comments as t.lineComment, which has its own class.
+// Map them to t.comment so the comment style class covers `//`.
+const jsoncSupport = new LanguageSupport(
+  jsoncLanguage.configure({
+    props: [styleTags({ LineComment: t.comment })],
+  }),
+);
+
+function codeLanguage(info: string): Language | null {
+  switch (info.trim().split(/\s+/)[0]?.toLowerCase()) {
+    case "js":
+    case "javascript":
+      return javascriptLanguage;
+    case "jsx":
+      return jsxLanguage;
+    case "ts":
+    case "typescript":
+      return typescriptLanguage;
+    case "tsx":
+      return tsxLanguage;
+    case "py":
+    case "python":
+      return pythonLanguage;
+    case "html":
+      return htmlLanguage;
+    case "css":
+      return cssLanguage;
+    case "json":
+      return jsonLanguage;
+    case "yml":
+    case "yaml":
+      return yamlLanguage;
+    case "sh":
+    case "bash":
+    case "zsh":
+    case "shell":
+      return shellSupport.language;
+    case "toml":
+      return tomlSupport.language;
+    case "jsonc":
+      return jsoncSupport.language;
+    default:
+      return null;
+  }
+}
+
+/** Include-list languages. Unknown extensions stay plain text. */
 export function languageFor(rel: string): Extension[] {
   switch (fileExt(rel)) {
     case ".md":
     case ".markdown":
-      return [markdown()];
+      return [markdown({ codeLanguages: codeLanguage })];
     case ".json":
       return [json()];
+    case ".jsonc":
+      return [jsoncSupport];
     case ".yml":
     case ".yaml":
       return [yaml()];
+    case ".toml":
+      return [tomlSupport];
+    case ".sh":
+    case ".bash":
+    case ".zsh":
+      return [shellSupport];
+    case ".js":
+    case ".mjs":
+    case ".cjs":
+      return [javascript()];
+    case ".jsx":
+      return [javascript({ jsx: true })];
+    case ".ts":
+    case ".mts":
+    case ".cts":
+      return [javascript({ typescript: true })];
+    case ".tsx":
+      return [javascript({ jsx: true, typescript: true })];
+    case ".py":
+      return [python()];
+    case ".html":
+    case ".htm":
+      return [html()];
+    case ".css":
+      return [css()];
     default:
       return [];
   }
