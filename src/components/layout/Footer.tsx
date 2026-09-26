@@ -30,6 +30,20 @@ function conflictCount(status: RootStatus): number {
   return status.kind === "Conflicts" ? status.detail : 0;
 }
 
+/**
+ * First run has no sync runtime until a cloud folder is chosen.
+ * Onboarding already asks for that folder, so this is not a footer error.
+ */
+const NO_RUNTIME_YET = "no sync runtime is running — pick a provider folder first";
+
+function visibleFooterError(
+  providerDir: string | null,
+  error: string | null,
+): string | null {
+  if (providerDir === null && error === NO_RUNTIME_YET) return null;
+  return error;
+}
+
 /** Old `window.rs` ~970–997 priority. */
 function aggregateStatus(
   providerDir: string | null,
@@ -83,6 +97,7 @@ export function Footer() {
   const syncing = useSyncing();
   const taskLabel = useTaskLabel();
   const status = aggregateStatus(providerDir, roots);
+  const footerError = visibleFooterError(providerDir, error);
   const tracked = Object.values(trackedBySlug);
   const filesTracked = tracked.reduce((n, stats) => n + stats.files, 0);
   const bytesTracked = tracked.reduce((n, stats) => n + stats.bytes, 0);
@@ -205,8 +220,8 @@ export function Footer() {
           </TooltipTrigger>
           <TooltipContent>Sync now</TooltipContent>
         </Tooltip>
-        {error !== null && (
-          <span className="min-w-0 truncate text-destructive">{error}</span>
+        {footerError !== null && (
+          <span className="min-w-0 truncate text-destructive">{footerError}</span>
         )}
       </div>
       {resolvingRel && selectedSlug ? (

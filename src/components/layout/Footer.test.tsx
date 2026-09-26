@@ -103,6 +103,23 @@ describe("conflict entry point", () => {
     expect(html).not.toContain("linked");
   });
 
+  it("keeps the missing-runtime note off the onboarding footer", () => {
+    const html = wrap(<Footer />, {
+      providerDir: null,
+      error: "no sync runtime is running — pick a provider folder first",
+    });
+    expect(html).toContain("No cloud folder set");
+    expect(html).not.toContain("no sync runtime is running");
+  });
+
+  it("still shows a real footer error once a cloud folder is set", () => {
+    const html = wrap(<Footer />, {
+      providerDir: "/cloud",
+      error: "cycle failed",
+    });
+    expect(html).toContain("cycle failed");
+  });
+
   it("shows a loading state instead of the status while roots are loading", () => {
     const html = wrap(<Footer />, { loadingRoots: true });
     expect(html).toContain("Loading projects…");

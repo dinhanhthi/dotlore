@@ -625,7 +625,21 @@ pub async fn recover_root(
 
 #[tauri::command]
 pub async fn list_linkable(state: State<'_, AppState>) -> Result<Vec<LinkableRow>, String> {
-    let engine = state.shared_engine().map_err(front_msg)?;
+    let engine = match state.shared_engine() {
+        Ok(engine) => engine,
+        Err(message) => {
+            // The engine stays unset until a provider folder exists. That
+            // empty cloud list is onboarding, not a failure. A configured
+            // provider whose runtime never started is still an error.
+            let home = state.home.clone();
+            let configured = tauri::async_runtime::spawn_blocking(move || {
+                load_cfg(&home).map(|cfg| cfg.provider_dir.is_some())
+            })
+            .await
+            .map_err(front_msg)?;
+            return list_linkable_unstarted(configured?, message);
+        }
+    };
     tauri::async_runtime::spawn_blocking(move || {
         let e = engine.lock().unwrap_or_else(PoisonError::into_inner);
         list_linkable_sync(&e)
@@ -1233,6 +1247,17 @@ fn untrack_entry_sync(
     engine.list_entries(slug).map_err(front_err)
 }
 
+fn list_linkable_unstarted(
+    provider_configured: bool,
+    runtime_error: String,
+) -> Result<Vec<LinkableRow>, String> {
+    if provider_configured {
+        Err(runtime_error)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
 fn list_linkable_sync(engine: &Engine) -> Result<Vec<LinkableRow>, String> {
     let tracked: Vec<&str> = engine.cfg.roots.iter().map(|r| r.slug.as_str()).collect();
     Ok(engine
@@ -1793,6 +1818,19 @@ mod tests {
             before,
             "NeedsConfirmation must not add the folder"
         );
+    }
+
+    #[test]
+    fn list_linkable_without_a_provider_is_empty() {
+        let rows = list_linkable_unstarted(false, "no sync runtime".into())
+            .expect("onboarding is an empty list");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn list_linkable_without_a_runtime_keeps_the_error_when_a_provider_is_set() {
+        let err = list_linkable_unstarted(true, "runtime down".into()).unwrap_err();
+        assert_eq!(err, "runtime down");
     }
 
     #[test]
