@@ -44,8 +44,9 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
-            // Regular (the Tauri default) keeps the Dock icon. Accessory
-            // hid the app from the Dock and left only the menu-bar item.
+            // Regular (the Tauri default) shows the Dock icon while the window
+            // is open; `hide_window` drops to Accessory, leaving only the
+            // menu-bar item, and `show_window` brings the icon back.
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             if let Some(window) = app.get_webview_window(WINDOW) {
@@ -140,6 +141,7 @@ pub(crate) fn hide_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW) {
         let _ = window.hide();
     }
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 }
 
 /// Fresh config under the home lock.
