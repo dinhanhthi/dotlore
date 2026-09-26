@@ -70,9 +70,8 @@
         <section class="hero">
           <h1>Privacy</h1>
           <p>
-            Dotlore has no analytics, no telemetry, no crash reporting, no
-            accounts, and no servers of its own. Your files never pass through
-            anything run by Dotlore.
+            No analytics, telemetry, crash reporting, accounts, or servers of
+            its own. Your files never pass through anything run by Dotlore.
           </p>
         </section>
 
@@ -80,16 +79,13 @@
           <h2>What the app sends over the network</h2>
           <ul class="what">
             <li>
-              <strong>Update checks.</strong> At launch, every six hours, and
-              when you choose "Check for Updates…", the app downloads
-              <code>latest.json</code> from this project's GitHub Releases. The
-              request carries no identifier, but GitHub sees your IP address, as
-              with any web request. An update is downloaded from GitHub only after
-              you agree to install it.
+              <strong>Update checks.</strong> At launch, every six hours, and on
+              "Check for Updates…", the app fetches <code>latest.json</code> from
+              GitHub Releases. No identifier is sent; GitHub sees your IP.
             </li>
             <li>
-              <strong>Nothing else.</strong> Dotlore does not report how you use
-              it, which projects you add, or that it is installed at all.
+              <strong>Nothing else.</strong> No usage, project, or install
+              reporting.
             </li>
           </ul>
         </section>
@@ -98,11 +94,8 @@
           <h2>What stays on your Mac</h2>
           <ul class="what">
             <li>
-              Everything Dotlore keeps lives in
-              <code>~/Library/Application Support/dotlore/</code>: its settings
-              (a random device ID, your Mac's name, the cloud folder path, and the
-              paths of the project folders you add), plus a private staging git
-              repo per project holding copies of the files you chose to sync.
+              Settings and a private staging repo per project, in
+              <code>~/Library/Application Support/dotlore/</code>.
             </li>
             <li>
               Your project files stay where they are. Dotlore does not add
@@ -115,15 +108,13 @@
           <h2>What goes into your cloud folder</h2>
           <ul class="what">
             <li>
-              Dotlore writes git bundles into the cloud folder you pick (iCloud
-              Drive, Google Drive desktop, …). They hold the contents of the files
-              in your include-list, the project's name, and each Mac's device ID
-              and name.
+              Git bundles of your included files, the project name, and each
+              Mac's device ID and name. Your cloud provider's app uploads them,
+              under its own privacy policy.
             </li>
             <li>
-              Dotlore only writes files to that folder on your disk. Uploading them
-              is done by your cloud provider's own app, under your own account and
-              that provider's privacy policy.
+              Protected files are encrypted (AES-SIV) before they are written.
+              Other files are not.
             </li>
             <li>
               Bundles are not encrypted by Dotlore. Anyone who can read that cloud
@@ -144,6 +135,12 @@
               To remove the local data, quit Dotlore and delete
               <code>~/Library/Application Support/dotlore/</code>.
             </li>
+            <li>
+              <strong>Local data.</strong> Quit Dotlore, delete
+              <code>~/Library/Application Support/dotlore/</code>, and remove the
+              <code>master-key-…</code> item for <code>dotlore</code> in Keychain
+              Access.
+            </li>
           </ul>
         </section>
 
@@ -151,16 +148,12 @@
           <h2>This website</h2>
           <ul class="what">
             <li>
-              The site is hosted on GitHub Pages, which may log visitors' IP
-              addresses. It has no analytics and sets no cookies. The theme
-              toggle stores your choice in your browser's local storage.
+              Hosted on GitHub Pages, which may log IP addresses. No analytics or
+              cookies; the theme choice is kept in local storage.
             </li>
             <li>
-              The Inter font is loaded from Google Fonts, so Google sees your IP
-              address when you open this site.
-            </li>
-            <li>
-              Downloads are served by GitHub Releases, which counts them.
+              The Inter font comes from Google Fonts, and GitHub Releases counts
+              downloads.
             </li>
           </ul>
         </section>
@@ -168,15 +161,14 @@
         <section>
           <h2>Questions</h2>
           <p>
-            Dotlore is open source, so every claim on this page can be checked in
-            the code. Open an issue on
+            Dotlore is open source, so every claim here can be checked in the
+            code. Questions? Open an issue on
             <a
               href="https://github.com/dinhanhthi/dotlore/issues"
               target="_blank"
               rel="noopener noreferrer"
               >GitHub</a
-            >
-            if anything here is unclear.
+            >.
           </p>
         </section>
       </div>
