@@ -25,9 +25,9 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::menu::{MenuItem, MenuItemKind};
 use tauri::{App, AppHandle, Emitter, Manager};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+use crate::alert::{self, Style};
 use crate::show_window;
 
 const CHECK_ID: &str = "check-for-updates";
@@ -102,11 +102,17 @@ pub fn install(app: &App) -> tauri::Result<()> {
     // dispatches to all of them, so `about.rs`'s handler still runs.
     app.on_menu_event(|app, event| {
         if event.id().as_ref() == CHECK_ID {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move { check(&app, true).await });
+            check_now(app);
         }
     });
     Ok(())
+}
+
+/// An interactive check, same as the app menu's "Check for Updates…" — the
+/// tray's row calls this too.
+pub fn check_now(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { check(&app, true).await });
 }
 
 /// The version the last check found, if any.
@@ -164,10 +170,7 @@ async fn check(app: &AppHandle, interactive: bool) {
         Ok(None) => {
             record(app, None);
             if interactive {
-                app.dialog()
-                    .message("Dotlore is up to date.")
-                    .title(TITLE)
-                    .show(|_| {});
+                alert::info(app, Style::Info, TITLE, "Dotlore is up to date.");
             }
         }
         Err(e) => failed(app, interactive, CHECK_FAILED, e.to_string()),
@@ -175,10 +178,12 @@ async fn check(app: &AppHandle, interactive: bool) {
 }
 
 fn installing(app: &AppHandle) {
-    app.dialog()
-        .message("An update is already being installed.")
-        .title(TITLE)
-        .show(|_| {});
+    alert::info(
+        app,
+        Style::Info,
+        TITLE,
+        "An update is already being installed.",
+    );
 }
 
 /// Keep what a check found and announce it. True when the version is one the
@@ -213,11 +218,7 @@ fn is_fresh(previous: Option<&str>, found: Option<&str>) -> bool {
 fn failed(app: &AppHandle, interactive: bool, message: &str, detail: String) {
     eprintln!("dotlore: updater: {detail}");
     if interactive {
-        app.dialog()
-            .message(message)
-            .title(TITLE)
-            .kind(MessageDialogKind::Warning)
-            .show(|_| {});
+        alert::info(app, Style::Warning, TITLE, message);
     }
 }
 
@@ -228,27 +229,28 @@ fn prompt(app: &AppHandle, update: Update) {
     if state.prompting.swap(true, Ordering::SeqCst) {
         return;
     }
-    let app = app.clone();
     let version = update.version.clone();
-    app.clone()
-        .dialog()
-        .message(format!(
-            "Dotlore {version} is available. You are running {}.",
-            update.current_version
-        ))
-        .title(TITLE)
-        .buttons(MessageDialogButtons::OkCancelCustom(
-            "Install and Restart".into(),
-            "Later".into(),
-        ))
-        .show(move |install| {
-            app.state::<UpdateState>()
+    let message = format!(
+        "Dotlore {version} is available. You are running {}.",
+        update.current_version
+    );
+    let handle = app.clone();
+    alert::confirm(
+        app,
+        TITLE,
+        &message,
+        "Install and Restart",
+        "Later",
+        move |install| {
+            handle
+                .state::<UpdateState>()
                 .prompting
                 .store(false, Ordering::SeqCst);
             if install {
-                download(app, update);
+                download(handle, update);
             }
-        });
+        },
+    );
 }
 
 /// Download and install, reporting progress to the window, then restart.

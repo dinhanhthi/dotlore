@@ -11,6 +11,7 @@ pub mod project;
 pub mod repo;
 
 mod about;
+mod alert;
 mod commands;
 mod login_item;
 mod state;

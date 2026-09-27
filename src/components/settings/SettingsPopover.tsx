@@ -41,6 +41,7 @@ import {
   defaultIgnore,
   deviceName,
   listDevices,
+  listenOpenSettings,
   loginItemEnabled,
   maxFileMb,
   maxSeedFolderMb,
@@ -837,6 +838,13 @@ function tildePath(path: string): string {
 
 export function SettingsPopover() {
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const unlisten = listenOpenSettings(() => setOpen(true));
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, []);
 
   return (
     <>

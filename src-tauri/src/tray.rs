@@ -7,8 +7,9 @@ use tauri::image::Image;
 use tauri::include_image;
 use tauri::menu::{Menu, MenuBuilder, MenuEvent, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{App, AppHandle, Listener, Manager};
+use tauri::{App, AppHandle, Emitter, Listener, Manager};
 
+use crate::about;
 use crate::cloud::is_bidi_control;
 use crate::daemon::Cmd;
 use crate::git;
@@ -33,11 +34,18 @@ const DOT_GAP: f32 = 12.0;
 
 const ID_OPEN: &str = "open";
 const ID_SYNC: &str = "sync";
+const ID_SETTINGS: &str = "settings";
+const ID_CHECK_UPDATES: &str = "check-updates";
+const ID_ABOUT: &str = "about";
 const ID_UPDATE: &str = "update";
 const ID_QUIT: &str = "quit";
 
 /// The update row's label is `{UPDATE_PREFIX}{version}…`.
 const UPDATE_PREFIX: &str = "Update to Dotlore ";
+
+/// The window shows the Settings dialog when it hears this, same as clicking
+/// the title bar's gear icon.
+pub const OPEN_SETTINGS_EVENT: &str = "dotlore://open-settings";
 
 /// What the tray draws. No root names — the window lists those.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -245,6 +253,12 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
             let _ = app.state::<AppState>().send(Cmd::SyncNow);
         }
         ID_UPDATE => updater::prompt_available(app),
+        ID_CHECK_UPDATES => updater::check_now(app),
+        ID_ABOUT => about::show(app),
+        ID_SETTINGS => {
+            show_window(app);
+            let _ = app.emit(OPEN_SETTINGS_EVENT, ());
+        }
         ID_QUIT => {
             let _ = app.state::<AppState>().send(Cmd::Quit);
             app.exit(0);
@@ -261,6 +275,11 @@ fn build_menu(app: &AppHandle, view: &TrayView) -> tauri::Result<Menu<tauri::Wry
             None => menu = menu.separator(),
             Some("Open Dotlore") => menu = menu.text(ID_OPEN, "Open Dotlore"),
             Some("Sync Now") => menu = menu.text(ID_SYNC, "Sync Now"),
+            Some("Settings…") => menu = menu.text(ID_SETTINGS, "Settings…"),
+            Some("Check for Updates…") => {
+                menu = menu.text(ID_CHECK_UPDATES, "Check for Updates…")
+            }
+            Some("About Dotlore") => menu = menu.text(ID_ABOUT, "About Dotlore"),
             Some("Quit Dotlore") => menu = menu.text(ID_QUIT, "Quit Dotlore"),
             Some(text) if text.starts_with(UPDATE_PREFIX) => menu = menu.text(ID_UPDATE, text),
             Some(text) => {
@@ -281,7 +300,8 @@ fn disabled(
 }
 
 /// Menu rows: `Some(label)` or `None` for a separator. An available update
-/// first, then warnings, then the actions, and never a root name.
+/// first, then warnings, then the actions, Settings, the about/update-check
+/// pair, and finally Quit — and never a root name.
 pub fn menu_labels(view: &TrayView) -> Vec<Option<String>> {
     let mut items = Vec::new();
     if let Some(version) = &view.update {
@@ -302,6 +322,11 @@ pub fn menu_labels(view: &TrayView) -> Vec<Option<String>> {
     items.push(None);
     items.push(Some("Open Dotlore".to_string()));
     items.push(Some("Sync Now".to_string()));
+    items.push(None);
+    items.push(Some("Settings…".to_string()));
+    items.push(None);
+    items.push(Some("Check for Updates…".to_string()));
+    items.push(Some("About Dotlore".to_string()));
     items.push(None);
     items.push(Some("Quit Dotlore".to_string()));
     items
@@ -382,6 +407,11 @@ mod tests {
                 Some("Open Dotlore".into()),
                 Some("Sync Now".into()),
                 None,
+                Some("Settings…".into()),
+                None,
+                Some("Check for Updates…".into()),
+                Some("About Dotlore".into()),
+                None,
                 Some("Quit Dotlore".into()),
             ]
         );
@@ -401,6 +431,11 @@ mod tests {
                 None,
                 Some("Open Dotlore".into()),
                 Some("Sync Now".into()),
+                None,
+                Some("Settings…".into()),
+                None,
+                Some("Check for Updates…".into()),
+                Some("About Dotlore".into()),
                 None,
                 Some("Quit Dotlore".into()),
             ]

@@ -658,3 +658,10 @@ export function listenUpdateProgress(
     handler(event.payload);
   });
 }
+
+/** `dotlore://open-settings`, from the tray's Settings row. */
+export function listenOpenSettings(handler: () => void): Promise<UnlistenFn> {
+  return listen("dotlore://open-settings", () => {
+    handler();
+  });
+}

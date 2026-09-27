@@ -78,7 +78,7 @@ pub fn install(app: &App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn show(app: &tauri::AppHandle) {
+pub fn show(app: &tauri::AppHandle) {
     let Some(mtm) = MainThreadMarker::new() else {
         eprintln!("dotlore: about: not on the main thread");
         return;
@@ -110,7 +110,11 @@ fn present(mtm: MainThreadMarker, name: &str, version: &str) {
 
     let options = NSDictionary::from_retained_objects(&keys, &objects);
     unsafe {
-        NSApplication::sharedApplication(mtm).orderFrontStandardAboutPanelWithOptions(&options);
+        let app = NSApplication::sharedApplication(mtm);
+        // The tray can raise this while the app is Accessory (window closed),
+        // and a status-item click alone does not activate the process.
+        app.activate();
+        app.orderFrontStandardAboutPanelWithOptions(&options);
     }
 }
 
@@ -130,7 +134,9 @@ fn centered(text: &str) -> Retained<NSMutableAttributedString> {
     attributed
 }
 
-fn logo() -> Option<Retained<NSImage>> {
+/// 128pt Dotlore icon, also used by [`crate::alert`] so its dialogs carry the
+/// same mark instead of AppKit's generic glyph.
+pub(crate) fn logo() -> Option<Retained<NSImage>> {
     let data = NSData::with_bytes(LOGO_PNG);
     let image = NSImage::initWithData(NSImage::alloc(), &data)?;
     image.setSize(NSSize::new(LOGO_POINTS, LOGO_POINTS));
