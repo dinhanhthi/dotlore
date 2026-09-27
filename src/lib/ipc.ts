@@ -554,6 +554,13 @@ export function applyDefaultIgnore(): Promise<void | typeof BLOCKED> {
   return runTask("Applying never-list…", () => invoke<void>("apply_default_ignore"));
 }
 
+/** Track new pattern matches in every current root. */
+export function applyDefaultPatterns(): Promise<void | typeof BLOCKED> {
+  return runTask("Applying patterns…", () =>
+    invoke<void>("apply_default_patterns"),
+  );
+}
+
 export type PatternCatalog = {
   id: string;
   label: string;

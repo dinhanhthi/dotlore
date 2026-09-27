@@ -951,6 +951,42 @@ impl Engine {
         self.save(&g)
     }
 
+    /// Track every path `slug`'s catalog patterns now match and the list does
+    /// not already hold. A key the user untracked keeps its tombstone.
+    pub fn apply_default_patterns(&mut self, slug: &str) -> Result<RootStatus> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let cloud = self.cloud();
+        let root = self.root_cfg(slug)?;
+        let repo = self.repo_for(&root)?;
+        let mut file = repo.project_file()?;
+        if root_present(&root.path) {
+            let patterns = project::patterns_for(&root, &self.home_dir, &self.cfg);
+            let ignore = repo.ignore_text(&self.home_dir);
+            let limits = Limits::from_config(&self.cfg);
+            let (seeded, _) = project::seed(&root.path, &patterns, &ignore, limits)?;
+            let tracked = file.tracked();
+            let mut gen = file.entries.values().map(|e| e.gen).max().unwrap_or(0);
+            for key in seeded.entries.into_keys() {
+                if file.entries.contains_key(&key) || tracked.contains_rel(Path::new(&key)) {
+                    continue;
+                }
+                gen = gen.saturating_add(1);
+                file.entries.insert(
+                    key,
+                    project::EntryRecord {
+                        gen,
+                        state: State::Tracked,
+                    },
+                );
+            }
+            project::write(&repo.staging, &file)?;
+        }
+        let status = self.run_cycle(&cloud, &root, FetchMode::Normal);
+        self.settle(&g, slug, &status)?;
+        Ok(status)
+    }
+
     /// Effective sensitive patterns (`None` in config → `SECRET_PATTERNS`).
     pub fn sensitive_patterns(&self) -> Vec<String> {
         match &self.cfg.sensitive_patterns {
@@ -2581,6 +2617,50 @@ mod tests {
         assert!(tracked.is_explicit(Path::new("CLAUDE.md")));
         assert!(tracked.is_explicit(Path::new("docs")));
         assert!(!tracked.contains_rel(Path::new("README.md")));
+    }
+
+    #[test]
+    fn apply_default_patterns_tracks_new_matches_and_keeps_untracked_keys() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine
+            .set_pattern_catalog("projects", vec!["CLAUDE.md".into(), "docs/".into()])
+            .unwrap();
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        write(&a, "README.md", b"readme\n");
+        write(&a, "AGENTS.md", b"agents\n");
+        add(&mut a);
+        a.engine
+            .untrack_entry("proj-claude", Path::new("CLAUDE.md"))
+            .unwrap();
+
+        a.engine
+            .set_pattern_catalog(
+                "projects",
+                vec![
+                    "CLAUDE.md".into(),
+                    "docs/".into(),
+                    "README.md".into(),
+                    "missing.md".into(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            a.engine.apply_default_patterns("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        let file = crate::project::read(&staging(&a)).unwrap();
+        assert_eq!(
+            file.entries["CLAUDE.md"].state,
+            crate::project::State::Removed
+        );
+        assert!(!file.entries.contains_key("missing.md"));
+        assert_eq!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap()),
+            ["README.md", "docs/a.md"]
+        );
     }
 
     #[test]

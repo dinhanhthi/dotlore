@@ -938,6 +938,34 @@ pub async fn apply_default_ignore(
     notify(&app, &state)
 }
 
+/// Track new pattern matches in every registered root, one engine lock per
+/// root like [`apply_default_ignore`].
+#[tauri::command]
+pub async fn apply_default_patterns(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let slugs = engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .root_slugs()
+            .map_err(front_err)?;
+        for slug in slugs {
+            engine
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .apply_default_patterns(&slug)
+                .map_err(front_err)?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
+}
+
 /// One device from the cloud folder, for the Settings device list.
 #[derive(Serialize, Clone, Debug)]
 pub struct DeviceRow {

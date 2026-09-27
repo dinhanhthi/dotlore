@@ -39,6 +39,7 @@ import { serviceLabel } from "@/lib/cloud-mounts";
 import {
   appHome,
   applyDefaultIgnore,
+  applyDefaultPatterns,
   defaultIgnore,
   deviceName,
   listDevices,
@@ -304,6 +305,7 @@ function SettingsDevices() {
 /** Global seed include-list for new projects and agent folders. */
 export function SettingsPatterns() {
   const { locked } = useRoots();
+  const taskLabel = useTaskLabel();
   const [catalogs, setCatalogs] = useState<PatternCatalog[]>([]);
   const [selectedId, setSelectedId] = useState("projects");
   const [lines, setLines] = useState<string[]>([]);
@@ -366,7 +368,7 @@ export function SettingsPatterns() {
   return (
     <SettingsSeedList
       id="default-patterns"
-      hint="Applies to folders added from now on. Folders already added keep their list."
+      hint="Applies to folders added from now on. Apply tracks new matches in current ones."
       lines={lines}
       disabled={locked}
       addPlaceholder="Add a pattern"
@@ -407,6 +409,22 @@ export function SettingsPatterns() {
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>
         </DropdownMenu>
+      }
+      action={
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0 text-xs"
+          disabled={locked || taskLabel !== null}
+          onClick={() => {
+            void applyDefaultPatterns().catch(() => {
+              // runTask already reported the error
+            });
+          }}
+        >
+          Apply
+        </Button>
       }
     />
   );

@@ -500,7 +500,7 @@ describe("seed list hint", () => {
     const html = wrap(<SettingsPatterns />);
     hintBetween(
       html,
-      "Applies to folders added from now on. Folders already added keep their list.",
+      "Applies to folders added from now on. Apply tracks new matches in current ones.",
     );
   });
 
