@@ -391,6 +391,7 @@ export function SettingsPatterns() {
           </DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuRadioGroup
+              className="max-h-64 overflow-y-auto"
               value={selectedId}
               onValueChange={selectCatalog}
             >
