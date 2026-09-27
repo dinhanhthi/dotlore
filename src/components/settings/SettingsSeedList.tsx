@@ -12,6 +12,7 @@ export function SettingsSeedList({
   lines,
   disabled,
   catalog,
+  action,
   onCommit,
   addPlaceholder,
 }: {
@@ -21,6 +22,7 @@ export function SettingsSeedList({
   lines: string[];
   disabled: boolean;
   catalog?: ReactNode;
+  action?: ReactNode;
   onCommit: (lines: string[]) => void;
   addPlaceholder: string;
 }) {
@@ -112,6 +114,7 @@ export function SettingsSeedList({
       >
         Add
       </Button>
+      {action}
     </div>
   );
 

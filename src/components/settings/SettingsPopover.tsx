@@ -38,6 +38,7 @@ import {
 import { serviceLabel } from "@/lib/cloud-mounts";
 import {
   appHome,
+  applyDefaultIgnore,
   defaultIgnore,
   deviceName,
   listDevices,
@@ -413,6 +414,7 @@ export function SettingsPatterns() {
 /** Global seed never-list for new projects and agent folders. */
 export function SettingsNeverList() {
   const { locked } = useRoots();
+  const taskLabel = useTaskLabel();
   const [lines, setLines] = useState<string[]>([]);
 
   useEffect(() => {
@@ -438,13 +440,29 @@ export function SettingsNeverList() {
   return (
     <SettingsSeedList
       id="default-ignore"
-      hint="Applies to projects and agent folders added from now on."
+      hint="Applies to projects and agent folders added from now on. Apply untracks matches in current ones; files stay on disk."
       lines={lines}
       disabled={locked}
       addPlaceholder="Add an entry"
       onCommit={(next) => {
         void commit(next);
       }}
+      action={
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0 text-xs"
+          disabled={locked || taskLabel !== null}
+          onClick={() => {
+            void applyDefaultIgnore().catch(() => {
+              // runTask already reported the error
+            });
+          }}
+        >
+          Apply
+        </Button>
+      }
     />
   );
 }

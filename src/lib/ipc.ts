@@ -549,6 +549,11 @@ export function setDefaultIgnore(ignore: string): Promise<void> {
   return run(() => invoke("set_default_ignore", { ignore }));
 }
 
+/** Untrack never-list matches in every current root; files stay on disk. */
+export function applyDefaultIgnore(): Promise<void | typeof BLOCKED> {
+  return runTask("Applying never-list…", () => invoke<void>("apply_default_ignore"));
+}
+
 export type PatternCatalog = {
   id: string;
   label: string;

@@ -910,6 +910,34 @@ pub async fn set_default_ignore(
     notify(&app, &state)
 }
 
+/// Apply the global never-list to every registered root, one engine lock per
+/// root so a daemon cycle or another command waits for one root at most.
+#[tauri::command]
+pub async fn apply_default_ignore(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let slugs = engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .root_slugs()
+            .map_err(front_err)?;
+        for slug in slugs {
+            engine
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .apply_default_ignore(&slug)
+                .map_err(front_err)?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
+}
+
 /// One device from the cloud folder, for the Settings device list.
 #[derive(Serialize, Clone, Debug)]
 pub struct DeviceRow {

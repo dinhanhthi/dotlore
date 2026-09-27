@@ -179,7 +179,7 @@ pub fn is_binary(bytes: &[u8]) -> bool {
 
 // --- root -> staging ------------------------------------------------------
 
-fn build_ignore(root: &Path, ignore_text: &str) -> Result<Gitignore> {
+pub(crate) fn build_ignore(root: &Path, ignore_text: &str) -> Result<Gitignore> {
     let mut b = GitignoreBuilder::new(root);
     for line in ignore_text.lines() {
         b.add_line(None, line)?;

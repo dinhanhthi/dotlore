@@ -1012,6 +1012,49 @@ impl Engine {
         self.save(&g)
     }
 
+    /// Write the global never-list into `slug`'s `.dotloreignore` and untrack
+    /// every tracked path it now matches. Untracking (not deleting) is what
+    /// lets peers keep their live copies when the change syncs.
+    pub fn apply_default_ignore(&mut self, slug: &str) -> Result<RootStatus> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let cloud = self.cloud();
+        let root = self.root_cfg(slug)?;
+        let repo = self.repo_for(&root)?;
+        let old = repo.ignore_text(&self.home_dir);
+        let new = self.default_ignore();
+        let mut file = repo.project_file()?;
+        let entries = file.tracked();
+        // Staged paths too: a peer may hold them live even when this root does not.
+        let mut rels: BTreeSet<PathBuf> = repo
+            .git
+            .ok(&["ls-files", "-z"])?
+            .split('\0')
+            .filter(|s| !s.is_empty() && !is_internal(s))
+            .map(PathBuf::from)
+            .filter(|p| entries.contains_rel(p))
+            .collect();
+        if root_present(&root.path) {
+            let limits = Limits::from_config(&self.cfg);
+            for (rel, _, _) in mirror::list_live(&root.path, &entries, &old, limits)? {
+                rels.insert(rel);
+            }
+        }
+        let ignore = mirror::build_ignore(&root.path, &new)?;
+        let hits: BTreeSet<(PathBuf, bool)> = rels
+            .iter()
+            .filter_map(|rel| ignored_prefix(&ignore, rel))
+            .collect();
+        for (rel, is_dir) in &hits {
+            file.untrack_as(rel, Some(*is_dir))?;
+        }
+        project::write(&repo.staging, &file)?;
+        fs::write(repo.staging.join(project::IGNORE_FILE), &new)?;
+        let status = self.run_cycle(&cloud, &root, FetchMode::Normal);
+        self.settle(&g, slug, &status)?;
+        Ok(status)
+    }
+
     /// Effective per-file ceiling in MiB (`None` in config → 50).
     pub fn max_file_mb(&self) -> u64 {
         self.cfg.max_file_mb.unwrap_or(Limits::DEFAULT_MAX_FILE_MB)
@@ -1883,6 +1926,20 @@ fn catalog_stored_path(path: &Path) -> Option<PathBuf> {
     let name = path.file_name()?;
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty())?;
     Some(parent.canonicalize().ok()?.join(name))
+}
+
+/// Shortest prefix of `rel` that `ignore` matches, and whether it is a folder.
+fn ignored_prefix(ignore: &ignore::gitignore::Gitignore, rel: &Path) -> Option<(PathBuf, bool)> {
+    let comps: Vec<_> = rel.components().collect();
+    let mut acc = PathBuf::new();
+    for (i, c) in comps.iter().enumerate() {
+        acc.push(c);
+        let is_dir = i + 1 < comps.len();
+        if ignore.matched(&acc, is_dir).is_ignore() {
+            return Some((acc, is_dir));
+        }
+    }
+    None
 }
 
 fn root_present(path: &Path) -> bool {
@@ -2950,6 +3007,65 @@ mod tests {
             !rels(&b.engine.tracked_files("proj-claude").unwrap())
                 .contains(&"docs/readme.md".into()),
             "the hole must sync to a newly linked peer"
+        );
+    }
+
+    #[test]
+    fn apply_default_ignore_untracks_matches_and_keeps_peer_files() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "docs/keep.md", b"keep\n");
+        write(&a, "docs/cache/x.md", b"x\n");
+        write(&a, "docs/a.draft.md", b"log\n");
+        add(&mut a);
+        let mut b = device(provider.path(), 'b');
+        let b_root = b.root.path().to_path_buf();
+        b.engine.link_root("proj-claude", &b_root).unwrap();
+        assert!(b.root.path().join("docs/cache/x.md").is_file());
+
+        let ignore = format!("{}/docs/cache/\n*.draft.md\n", a.engine.default_ignore());
+        a.engine.set_default_ignore(ignore.clone()).unwrap();
+        assert_eq!(
+            a.engine.apply_default_ignore("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        let file = crate::project::read(&staging(&a)).unwrap();
+        assert_eq!(
+            file.entries["docs/cache/"].state,
+            crate::project::State::Removed
+        );
+        assert_eq!(
+            file.entries["docs/a.draft.md"].state,
+            crate::project::State::Removed
+        );
+        assert_eq!(
+            fs::read_to_string(staging(&a).join(crate::project::IGNORE_FILE)).unwrap(),
+            ignore
+        );
+        assert_eq!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap()),
+            ["docs/keep.md"]
+        );
+
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        for dev in [&a, &b] {
+            assert!(dev.root.path().join("docs/cache/x.md").is_file());
+            assert!(dev.root.path().join("docs/a.draft.md").is_file());
+        }
+        assert_eq!(
+            rels(&b.engine.tracked_files("proj-claude").unwrap()),
+            ["docs/keep.md"]
+        );
+        assert_eq!(
+            a.engine.apply_default_ignore("proj-claude").unwrap(),
+            RootStatus::Synced
         );
     }
 

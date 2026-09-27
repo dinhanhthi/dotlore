@@ -105,9 +105,12 @@ function conflictViewMap(views: ConflictView[]): Map<string, ConflictView[]> {
  */
 export function projectSizeLabel(files: TrackedFile[], linked: boolean): string {
   if (!linked) return "Not linked";
-  const totalBytes = files.reduce((sum, file) => sum + file.bytes, 0);
   const fileLabel = `${files.length} ${files.length === 1 ? "file" : "files"}`;
-  return `${fileLabel} · ${formatBytes(totalBytes)}`;
+  return `${fileLabel} · ${formatBytes(totalBytes(files))}`;
+}
+
+export function totalBytes(files: TrackedFile[]): number {
+  return files.reduce((sum, file) => sum + file.bytes, 0);
 }
 
 export function fileSensitivityMap(files: TrackedFile[]): Map<string, Sensitivity | null> {
@@ -345,6 +348,11 @@ export function FileTree() {
           {root.name}
         </span>
         <div className="flex shrink-0 items-center gap-0.5">
+          {root.linked && (
+            <span className="mr-1 text-xs text-muted-foreground tabular-nums">
+              {formatBytes(totalBytes(files))}
+            </span>
+          )}
           <StarRootButton />
           <Tooltip>
             <TooltipTrigger

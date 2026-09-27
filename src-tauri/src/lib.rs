@@ -110,6 +110,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::set_pattern_catalog,
             commands::default_ignore,
             commands::set_default_ignore,
+            commands::apply_default_ignore,
             commands::device_name,
             commands::set_device_name,
             commands::list_devices,
