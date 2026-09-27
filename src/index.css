@@ -254,6 +254,33 @@
   background-color: color-mix(in oklch, var(--foreground) 40%, transparent);
 }
 
+/* Settings dialog (and its portaled menus): no track, only a floating thumb
+   over the dialog background. */
+.settings-scroll::-webkit-scrollbar,
+.settings-scroll ::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+  height: 6px;
+}
+
+.settings-scroll::-webkit-scrollbar-track,
+.settings-scroll ::-webkit-scrollbar-track,
+.settings-scroll::-webkit-scrollbar-corner,
+.settings-scroll ::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.settings-scroll::-webkit-scrollbar-thumb,
+.settings-scroll ::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background-color: color-mix(in oklch, var(--foreground) 22%, transparent);
+}
+
+.settings-scroll::-webkit-scrollbar-thumb:hover,
+.settings-scroll ::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklch, var(--foreground) 40%, transparent);
+}
+
 .cm-merge-host .cm-mergeView {
   height: 100%;
   overflow: auto;

@@ -393,7 +393,7 @@ export function SettingsPatterns() {
           </DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuRadioGroup
-              className="max-h-64 overflow-y-auto"
+              className="settings-scroll max-h-64 overflow-y-auto"
               value={selectedId}
               onValueChange={selectCatalog}
             >
@@ -851,7 +851,7 @@ export function SettingsDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex min-h-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
+        <DialogContent className="settings-scroll flex min-h-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-xl">
           <SettingsPanel
             key={open ? "open" : "closed"}
             onChangeFolder={() => {
