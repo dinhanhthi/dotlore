@@ -7,17 +7,19 @@
 //! the caller expected them to be.
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::{CString, OsStr, OsString};
-use std::fs::{self, File};
-use std::io::{self, ErrorKind, Read, Write};
-use std::os::unix::ffi::OsStrExt;
+use std::ffi::OsString;
+use std::fs;
+use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
+use crate::nofollow::{
+    is_unsafe_open, listing_replace_hook, open_chain, open_dir_nofollow, open_root_dir, read_dir_fd,
+};
 use crate::project::{EntryList, Limits};
 
 /// What happened to one logical entry between two staging commits.
@@ -411,14 +413,14 @@ fn copy_if_changed(root: &Path, rel: &Path, dst: &Path) -> Result<Option<bool>> 
     if !md.is_file() {
         return Ok(None);
     }
-    let executable = is_exec(md.permissions().mode());
+    let executable = require_exec_bit(&md)?;
     let mut bytes = Vec::new();
     src.read_to_end(&mut bytes)
         .with_context(|| format!("reading {}", root.join(rel).display()))?;
 
     match fs::symlink_metadata(dst) {
         Ok(dmd) if dmd.is_file() => {
-            if is_exec(dmd.permissions().mode()) == executable && fs::read(dst)? == bytes {
+            if require_exec_bit(&dmd)? == executable && fs::read(dst)? == bytes {
                 return Ok(Some(false));
             }
         }
@@ -430,7 +432,10 @@ fn copy_if_changed(root: &Path, rel: &Path, dst: &Path) -> Result<Option<bool>> 
         fs::create_dir_all(parent)?;
     }
     fs::write(dst, &bytes).with_context(|| format!("writing {}", dst.display()))?;
-    fs::set_permissions(dst, fs::Permissions::from_mode(mode_for(executable)))?;
+    #[cfg(unix)]
+    {
+        fs::set_permissions(dst, fs::Permissions::from_mode(mode_for(executable)))?;
+    }
     Ok(Some(true))
 }
 
@@ -548,112 +553,6 @@ pub(crate) fn inspect(root: &Path, rel: &Path) -> Result<Node> {
     }
 }
 
-// Darwin / Linux open(2) flags. Dotlore is Mac-only; Linux values keep
-// the helper honest if someone builds the crate elsewhere.
-#[cfg(target_os = "macos")]
-const O_NOFOLLOW: i32 = 0x0100;
-#[cfg(target_os = "macos")]
-const O_DIRECTORY: i32 = 0x0010_0000;
-#[cfg(target_os = "macos")]
-const O_CLOEXEC: i32 = 0x0100_0000;
-#[cfg(target_os = "linux")]
-const O_NOFOLLOW: i32 = 0x20000;
-#[cfg(target_os = "linux")]
-const O_DIRECTORY: i32 = 0x10000;
-#[cfg(target_os = "linux")]
-const O_CLOEXEC: i32 = 0o2000000;
-const O_RDONLY: i32 = 0;
-
-#[cfg(target_os = "macos")]
-const ELOOP: i32 = 62;
-#[cfg(target_os = "linux")]
-const ELOOP: i32 = 40;
-const ENOTDIR: i32 = 20;
-
-extern "C" {
-    fn openat(dirfd: i32, pathname: *const libc_c_char, flags: i32) -> i32;
-}
-
-#[cfg(target_os = "macos")]
-enum DIR {}
-
-#[cfg(target_os = "macos")]
-#[repr(C)]
-struct Dirent {
-    d_ino: u64,
-    d_seekoff: u64,
-    d_reclen: u16,
-    d_namlen: u16,
-    d_type: u8,
-    d_name: [i8; 1024],
-}
-
-#[cfg(target_os = "macos")]
-extern "C" {
-    fn close(fd: i32) -> i32;
-    fn fdopendir(fd: i32) -> *mut DIR;
-    fn readdir(dirp: *mut DIR) -> *mut Dirent;
-    fn closedir(dirp: *mut DIR) -> i32;
-}
-
-use std::os::raw::c_char as libc_c_char;
-
-fn is_unsafe_open(e: &io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(ELOOP) | Some(ENOTDIR)) || e.kind() == ErrorKind::InvalidInput
-}
-
-fn open_root_dir(root: &Path) -> io::Result<File> {
-    let mut opts = fs::OpenOptions::new();
-    opts.read(true)
-        .custom_flags(O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    opts.open(root)
-}
-
-fn openat_child(parent: &File, name: &OsStr, flags: i32) -> io::Result<File> {
-    let c_name = CString::new(name.as_bytes())
-        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "path component contains NUL"))?;
-    let fd = unsafe { openat(parent.as_raw_fd(), c_name.as_ptr(), flags) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { File::from_raw_fd(fd) })
-}
-
-/// Open `rel` from `root` one component at a time, never following a symlink.
-fn open_chain(root: &Path, rel: &Path, directory: bool) -> io::Result<File> {
-    let mut fd = open_root_dir(root)?;
-    let mut acc = PathBuf::new();
-    let comps: Vec<_> = rel.components().collect();
-    for (i, component) in comps.iter().enumerate() {
-        let name = match component {
-            Component::Normal(n) => *n,
-            _ => {
-                return Err(io::Error::new(
-                    ErrorKind::InvalidInput,
-                    "path is not a plain relative path",
-                ))
-            }
-        };
-        acc.push(name);
-        replace_hook(&root.join(&acc));
-        let last = i + 1 == comps.len();
-        let mut flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW;
-        if !last || directory {
-            flags |= O_DIRECTORY;
-        }
-        fd = openat_child(&fd, name, flags)?;
-    }
-    Ok(fd)
-}
-
-fn open_dir_nofollow(root: &Path, rel: &Path) -> io::Result<File> {
-    if rel.as_os_str().is_empty() {
-        open_root_dir(root)
-    } else {
-        open_chain(root, rel, true)
-    }
-}
-
 /// List `rel` through a no-follow directory fd. `None` is missing.
 /// `Some(Err(()))` is a symlink replacement — the caller treats the
 /// prefix as opaque and must not prune its staging subtree.
@@ -678,64 +577,6 @@ fn list_dir(root: &Path, rel: &Path) -> Result<Option<Result<Vec<OsString>, ()>>
     }
 }
 
-/// List through an already-open no-follow directory fd (`fdopendir`).
-#[cfg(target_os = "macos")]
-fn read_dir_fd(dir: File) -> io::Result<Vec<OsString>> {
-    let raw = dir.into_raw_fd();
-    let dirp = unsafe { fdopendir(raw) };
-    if dirp.is_null() {
-        let err = io::Error::last_os_error();
-        unsafe { close(raw) };
-        return Err(err);
-    }
-    let mut names = Vec::new();
-    loop {
-        let ent = unsafe { readdir(dirp) };
-        if ent.is_null() {
-            break;
-        }
-        let namlen = unsafe { (*ent).d_namlen as usize };
-        let bytes =
-            unsafe { std::slice::from_raw_parts((*ent).d_name.as_ptr().cast::<u8>(), namlen) };
-        if bytes == b"." || bytes == b".." {
-            continue;
-        }
-        names.push(OsStr::from_bytes(bytes).to_os_string());
-    }
-    unsafe { closedir(dirp) };
-    Ok(names)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn read_dir_fd(dir: File) -> io::Result<Vec<OsString>> {
-    let listing = fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))?;
-    let mut names = Vec::new();
-    for entry in listing {
-        names.push(entry?.file_name());
-    }
-    Ok(names)
-}
-
-fn replace_hook(path: &Path) {
-    #[cfg(test)]
-    REPLACE_AT.with(|c| {
-        if let Some(f) = c.borrow().as_ref() {
-            f(path);
-        }
-    });
-    let _ = path;
-}
-
-fn listing_replace_hook(path: &Path) {
-    #[cfg(test)]
-    LISTING_REPLACE_AT.with(|c| {
-        if let Some(f) = c.borrow().as_ref() {
-            f(path);
-        }
-    });
-    let _ = path;
-}
-
 // --- staging -> root ------------------------------------------------------
 
 /// `None` means "the real state is not something we can own here" — a
@@ -749,7 +590,7 @@ fn current_state(path: &Path) -> Result<Option<Option<FileState>>> {
         Err(_) => Ok(None),
         Ok(md) if md.is_file() => Ok(Some(Some(FileState {
             bytes: fs::read(path)?,
-            executable: is_exec(md.permissions().mode()),
+            executable: require_exec_bit(&md)?,
         }))),
         Ok(_) => Ok(None),
     }
@@ -789,10 +630,15 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
         bail!("staging file {} is not a regular file", src.display());
     }
     let bytes = fs::read(src)?;
-    let exec = is_exec(md.permissions().mode());
+    let exec = require_exec_bit(&md)?;
+    // Read on every target: the mode math below is `#[cfg(unix)]`, and an
+    // unread binding is a hard error under `-D warnings` on Windows.
+    #[cfg(not(unix))]
+    let _ = exec;
     // Only the executable bit is ours to set. An existing target keeps its
     // own permissions: settings.json holds API keys and is routinely 0600,
     // and a fixed 0644 would silently make it world-readable.
+    #[cfg(unix)]
     let mode = match fs::symlink_metadata(dst) {
         Ok(dmd) if dmd.file_type().is_file() => {
             let cur = dmd.permissions().mode() & 0o777;
@@ -822,7 +668,11 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
         // pre-planted at the predictable pid-based temp path. A leftover from
         // a crashed run of the same pid is removed once, then retried.
         let mut opts = fs::OpenOptions::new();
-        opts.write(true).create_new(true).mode(mode);
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            opts.mode(mode);
+        }
         let mut f = match opts.open(&tmp) {
             Err(e) if e.kind() == ErrorKind::AlreadyExists => {
                 fs::remove_file(&tmp)?;
@@ -834,7 +684,10 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
         // `mode` was masked by the umask at open; restore it exactly. On the
         // open handle: `File::set_permissions` is `fchmod`, so it cannot be
         // redirected by swapping the predictable temp path for a symlink.
-        f.set_permissions(fs::Permissions::from_mode(mode))?;
+        #[cfg(unix)]
+        {
+            f.set_permissions(fs::Permissions::from_mode(mode))?;
+        }
         // Without this the rename can be durable while the bytes are not: a
         // crash would leave a truncated live file that the next mirror pass
         // reads as a user edit and publishes to every other device.
@@ -851,10 +704,29 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
 
 // --- shared ---------------------------------------------------------------
 
-fn is_exec(mode: u32) -> bool {
-    mode & 0o111 != 0
+/// Execute bit of `md`, when this platform can see one.
+///
+/// Unix returns `Some(mode & 0o111 != 0)`. `None` means the filesystem cannot
+/// tell. [`require_exec_bit`] turns that into an error: it is not "not
+/// executable". Phase 2 decides how to keep the tree's mode instead.
+#[cfg(unix)]
+pub fn exec_bit(md: &fs::Metadata) -> Option<bool> {
+    Some(md.permissions().mode() & 0o111 != 0)
 }
 
+#[cfg(not(unix))]
+pub(crate) fn exec_bit(_md: &fs::Metadata) -> Option<bool> {
+    None
+}
+
+pub(crate) fn require_exec_bit(md: &fs::Metadata) -> Result<bool> {
+    match exec_bit(md) {
+        Some(bit) => Ok(bit),
+        None => bail!("this system cannot report the executable bit"),
+    }
+}
+
+#[cfg(unix)]
 fn mode_for(executable: bool) -> u32 {
     if executable {
         0o755
@@ -882,48 +754,13 @@ fn plain_rel(rel: &Path) -> bool {
 }
 
 #[cfg(test)]
-thread_local! {
-    static REPLACE_AT: std::cell::RefCell<Option<Box<dyn Fn(&Path)>>> =
-        const { std::cell::RefCell::new(None) };
-    static LISTING_REPLACE_AT: std::cell::RefCell<Option<Box<dyn Fn(&Path)>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Test seam: run `hook` between inspecting a path component and opening it.
-#[cfg(test)]
-fn with_replace_hook<F, T>(hook: F, body: impl FnOnce() -> T) -> T
-where
-    F: Fn(&Path) + 'static,
-{
-    REPLACE_AT.with(|c| *c.borrow_mut() = Some(Box::new(hook)));
-    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
-    REPLACE_AT.with(|c| *c.borrow_mut() = None);
-    match out {
-        Ok(v) => v,
-        Err(e) => std::panic::resume_unwind(e),
-    }
-}
-
-/// Test seam: run `hook` after inspect classified a directory and before
-/// the no-follow listing open.
-#[cfg(test)]
-fn with_listing_hook<F, T>(hook: F, body: impl FnOnce() -> T) -> T
-where
-    F: Fn(&Path) + 'static,
-{
-    LISTING_REPLACE_AT.with(|c| *c.borrow_mut() = Some(Box::new(hook)));
-    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
-    LISTING_REPLACE_AT.with(|c| *c.borrow_mut() = None);
-    match out {
-        Ok(v) => v,
-        Err(e) => std::panic::resume_unwind(e),
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+
+    #[cfg(unix)]
+    use crate::nofollow::{with_listing_hook, with_replace_hook};
     use tempfile::TempDir;
 
     fn put(path: &Path, body: &str) {
@@ -931,10 +768,12 @@ mod tests {
         fs::write(path, body).unwrap();
     }
 
+    #[cfg(unix)]
     fn chmod(path: &Path, mode: u32) {
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
     }
 
+    #[cfg(unix)]
     fn mode_of(path: &Path) -> u32 {
         fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
     }
@@ -1143,6 +982,7 @@ mod tests {
         assert!(!is_binary(b"hello"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn executable_bit_survives_both_directions() {
         let td = TempDir::new().unwrap();
@@ -1170,6 +1010,7 @@ mod tests {
         assert_eq!(mode_of(&other.join("hooks/run.sh")), 0o755);
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinks_are_never_followed_in_either_direction() {
         let td = TempDir::new().unwrap();
@@ -1264,6 +1105,7 @@ mod tests {
     /// C1: a symlink in the root hides a whole subtree from the walk. Staging
     /// must keep what another device published under it, or the next commit
     /// would publish a deletion of that device's own files.
+    #[cfg(unix)]
     #[test]
     fn a_symlinked_subtree_is_never_deleted_from_staging() {
         let td = TempDir::new().unwrap();
@@ -1287,6 +1129,7 @@ mod tests {
 
     /// I1: a tracked root that is itself a symlink must never be written
     /// through.
+    #[cfg(unix)]
     #[test]
     fn a_symlinked_directory_root_is_never_written_through() {
         let td = TempDir::new().unwrap();
@@ -1345,6 +1188,7 @@ mod tests {
 
     /// I6: applying to an existing file keeps its permissions; only the
     /// executable bit follows the staging file.
+    #[cfg(unix)]
     #[test]
     fn apply_keeps_the_existing_targets_permissions() {
         let td = TempDir::new().unwrap();
@@ -1382,6 +1226,7 @@ mod tests {
     /// at 0o644 and the rename carries 0o644 onto the target. Discriminates
     /// under umask 022, 002 and 077; under umask 000 it passes either way
     /// (vacuous, never flaky).
+    #[cfg(unix)]
     #[test]
     fn apply_restores_a_mode_the_umask_would_have_masked() {
         let td = TempDir::new().unwrap();
@@ -1413,6 +1258,7 @@ mod tests {
 
     /// I6, both directions: the executable bit follows staging, every other
     /// permission bit of an existing target is left alone.
+    #[cfg(unix)]
     #[test]
     fn apply_toggles_only_the_exec_bit_on_an_existing_target() {
         let td = TempDir::new().unwrap();
@@ -1460,6 +1306,7 @@ mod tests {
     /// target's bytes to the shared cloud folder. It is reported in `skipped`
     /// rather than aborting: an abort would leave the root half-applied and
     /// re-fail identically on every retry, wedging the slug for good.
+    #[cfg(unix)]
     #[test]
     fn a_symlink_in_staging_is_never_read_through() {
         let td = TempDir::new().unwrap();
@@ -1519,6 +1366,7 @@ mod tests {
     /// entry swapped for a symlink inside that window reaches
     /// `copy_if_changed` as a symlink. The window is not deterministically
     /// drivable through `root_to_staging`, so the guard is exercised directly.
+    #[cfg(unix)]
     #[test]
     fn a_root_entry_swapped_for_a_symlink_is_not_copied_into_staging() {
         let td = TempDir::new().unwrap();
@@ -1578,6 +1426,7 @@ mod tests {
 
     /// R1: the temp file is created with `O_EXCL`, so a symlink pre-planted at
     /// the predictable temp path is unlinked rather than written through.
+    #[cfg(unix)]
     #[test]
     fn a_pre_planted_temp_symlink_is_not_followed() {
         let td = TempDir::new().unwrap();
@@ -1610,6 +1459,7 @@ mod tests {
 
     /// R1: a leftover temp from a crashed run of the same pid must not wedge
     /// every later apply.
+    #[cfg(unix)]
     #[test]
     fn a_stale_temp_file_is_replaced() {
         let td = TempDir::new().unwrap();
@@ -1670,6 +1520,7 @@ mod tests {
         go(staging, needle)
     }
 
+    #[cfg(unix)]
     fn replace_with_symlink(path: &Path, target: &Path) {
         if fs::symlink_metadata(path)
             .map(|m| m.is_dir())
@@ -1704,6 +1555,7 @@ mod tests {
         assert!(!staging.join("secrets").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_tracked_directory_replaced_by_a_symlink_is_not_read_or_pruned() {
         let td = TempDir::new().unwrap();
@@ -1754,6 +1606,7 @@ mod tests {
     /// `Dir`. Path-based `read_dir` would list the outside directory (empty
     /// here) and `delete_stale` would publish a deletion of every staged
     /// child.
+    #[cfg(unix)]
     #[test]
     fn a_directory_replaced_after_inspect_is_not_listed_or_pruned() {
         let td = TempDir::new().unwrap();
@@ -1781,6 +1634,7 @@ mod tests {
         assert!(!staging_holds(&staging, SENTINEL));
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_explicit_file_under_a_symlink_ancestor_is_not_read_or_published() {
         let td = TempDir::new().unwrap();

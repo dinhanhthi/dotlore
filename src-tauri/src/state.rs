@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn open_resolution_replaces_the_previous_snapshot() {
-        let state = AppState::new(PathBuf::from("/tmp/unused"), PathBuf::from("/tmp"));
+        let state = AppState::new(PathBuf::from("x").join("unused"), PathBuf::from("x"));
         state.open_snapshot("a", "one.md", dummy_snap("a", "one.md"));
         state.open_snapshot("b", "two.md", dummy_snap("b", "two.md"));
         assert_eq!(

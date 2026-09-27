@@ -12,6 +12,7 @@ use tauri::{App, AppHandle, Listener, Manager};
 use crate::cloud::is_bidi_control;
 use crate::daemon::Cmd;
 use crate::git;
+use crate::platform;
 
 use crate::show_window;
 use crate::state::{load_cfg, AppState};
@@ -289,9 +290,7 @@ pub fn menu_labels(view: &TrayView) -> Vec<Option<String>> {
         items.push(None);
     }
     if view.git_missing {
-        items.push(Some(
-            "git not found — run: xcode-select --install".to_string(),
-        ));
+        items.push(Some(platform::git_install_hint().to_string()));
     }
     if view.no_provider {
         items.push(Some("No cloud folder set".to_string()));
@@ -375,7 +374,7 @@ mod tests {
         assert_eq!(
             menu_labels(&s),
             vec![
-                Some("git not found — run: xcode-select --install".into()),
+                Some(platform::git_install_hint().into()),
                 Some("No cloud folder set".into()),
                 Some("Error: cycle failed".into()),
                 None,

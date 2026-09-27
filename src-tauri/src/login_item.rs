@@ -31,6 +31,7 @@
 //! that copy leave again; the alternative was skipping `bootstrap`, which
 //! would mean the agent only takes effect at the next login.
 
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;

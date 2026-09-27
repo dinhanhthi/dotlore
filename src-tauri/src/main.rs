@@ -1,4 +1,4 @@
-//! Dotlore's macOS menu-bar app.
+//! Dotlore's desktop app.
 
 use std::path::PathBuf;
 

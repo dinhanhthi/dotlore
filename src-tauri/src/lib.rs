@@ -7,22 +7,29 @@ pub mod daemon;
 pub mod engine;
 pub mod git;
 pub mod mirror;
+pub mod platform;
 pub mod project;
 pub mod repo;
 
+#[cfg(target_os = "macos")]
 mod about;
 mod commands;
+#[cfg(target_os = "macos")]
 mod login_item;
+mod nofollow;
 mod state;
 mod tray;
 mod updater;
+#[cfg(target_os = "macos")]
 mod upload_mac;
 
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+#[cfg(target_os = "macos")]
+use tauri::RunEvent;
+use tauri::{AppHandle, Manager, WindowEvent};
 
 use config::Config;
 
@@ -47,6 +54,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             // Regular (the Tauri default) shows the Dock icon while the window
             // is open; `hide_window` drops to Accessory, leaving only the
             // menu-bar item, and `show_window` brings the icon back.
+            #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             if let Some(window) = app.get_webview_window(WINDOW) {
@@ -64,6 +72,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
 
             app.manage(AppState::new(home, home_dir));
             app.state::<AppState>().start_runtime(app.handle());
+            #[cfg(target_os = "macos")]
             about::install(app)?;
             // The tray listens for `dotlore://update` before the first check runs.
             tray::build(app)?;
@@ -123,13 +132,21 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
         .build(tauri::generate_context!())
         .expect("error while running Dotlore")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
             if let RunEvent::Reopen { .. } = event {
                 show_window(app);
+            }
+            // The closure is registered on every OS. macOS is the only one
+            // with `RunEvent::Reopen`.
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app, event);
             }
         });
 }
 
 pub(crate) fn show_window(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window(WINDOW) {
         let _ = window.show();
@@ -141,6 +158,7 @@ pub(crate) fn hide_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW) {
         let _ = window.hide();
     }
+    #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 }
 

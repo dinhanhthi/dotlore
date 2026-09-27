@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
@@ -471,13 +472,17 @@ impl Engine {
     fn reserve_add(home: &Path, slug: &str) -> Result<File> {
         let dir = home.join("adding");
         fs::create_dir_all(&dir)?;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(dir.join(slug))?;
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+        }
+        let mut opts = OpenOptions::new();
+        opts.create(true).read(true).write(true);
+        #[cfg(unix)]
+        {
+            opts.mode(0o600);
+        }
+        let file = opts.open(dir.join(slug))?;
         match file.try_lock() {
             Ok(()) => Ok(file),
             Err(fs::TryLockError::WouldBlock) => bail!("{slug} is already being added"),
@@ -1123,7 +1128,7 @@ impl Engine {
             return Ok(ResolveOutcome::Applied(root_status(&repo)?));
         }
 
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud)?;
         let mut tx = repo.begin_tx(&key, "HEAD", conflict::resolve_index)?;
         conflict::resolve(&tx, &snapshot.live, selected_siblings, content)?;
         tx.set_target(&repo)?;
@@ -1318,7 +1323,7 @@ impl Engine {
             cloud.write_device_name_once(&root.slug, &self.cfg.device_id, &self.cfg.device_name)?;
         }
 
-        let key = provider_key(cloud);
+        let key = provider_key(cloud)?;
         let pending = match repo.pending_tx(conflict::resolve_index)? {
             Some(mut tx) => match tx.resume(&repo, &self.home_dir)? {
                 // Nothing was applied and `main` never moved: redo the merges
@@ -1935,7 +1940,7 @@ fn root_state(path: &Path) -> Result<Option<FileState>> {
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         Ok(md) if md.is_file() => Ok(Some(FileState {
             bytes: fs::read(path)?,
-            executable: md.permissions().mode() & 0o111 != 0,
+            executable: mirror::require_exec_bit(&md)?,
         })),
         Ok(_) => bail!("{} is not a regular file", path.display()),
     }
@@ -2983,7 +2988,7 @@ mod tests {
         // Leave an `Applying` journal with one unapplied addition.
         let root = a.engine.root_cfg("proj-claude").unwrap();
         let repo = a.engine.repo_for(&root).unwrap();
-        let key = provider_key(&cloud_of(&a));
+        let key = provider_key(&cloud_of(&a)).unwrap();
         let mut tx = repo
             .begin_tx(&key, "HEAD", conflict::resolve_index)
             .unwrap();
@@ -3058,8 +3063,10 @@ mod tests {
 
     /// A listing that fails is not a listing that came back empty: the
     /// cloud is immutable, so a spurious full republish could never be undone.
+    #[cfg(unix)]
     #[test]
     fn an_unreadable_own_device_folder_is_an_error_not_a_republish() {
+        #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         let provider = TempDir::new().unwrap();
         let mut a = device(provider.path(), 'a');
@@ -3071,9 +3078,15 @@ mod tests {
             .join("devices")
             .join("a".repeat(32));
 
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+        }
         let status = a.engine.sync_root("proj-claude").unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         assert!(matches!(status, RootStatus::Error(_)), "{status:?}");
         let seqs: Vec<u64> = cloud_of(&a)
             .list_bundles("proj-claude")
@@ -3501,7 +3514,7 @@ mod tests {
 
         let root = a.engine.root_cfg("proj-claude").unwrap();
         let repo = a.engine.repo_for(&root).unwrap();
-        let key = provider_key(&cloud_of(&a));
+        let key = provider_key(&cloud_of(&a)).unwrap();
         let main = repo.git.rev("refs/heads/main").unwrap();
         let tree = repo.git.ok(&["rev-parse", "HEAD^{tree}"]).unwrap();
         // An unrelated commit with the same tree, as adoption leaves behind.
@@ -4022,6 +4035,7 @@ mod tests {
         assert!(a.home.path().join("config.json").is_file());
     }
 
+    #[cfg(unix)]
     #[test]
     fn wipe_cloud_data_refuses_a_symlinked_cloud_folder() {
         let provider = TempDir::new().unwrap();
@@ -4032,7 +4046,10 @@ mod tests {
         let base = a.engine.cloud.base.clone();
         let target = elsewhere.path().join("dotlore");
         fs::rename(&base, &target).unwrap();
-        std::os::unix::fs::symlink(&target, &base).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&target, &base).unwrap();
+        }
 
         assert!(a.engine.wipe_cloud_data().is_err());
         assert!(target.join("proj-claude/manifest.json").is_file());
@@ -4044,6 +4061,7 @@ mod tests {
         assert_eq!(Config::load(a.home.path()).unwrap().roots.len(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn wipe_cloud_data_refuses_a_symlinked_state_folder_before_any_delete() {
         let provider = TempDir::new().unwrap();
@@ -4052,7 +4070,10 @@ mod tests {
         write(&a, "CLAUDE.md", b"one\n");
         add(&mut a);
         fs::write(elsewhere.path().join("keep"), b"k").unwrap();
-        std::os::unix::fs::symlink(elsewhere.path(), a.home.path().join("recovery")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(elsewhere.path(), a.home.path().join("recovery")).unwrap();
+        }
 
         assert!(a.engine.wipe_cloud_data().is_err());
         assert!(elsewhere.path().join("keep").is_file());

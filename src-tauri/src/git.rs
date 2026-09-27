@@ -119,6 +119,7 @@ pub fn which_git() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
@@ -204,7 +205,10 @@ mod tests {
         let marker = dir.path().join("ran");
         let hook = hooks.join("pre-commit");
         std::fs::write(&hook, format!("#!/bin/sh\ntouch {}\n", marker.display()))?;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))?;
+        }
 
         std::env::set_var("GIT_TEMPLATE_DIR", dir.path().join("template"));
         std::env::set_var(

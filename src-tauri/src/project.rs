@@ -1116,7 +1116,10 @@ mod tests {
         put(&root.join(".env"), "SECRET=1");
         put(&root.join("README.md"), "nope");
         fs::create_dir_all(root.join("elsewhere")).unwrap();
-        std::os::unix::fs::symlink(root.join("elsewhere"), root.join(".claude")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("elsewhere"), root.join(".claude")).unwrap();
+        }
 
         let (file, skipped) =
             seed(root, &default_pattern_strings(), "", Limits::default()).unwrap();
@@ -1639,7 +1642,10 @@ mod tests {
         fs::create_dir(&claude).unwrap();
         let real = home.path().join("codex-real");
         fs::create_dir(&real).unwrap();
-        std::os::unix::fs::symlink(&real, home.path().join(".codex")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&real, home.path().join(".codex")).unwrap();
+        }
         fs::write(home.path().join(".gemini"), b"not-a-directory").unwrap();
 
         assert_eq!(installed_agent_dirs(home.path()), vec![claude]);

@@ -9,13 +9,6 @@
 //! `dotlore://status` payload and send [`Cmd::Reload`]; they do not return
 //! state alongside the result.
 
-use std::ffi::{CString, OsStr, OsString};
-use std::fs::File;
-use std::io::{self, ErrorKind};
-use std::os::raw::c_char as libc_c_char;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::path::{Component, Path, PathBuf};
 use std::sync::PoisonError;
 
@@ -32,18 +25,15 @@ use crate::engine::{
     TrackedFile, WipeReport,
 };
 use crate::git;
+use crate::platform;
 use crate::project;
 
-use crate::login_item;
+use crate::nofollow::{
+    child_kind, is_unsafe_open, listing_replace_hook, open_dir_nofollow, read_dir_fd,
+};
 use crate::state::{load_cfg, AppState, RootRow, StatusPayload};
 use crate::tray::one_line;
 use crate::updater;
-
-/// Inside `~`, where iCloud Drive's Documents folder lives.
-const ICLOUD: &str = "Library/Mobile Documents/com~apple~CloudDocs";
-/// Inside `~`, where File Provider clients such as Google Drive, Dropbox and
-/// OneDrive mount each account.
-const CLOUD_STORAGE: &str = "Library/CloudStorage";
 
 /// Files larger than this are not loaded into the webview.
 const MAX_PREVIEW_BYTES: u64 = 2 * 1024 * 1024;
@@ -364,7 +354,10 @@ pub async fn cloud_upload(state: State<'_, AppState>) -> Result<UploadState, Str
             base: engine::cloud_folder(&provider),
         };
         let slugs: Vec<String> = cfg.roots.into_iter().map(|r| r.slug).collect();
-        Ok(cloud.upload_state(&slugs, &cfg.device_id, crate::upload_mac::is_uploaded))
+        if !platform::supports_upload_status() {
+            return Ok(UploadState::Unknown);
+        }
+        Ok(cloud.upload_state(&slugs, &cfg.device_id, platform::upload_status))
     })
     .await
     .map_err(front_msg)?
@@ -407,6 +400,7 @@ fn cloud_folder_target(provider: &Path) -> PathBuf {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn open_folder(dir: &Path) -> Result<(), String> {
     use objc2_app_kit::NSWorkspace;
     use objc2_foundation::{NSString, NSURL};
@@ -417,6 +411,11 @@ fn open_folder(dir: &Path) -> Result<(), String> {
     } else {
         Err(format!("Could not open {}", dir.display()))
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_folder(dir: &Path) -> Result<(), String> {
+    platform::open_folder(dir)
 }
 
 /// `async` so the main thread never waits on it: [`git::which_git`] spawns
@@ -976,25 +975,30 @@ pub async fn set_max_seed_folder_mb(
 
 #[tauri::command]
 pub fn list_cloud_mounts(state: State<'_, AppState>) -> Vec<String> {
-    cloud_storage_mounts(&state.home_dir)
+    platform::cloud_suggestions(&state.home_dir)
         .into_iter()
+        .filter(|p| p.components().any(|c| c.as_os_str() == "CloudStorage"))
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
 }
 
 #[tauri::command]
 pub fn icloud_dir(state: State<'_, AppState>) -> String {
-    state.home_dir.join(ICLOUD).to_string_lossy().into_owned()
+    platform::cloud_suggestions(&state.home_dir)
+        .into_iter()
+        .find(|p| p.file_name().is_some_and(|n| n == "com~apple~CloudDocs"))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 #[tauri::command]
 pub fn login_item_enabled(state: State<'_, AppState>) -> bool {
-    login_item::is_enabled(&state.home_dir)
+    platform::autostart_enabled(&state.home_dir)
 }
 
 #[tauri::command]
 pub fn set_login_item(state: State<'_, AppState>, on: bool) -> Result<(), String> {
-    login_item::set(&state.home_dir, on).map_err(front_err)
+    platform::set_autostart(&state.home_dir, on).map_err(front_err)
 }
 
 /// The version the last update check found, if any.
@@ -1112,26 +1116,6 @@ fn status_payload(state: &AppState) -> StatusPayload {
             error: Some(one_line(&e)),
         },
     }
-}
-
-/// Every cloud account mount under `~/Library/CloudStorage`, hidden entries skipped.
-fn cloud_storage_mounts(home_dir: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = std::fs::read_dir(home_dir.join(CLOUD_STORAGE))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir() && !name_of(p).starts_with('.'))
-        .collect();
-    out.sort();
-    out
-}
-
-fn name_of(p: &Path) -> String {
-    p.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default()
-        .to_string()
 }
 
 fn front_err(e: anyhow::Error) -> String {
@@ -1434,175 +1418,6 @@ fn list_children_in(
     Ok(out)
 }
 
-fn child_kind(dir: &File, name: &OsStr) -> Option<String> {
-    let file = openat_child(dir, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW).ok()?;
-    let md = file.metadata().ok()?;
-    if md.is_dir() {
-        Some("directory".into())
-    } else if md.is_file() {
-        Some("file".into())
-    } else {
-        None
-    }
-}
-
-// Darwin / Linux open(2) flags. Same values as mirror.rs — Mac-only product.
-#[cfg(target_os = "macos")]
-const O_NOFOLLOW: i32 = 0x0100;
-#[cfg(target_os = "macos")]
-const O_DIRECTORY: i32 = 0x0010_0000;
-#[cfg(target_os = "macos")]
-const O_CLOEXEC: i32 = 0x0100_0000;
-#[cfg(target_os = "linux")]
-const O_NOFOLLOW: i32 = 0x20000;
-#[cfg(target_os = "linux")]
-const O_DIRECTORY: i32 = 0x10000;
-#[cfg(target_os = "linux")]
-const O_CLOEXEC: i32 = 0o2000000;
-const O_RDONLY: i32 = 0;
-
-#[cfg(target_os = "macos")]
-const ELOOP: i32 = 62;
-#[cfg(target_os = "linux")]
-const ELOOP: i32 = 40;
-const ENOTDIR: i32 = 20;
-
-extern "C" {
-    fn openat(dirfd: i32, pathname: *const libc_c_char, flags: i32) -> i32;
-}
-
-#[cfg(target_os = "macos")]
-enum DIR {}
-
-#[cfg(target_os = "macos")]
-#[repr(C)]
-struct Dirent {
-    d_ino: u64,
-    d_seekoff: u64,
-    d_reclen: u16,
-    d_namlen: u16,
-    d_type: u8,
-    d_name: [i8; 1024],
-}
-
-// `mirror` declares the same libc functions with its own opaque `DIR`.
-// The two wrappers never exchange pointers; the layouts match.
-#[cfg(target_os = "macos")]
-#[allow(clashing_extern_declarations)]
-extern "C" {
-    fn close(fd: i32) -> i32;
-    fn fdopendir(fd: i32) -> *mut DIR;
-    fn readdir(dirp: *mut DIR) -> *mut Dirent;
-    fn closedir(dirp: *mut DIR) -> i32;
-}
-
-fn is_unsafe_open(e: &io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(ELOOP) | Some(ENOTDIR)) || e.kind() == ErrorKind::InvalidInput
-}
-
-fn open_root_dir(root: &Path) -> io::Result<File> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.read(true)
-        .custom_flags(O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-    opts.open(root)
-}
-
-fn openat_child(parent: &File, name: &OsStr, flags: i32) -> io::Result<File> {
-    let c_name = CString::new(name.as_bytes())
-        .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "path component contains NUL"))?;
-    let fd = unsafe { openat(parent.as_raw_fd(), c_name.as_ptr(), flags) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { File::from_raw_fd(fd) })
-}
-
-fn open_chain(root: &Path, rel: &Path) -> io::Result<File> {
-    let mut fd = open_root_dir(root)?;
-    for component in rel.components() {
-        let name = match component {
-            Component::Normal(n) => n,
-            _ => {
-                return Err(io::Error::new(
-                    ErrorKind::InvalidInput,
-                    "path is not a plain relative path",
-                ))
-            }
-        };
-        fd = openat_child(&fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_DIRECTORY)?;
-    }
-    Ok(fd)
-}
-
-fn open_dir_nofollow(root: &Path, rel: &Path) -> io::Result<File> {
-    if rel.as_os_str().is_empty() {
-        open_root_dir(root)
-    } else {
-        open_chain(root, rel)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn read_dir_fd(dir: File) -> io::Result<Vec<OsString>> {
-    let raw = dir.into_raw_fd();
-    let dirp = unsafe { fdopendir(raw) };
-    if dirp.is_null() {
-        let err = io::Error::last_os_error();
-        unsafe { close(raw) };
-        return Err(err);
-    }
-    let mut names = Vec::new();
-    loop {
-        let ent = unsafe { readdir(dirp) };
-        if ent.is_null() {
-            break;
-        }
-        let namlen = unsafe { (*ent).d_namlen as usize };
-        let bytes =
-            unsafe { std::slice::from_raw_parts((*ent).d_name.as_ptr().cast::<u8>(), namlen) };
-        if bytes == b"." || bytes == b".." {
-            continue;
-        }
-        names.push(OsStr::from_bytes(bytes).to_os_string());
-    }
-    unsafe { closedir(dirp) };
-    Ok(names)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn read_dir_fd(dir: File) -> io::Result<Vec<OsString>> {
-    let listing = std::fs::read_dir(format!("/proc/self/fd/{}", dir.as_raw_fd()))?;
-    let mut names = Vec::new();
-    for entry in listing {
-        names.push(entry?.file_name());
-    }
-    Ok(names)
-}
-
-#[cfg(test)]
-thread_local! {
-    static LISTING_REPLACE_AT: std::cell::RefCell<Option<Box<dyn Fn(&Path)>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-fn listing_replace_hook(path: &Path) {
-    #[cfg(test)]
-    LISTING_REPLACE_AT.with(|c| {
-        if let Some(f) = c.borrow().as_ref() {
-            f(path);
-        }
-    });
-    let _ = path;
-}
-
-#[cfg(test)]
-fn with_listing_replace<T>(hook: impl Fn(&Path) + 'static, f: impl FnOnce() -> T) -> T {
-    LISTING_REPLACE_AT.with(|c| *c.borrow_mut() = Some(Box::new(hook)));
-    let out = f();
-    LISTING_REPLACE_AT.with(|c| *c.borrow_mut() = None);
-    out
-}
-
 fn read_tracked_file(home: &Path, slug: &str, rel: &str) -> Result<FileContent, String> {
     let cfg = load_cfg(home)?;
     let root = cfg
@@ -1643,18 +1458,24 @@ fn read_tracked_file(home: &Path, slug: &str, rel: &str) -> Result<FileContent, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use crate::platform;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     use crate::cloud::Manifest;
     use crate::config::Config;
     use crate::engine::Engine;
+    #[cfg(unix)]
+    use crate::nofollow::with_listing_replace;
     use tempfile::TempDir;
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn cloud_storage_mounts_lists_every_visible_dir_sorted() {
         let home = TempDir::new().unwrap();
-        let cs = home.path().join(CLOUD_STORAGE);
+        let cs = home.path().join("Library/CloudStorage");
         for name in [
             "OneDrive-Personal",
             "GoogleDrive-a@b.com",
@@ -1665,8 +1486,10 @@ mod tests {
         }
         fs::write(cs.join("stray.txt"), b"x").unwrap();
         assert_eq!(
-            cloud_storage_mounts(home.path()),
+            platform::cloud_suggestions(home.path()),
             vec![
+                home.path()
+                    .join("Library/Mobile Documents/com~apple~CloudDocs"),
                 cs.join("Dropbox"),
                 cs.join("GoogleDrive-a@b.com"),
                 cs.join("OneDrive-Personal"),
@@ -1674,10 +1497,16 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn cloud_storage_mounts_is_empty_without_cloud_storage() {
         let home = TempDir::new().unwrap();
-        assert!(cloud_storage_mounts(home.path()).is_empty());
+        assert_eq!(
+            platform::cloud_suggestions(home.path()),
+            vec![home
+                .path()
+                .join("Library/Mobile Documents/com~apple~CloudDocs")]
+        );
     }
 
     #[test]
@@ -1761,18 +1590,24 @@ mod tests {
         let secret = tmp.path().join("secret");
         fs::write(&secret, "nope").unwrap();
 
-        let link = root_dir.join("escape");
-        symlink(&secret, &link).unwrap();
+        #[cfg(unix)]
+        {
+            let link = root_dir.join("escape");
+            symlink(&secret, &link).unwrap();
+        }
 
         let root = dir_root(root_dir);
         assert!(
             resolve_in_root(&root, "../secret").is_err(),
             "../secret must not escape the tracked root"
         );
-        assert!(
-            resolve_in_root(&root, "escape").is_err(),
-            "a symlink pointing outside the root must be rejected"
-        );
+        #[cfg(unix)]
+        {
+            assert!(
+                resolve_in_root(&root, "escape").is_err(),
+                "a symlink pointing outside the root must be rejected"
+            );
+        }
     }
 
     #[test]
@@ -1783,8 +1618,17 @@ mod tests {
             track_entry_sync(&mut fx.engine, &fx.slug, "../secret", None, false).is_err(),
             "a relative escape must be rejected"
         );
+        let outside = TempDir::new().unwrap();
+        let absolute = outside.path().join("secret");
         assert!(
-            track_entry_sync(&mut fx.engine, &fx.slug, "/tmp/secret", None, false).is_err(),
+            track_entry_sync(
+                &mut fx.engine,
+                &fx.slug,
+                absolute.to_str().unwrap(),
+                None,
+                false
+            )
+            .is_err(),
             "an absolute path must be rejected"
         );
         assert_eq!(
@@ -1987,24 +1831,30 @@ mod tests {
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("secret.txt"), "nope").unwrap();
         write(&fx, "sub/ok.txt", b"ok\n");
-        symlink(&outside, fx.root.path().join("link")).unwrap();
+        #[cfg(unix)]
+        {
+            symlink(&outside, fx.root.path().join("link")).unwrap();
+        }
 
         assert!(
             list_entry_children_sync(&fx.engine, &fx.slug, "..").is_err(),
             "`..` must not list above the project root"
         );
         assert!(
-            list_entry_children_sync(&fx.engine, &fx.slug, "/").is_err(),
+            list_entry_children_sync(&fx.engine, &fx.slug, outside.to_str().unwrap()).is_err(),
             "an absolute path must be rejected"
         );
         assert!(
             list_entry_children_sync(&fx.engine, &fx.slug, "../outside").is_err(),
             "a traversal must be rejected"
         );
-        assert!(
-            list_entry_children_sync(&fx.engine, &fx.slug, "link").is_err(),
-            "listing through a symlink must be rejected"
-        );
+        #[cfg(unix)]
+        {
+            assert!(
+                list_entry_children_sync(&fx.engine, &fx.slug, "link").is_err(),
+                "listing through a symlink must be rejected"
+            );
+        }
 
         let kids = list_entry_children_sync(&fx.engine, &fx.slug, "").unwrap();
         assert!(
@@ -2013,6 +1863,7 @@ mod tests {
                 .any(|k| k.name == ".." || k.name == "." || k.rel.contains("..")),
             "root listing must not return navigable ancestors: {kids:?}"
         );
+        #[cfg(unix)]
         assert!(
             !kids.iter().any(|k| k.name == "link"),
             "a symlink child must not be returned as a candidate: {kids:?}"
@@ -2023,27 +1874,30 @@ mod tests {
             "the real subdirectory must be listed: {kids:?}"
         );
 
-        let listed = with_listing_replace(
-            {
-                let outside = outside.clone();
-                move |p| {
-                    if p.file_name().and_then(|n| n.to_str()) == Some("sub") {
-                        let _ = fs::remove_dir_all(p);
-                        let _ = symlink(&outside, p);
+        #[cfg(unix)]
+        {
+            let listed = with_listing_replace(
+                {
+                    let outside = outside.clone();
+                    move |p| {
+                        if p.file_name().and_then(|n| n.to_str()) == Some("sub") {
+                            let _ = fs::remove_dir_all(p);
+                            let _ = symlink(&outside, p);
+                        }
                     }
-                }
-            },
-            || list_entry_children_sync(&fx.engine, &fx.slug, "sub"),
-        );
-        assert!(
-            listed.is_err(),
-            "a directory replaced by a symlink before read must not be listed: {listed:?}"
-        );
-        if let Ok(rows) = &listed {
-            assert!(
-                !rows.iter().any(|k| k.name == "secret.txt"),
-                "must not leak the planted symlink target: {rows:?}"
+                },
+                || list_entry_children_sync(&fx.engine, &fx.slug, "sub"),
             );
+            assert!(
+                listed.is_err(),
+                "a directory replaced by a symlink before read must not be listed: {listed:?}"
+            );
+            if let Ok(rows) = &listed {
+                assert!(
+                    !rows.iter().any(|k| k.name == "secret.txt"),
+                    "must not leak the planted symlink target: {rows:?}"
+                );
+            }
         }
     }
 

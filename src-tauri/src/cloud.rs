@@ -7,8 +7,10 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -280,11 +282,13 @@ impl Cloud {
             // follow a symlink pre-planted at the temp path. `tmp_name` carries
             // pid+nanos, so an AlreadyExists here is never our own leftover and
             // is left to propagate rather than retried.
-            let mut w = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&tmp)?;
+            let mut opts = fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                opts.mode(0o600);
+            }
+            let mut w = opts.open(&tmp)?;
             io::copy(&mut r, &mut w)?;
             w.sync_all()?;
             drop(w);
@@ -438,13 +442,21 @@ pub fn is_bidi_control(c: char) -> bool {
 }
 
 /// Ask iCloud to materialise a dataless file. Best effort, errors ignored.
+/// Other systems have no `brctl`; the call is a no-op there.
 pub fn download_stub(path: &Path) {
-    let _ = Command::new("brctl")
-        .arg("download")
-        .arg(path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("brctl")
+            .arg("download")
+            .arg(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = path;
+    }
 }
 
 /// Unique, plain (non-dot) temporary name in the destination directory.
@@ -584,6 +596,7 @@ mod tests {
 
     /// The bundle holds every tracked file's bytes and lands in a folder the
     /// provider shares; 0644 there would expose `settings.json` API keys.
+    #[cfg(unix)]
     #[test]
     fn a_published_bundle_is_not_world_readable() {
         use std::os::unix::fs::PermissionsExt;
@@ -986,6 +999,9 @@ mod tests {
     }
 
     /// A tempdir is not in iCloud Drive, so the real probe has no answer.
+    /// `upload_mac` exists only on macOS; the non-macOS upload stub would not
+    /// call this probe.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_real_probe_has_no_answer_outside_icloud() {
         let td = TempDir::new().unwrap();

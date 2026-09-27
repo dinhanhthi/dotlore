@@ -13,6 +13,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -119,7 +120,7 @@ impl Device {
     /// on macOS, not `/var/...`); building it from the raw config path yields
     /// a ref name that silently never matches.
     fn remote_head(&self, slug: &str, device: &str) -> Option<String> {
-        let r = remote_ref(&provider_key(&self.engine.cloud), device);
+        let r = remote_ref(&provider_key(&self.engine.cloud).unwrap(), device);
         self.git(slug).rev(&r)
     }
 }
@@ -1257,6 +1258,7 @@ fn a_deleted_info_attributes_is_restored_by_an_ordinary_cycle() {
 /// "the bundles have not arrived yet" — so the whole root stops committing and
 /// publishing with nothing to act on. It must name the path, and clearing the
 /// path must let the next sync finish.
+#[cfg(unix)]
 #[test]
 fn a_symlinked_live_path_is_reported_instead_of_freezing_the_root() {
     let (mut a, mut b) = standard_start();
@@ -1424,6 +1426,7 @@ fn nested_git_repo_inside_root_is_skipped() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn executable_bit_and_symlinks() {
     let (mut a, mut b) = standard_start();
@@ -1613,10 +1616,13 @@ fn invalid_input_is_rejected_before_any_mutation() {
     assert!(e.add_root(outer.path(), Some("outer")).is_err());
 
     // A symlinked root is never adopted.
-    let link = a.root.path().join("agents-link");
-    std::os::unix::fs::symlink("agents", &link).unwrap();
-    assert!(a.engine.add_root(&link, Some("linked")).is_err());
-    fs::remove_file(&link).unwrap();
+    #[cfg(unix)]
+    {
+        let link = a.root.path().join("agents-link");
+        std::os::unix::fs::symlink("agents", &link).unwrap();
+        assert!(a.engine.add_root(&link, Some("linked")).is_err());
+        fs::remove_file(&link).unwrap();
+    }
 
     // A file path is refused as a project.
     let file = a.root.path().join("CLAUDE.md");
@@ -1993,10 +1999,12 @@ fn provider_switch_bootstraps_and_switches_back() {
 
     let dest_key = provider_key(&Cloud {
         base: dest.path().canonicalize().unwrap().join("dotlore"),
-    });
+    })
+    .unwrap();
     let origin_key = provider_key(&Cloud {
         base: origin.join("dotlore"),
-    });
+    })
+    .unwrap();
     assert!(
         sent_ref(&a, &origin_key).is_some() && sent_ref(&a, &dest_key).is_some(),
         "each provider keeps its own acknowledgement state"
@@ -2126,7 +2134,7 @@ fn merge_to_target(dev: &Device) -> (Repo, Transaction) {
         &dev.engine.cfg.device_id,
     )
     .unwrap();
-    let key = provider_key(&dev.engine.cloud);
+    let key = provider_key(&dev.engine.cloud).unwrap();
     repo.commit_local(false, dev.home.path()).unwrap();
     let devices = repo
         .fetch_bundles(&dev.engine.cloud, FetchMode::Normal)

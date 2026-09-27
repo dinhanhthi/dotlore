@@ -14,8 +14,10 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -295,7 +297,7 @@ impl Repo {
     ///
     /// Returns the device ids that have a remote ref afterwards.
     pub fn fetch_bundles(&self, cloud: &Cloud, mode: FetchMode) -> Result<Vec<String>> {
-        let key = provider_key(cloud);
+        let key = provider_key(cloud)?;
         let mut by_device: BTreeMap<String, Vec<(u64, PathBuf)>> = BTreeMap::new();
         for b in cloud.list_bundles(&self.slug) {
             if !valid_device(&b.device) {
@@ -394,7 +396,7 @@ impl Repo {
         let Some(main) = self.git.rev("refs/heads/main") else {
             return Ok(None);
         };
-        let key = provider_key(cloud);
+        let key = provider_key(cloud)?;
         let sent_ref = format!("refs/dotlore/sent/{key}");
         // A provider folder that lost our bundles (a Google account removed
         // and added again comes back at the same path) must get the whole
@@ -436,7 +438,7 @@ impl Repo {
         // pre-opened descriptor is not an option and a fixed name lets any
         // same-user process that can write into `<home>/tmp` redirect every
         // tracked byte — secrets included — somewhere of its choosing. Two
-        // threats, two guards: `unique_id` is 16 bytes of `/dev/urandom`, so
+        // threats, two guards: `unique_id` is 16 bytes from `getrandom`, so
         // no same-uid process can guess the name to plant a symlink at, and
         // `home_tmp_dir` keeps the directory 0700, so the window between
         // git's umask-derived creation mode and the `set_permissions` below
@@ -461,7 +463,10 @@ impl Repo {
             self.git.ok(&["bundle", "create", "-q", &tmp_str, &range])?;
             // The bundle carries every tracked byte; it is 0600 in the cloud
             // and has no business being looser while it waits in tmp.
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+            #[cfg(unix)]
+            {
+                fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+            }
             self.git.ok(&["bundle", "verify", &tmp_str])?;
             cloud.publish_bundle(&self.slug, &self.my_id, seq, &tmp)?;
             self.git.ok(&["update-ref", &sent_ref, &main])?;
@@ -574,7 +579,7 @@ impl Repo {
                             String::from_utf8_lossy(path)
                         ),
                     };
-                    if let Some(p) = usable_entry(path) {
+                    if let Some(p) = usable_entry(path)? {
                         if entries.contains_rel(&p) {
                             out.push((status, p));
                         }
@@ -586,7 +591,8 @@ impl Repo {
                     // Regular blobs only: a mode-120000 symlink or a 160000
                     // gitlink is not something we write into a live root.
                     if mode.starts_with("100") {
-                        if let Some(p) = usable_entry(path.as_os_str().as_bytes()) {
+                        let bytes = os_str_bytes(path.as_os_str())?;
+                        if let Some(p) = usable_entry(bytes)? {
                             if entries.contains_rel(&p) {
                                 out.push((Status::Added, p));
                             }
@@ -667,10 +673,7 @@ impl Repo {
             let Some(mode) = meta.split(' ').next() else {
                 continue;
             };
-            out.push((
-                mode.to_string(),
-                PathBuf::from(OsStr::from_bytes(&entry[tab + 1..])),
-            ));
+            out.push((mode.to_string(), path_from_bytes(&entry[tab + 1..])?));
         }
         Ok(out)
     }
@@ -1362,16 +1365,42 @@ fn provider_slot<'a>(
 
 // --- free helpers ---------------------------------------------------------
 
+/// Path bytes for a git blob id. Unix is `OsStrExt::as_bytes`. Anything else
+/// errors: a lossy string would not match the blob id of the path.
+fn os_str_bytes(path: &OsStr) -> Result<&[u8]> {
+    #[cfg(unix)]
+    {
+        Ok(path.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        bail!("this system cannot encode a path as bytes yet")
+    }
+}
+
+fn path_from_bytes(bytes: &[u8]) -> Result<PathBuf> {
+    #[cfg(unix)]
+    {
+        Ok(PathBuf::from(OsStr::from_bytes(bytes)))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = bytes;
+        bail!("this system cannot decode a path from bytes yet")
+    }
+}
+
 /// The delivery-state namespace for a provider: the git blob hash of its
 /// canonical base path.
 ///
 /// Switching provider must not reuse another provider's acknowledgements, and
 /// the key ends up inside ref names, so it has to be short and ref-safe.
-pub fn provider_key(cloud: &Cloud) -> String {
-    let path = cloud.base.as_os_str().as_bytes();
+pub fn provider_key(cloud: &Cloud) -> Result<String> {
+    let path = os_str_bytes(cloud.base.as_os_str())?;
     let mut msg = format!("blob {}\0", path.len()).into_bytes();
     msg.extend_from_slice(path);
-    hex(&sha1(&msg))
+    Ok(hex(&sha1(&msg)))
 }
 
 /// `refs/remotes/<provider-key>/<device-id>/main` — the only place another
@@ -1418,21 +1447,21 @@ fn valid_device(s: &str) -> bool {
 }
 
 /// Staging-private entries, and names git can carry but we cannot pass to it.
-fn usable_entry(path: &[u8]) -> Option<PathBuf> {
+fn usable_entry(path: &[u8]) -> Result<Option<PathBuf>> {
     // `Git::run` takes `&str`, so a name we cannot decode could never be
     // handed back to git. Staging never creates one; another device might.
-    let p = PathBuf::from(OsStr::from_bytes(path));
+    let p = path_from_bytes(path)?;
     if p.as_os_str().is_empty() || p.to_str().is_none() {
-        return None;
+        return Ok(None);
     }
     let private = p.components().any(|c| match c {
         Component::Normal(n) => crate::project::staging_private(&n.to_string_lossy()),
         _ => true,
     });
     if private {
-        None
+        Ok(None)
     } else {
-        Some(p)
+        Ok(Some(p))
     }
 }
 
@@ -1502,7 +1531,7 @@ fn desired_state(worktree: &Path, rel: &Path, status: Status) -> Result<Option<O
     }
     Ok(Some(Some(FileState {
         bytes: fs::read(&src).with_context(|| format!("reading {}", src.display()))?,
-        executable: md.permissions().mode() & 0o111 != 0,
+        executable: mirror::require_exec_bit(&md)?,
     })))
 }
 
@@ -1528,7 +1557,7 @@ fn live_state(root: &Path, target: &Path) -> Result<Option<Option<FileState>>> {
         Err(_) => Ok(None),
         Ok(md) if md.is_file() => Ok(Some(Some(FileState {
             bytes: fs::read(target)?,
-            executable: md.permissions().mode() & 0o111 != 0,
+            executable: mirror::require_exec_bit(&md)?,
         }))),
         Ok(_) => Ok(None),
     }
@@ -1584,28 +1613,28 @@ fn sweep_tmp_litter(repo: &Repo, rel: &Path) {
 fn home_tmp_dir(home: &Path) -> Result<PathBuf> {
     let dir = home.join("tmp");
     fs::create_dir_all(&dir)?;
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("securing {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("securing {}", dir.display()))?;
+    }
     Ok(dir)
 }
 
-/// A name no other process can predict: 16 bytes of `/dev/urandom` as hex, the
+/// A name no other process can predict: 16 bytes from `getrandom` as hex, the
 /// same source `config::random_id` uses.
 ///
 /// Names built from this are the only thing standing between a temp path and a
 /// symlink pre-planted at it by another process of the same user, so the pid +
 /// wall-clock nanos this used to be was not enough: the pid is readable and
 /// the nanos are enumerable by anyone willing to plant a dense set of links
-/// over a future window. That pair is kept only as the fallback for an
-/// unreadable `/dev/urandom` (no `/dev` in a sandbox, descriptors exhausted) —
-/// unique, so nothing collides or corrupts, merely guessable. Failing a whole
-/// sync over it would be the worse trade.
+/// over a future window. That pair is kept only as the fallback when
+/// `getrandom` fails (no entropy source, descriptors exhausted) — unique, so
+/// nothing collides or corrupts, merely guessable. Failing a whole sync over
+/// it would be the worse trade.
 pub(crate) fn unique_id() -> String {
     let mut buf = [0u8; 16];
-    if fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut buf))
-        .is_ok()
-    {
+    if getrandom::fill(&mut buf).is_ok() {
         return buf.iter().map(|b| format!("{b:02x}")).collect();
     }
     let nanos = SystemTime::now()
@@ -1631,13 +1660,18 @@ fn write_durable(path: &Path, bytes: &[u8]) -> Result<()> {
         .into_owned();
     let tmp = dir.join(format!(".{name}.{}.tmp", unique_id()));
     let res = (|| -> Result<()> {
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)?;
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
         f.write_all(bytes)?;
-        f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        #[cfg(unix)]
+        {
+            f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         f.sync_all()?;
         drop(f);
         fs::rename(&tmp, path)?;
@@ -1777,8 +1811,11 @@ mod tests {
 
     /// `provider_key` claims to be a git blob id; if the hand-rolled SHA-1
     /// drifts from that, this fails.
+    #[cfg(unix)]
     #[test]
     fn provider_key_is_the_git_hash_of_the_base_path() {
+        use std::os::unix::ffi::OsStrExt;
+
         let fx = fixture();
         let cloud = fx.cloud();
         let path_bytes = cloud.base.as_os_str().as_bytes().to_vec();
@@ -1790,19 +1827,20 @@ mod tests {
             .ok(&["hash-object", "--", f.to_str().unwrap()])
             .unwrap();
 
-        assert_eq!(provider_key(&cloud), expect);
-        assert_eq!(provider_key(&cloud).len(), 40);
+        assert_eq!(provider_key(&cloud).unwrap(), expect);
+        assert_eq!(provider_key(&cloud).unwrap().len(), 40);
     }
 
+    #[cfg(unix)]
     #[test]
     fn provider_key_separates_two_providers() {
         let a = Cloud {
-            base: PathBuf::from("/tmp/one/dotlore"),
+            base: Path::new("one").join("dotlore"),
         };
         let b = Cloud {
-            base: PathBuf::from("/tmp/two/dotlore"),
+            base: Path::new("two").join("dotlore"),
         };
-        assert_ne!(provider_key(&a), provider_key(&b));
+        assert_ne!(provider_key(&a).unwrap(), provider_key(&b).unwrap());
     }
 
     // --- commit_local -----------------------------------------------------
@@ -1925,17 +1963,26 @@ mod tests {
         // Git refuses to store `.git/x` in a tree, so pin the predicate
         // `changes_since` uses. `a.dotlore-tmp` is also in the peer tree
         // above; this names the path the assert_eq would miss if it leaked.
-        assert!(usable_entry(b".git/x").is_none());
-        assert!(usable_entry(b"a.dotlore-tmp").is_none());
+        // Byte paths: `path_from_bytes` always errors off Unix, so this stays
+        // with the other blob-id tests. The name-status asserts above do not.
+        #[cfg(unix)]
+        {
+            assert!(usable_entry(b".git/x").unwrap().is_none());
+            assert!(usable_entry(b"a.dotlore-tmp").unwrap().is_none());
+        }
     }
 
+    #[cfg(unix)]
     #[test]
     fn changes_since_none_lists_regular_files_only() {
         let fx = fixture();
         fx.write("CLAUDE.md", b"one\n");
         fx.commit();
         // A symlink can only reach staging from another device's commit.
-        std::os::unix::fs::symlink("CLAUDE.md", fx.repo.staging.join("link.md")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("CLAUDE.md", fx.repo.staging.join("link.md")).unwrap();
+        }
         fx.repo
             .git
             .ok(&["add", "-f", "--", ":(literal)link.md"])
@@ -2032,11 +2079,14 @@ mod tests {
         let fx = fixture();
         fx.write("CLAUDE.md", b"one\n");
         fx.write("hooks/run.sh", b"#!/bin/sh\n");
-        fs::set_permissions(
-            fx.root.path().join("hooks/run.sh"),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        #[cfg(unix)]
+        {
+            fs::set_permissions(
+                fx.root.path().join("hooks/run.sh"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
         fx.commit();
         let pre = fx.repo.git.rev("HEAD").unwrap();
 
@@ -2058,6 +2108,7 @@ mod tests {
                 executable: false
             })
         );
+        #[cfg(unix)]
         assert!(snap[Path::new("hooks/run.sh")].as_ref().unwrap().executable);
         assert_eq!(snap[Path::new("nope.md")], None);
 
@@ -2174,7 +2225,7 @@ mod tests {
     fn fetch_creates_the_remote_ref_and_records_consumed() {
         let (fx, b, _bh) = two_devices();
         let cloud = fx.cloud();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
 
         let devs = b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
         assert_eq!(devs, vec![ID_A.to_string()]);
@@ -2196,7 +2247,7 @@ mod tests {
     fn a_corrupt_bundle_stops_the_chain_and_keeps_consumed() {
         let (fx, b, _bh) = two_devices();
         let cloud = fx.cloud();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
         fx.write("CLAUDE.md", b"two\n");
         fx.commit();
         fx.repo.publish(&cloud).unwrap();
@@ -2243,7 +2294,7 @@ mod tests {
         fx.write("CLAUDE.md", b"one\n");
         fx.commit();
         fx.repo.publish(&cloud).unwrap();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
 
         assert!(fx
             .repo
@@ -2264,7 +2315,7 @@ mod tests {
     #[test]
     fn a_journalled_transaction_round_trips_and_blocks_a_second_one() {
         let fx = fixture();
-        let key = provider_key(&fx.cloud());
+        let key = provider_key(&fx.cloud()).unwrap();
         fx.write("CLAUDE.md", b"one\n");
         fx.commit();
         let head = fx.repo.git.rev("HEAD").unwrap();
@@ -2288,7 +2339,7 @@ mod tests {
     fn merging_leaves_main_and_the_root_untouched_until_finalize() {
         let (fx, _b, bh) = two_devices();
         let cloud = fx.cloud();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
         // B links the same cloud slug onto its own empty root.
         let b_root = TempDir::new().unwrap();
         let b = Repo::open(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
@@ -2333,7 +2384,7 @@ mod tests {
     fn a_pending_apply_resumes_from_its_journal() {
         let (fx, _b, bh) = two_devices();
         let cloud = fx.cloud();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
         let b_root = TempDir::new().unwrap();
         let b = Repo::open(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
         b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
@@ -2357,11 +2408,12 @@ mod tests {
     /// to retry forever, and removing the symlink lets the journalled
     /// transaction finish on the next resume — the "crash between two applies"
     /// case, with the fail-closed guarantee checked on the symlink's target.
+    #[cfg(unix)]
     #[test]
     fn one_blocked_path_leaves_a_partial_apply_that_resumes_once_it_is_cleared() {
         let fx = fixture();
         let cloud = fx.cloud();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
         fx.write("CLAUDE.md", b"one\n");
         fx.write("agents/x.md", b"agent x\n");
         fx.commit();
@@ -2377,7 +2429,10 @@ mod tests {
         let elsewhere = bh.path().join("elsewhere.md");
         fs::write(&elsewhere, b"not ours\n").unwrap();
         fs::create_dir_all(b_root.path().join("agents")).unwrap();
-        std::os::unix::fs::symlink(&elsewhere, b_root.path().join("agents/x.md")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&elsewhere, b_root.path().join("agents/x.md")).unwrap();
+        }
 
         let mut tx = b
             .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
@@ -2456,7 +2511,7 @@ mod tests {
         let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
         b.fetch_bundles(&fx.cloud(), FetchMode::Normal).unwrap();
 
-        let key = provider_key(&fx.cloud());
+        let key = provider_key(&fx.cloud()).unwrap();
         let mut tx = b
             .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
             .unwrap();
@@ -2522,7 +2577,7 @@ mod tests {
     #[test]
     fn resuming_a_preparing_transaction_restarts_it() {
         let fx = fixture();
-        let key = provider_key(&fx.cloud());
+        let key = provider_key(&fx.cloud()).unwrap();
         fx.write("CLAUDE.md", b"one\n");
         fx.commit();
         let head = fx.repo.git.rev("HEAD").unwrap();
@@ -2559,7 +2614,7 @@ mod tests {
 
         let fx = fixture();
         let cloud = fx.cloud();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
         fx.write("CLAUDE.md", &lines("line 1", "line 20"));
         fx.commit();
         fx.repo.publish(&cloud).unwrap();
@@ -2627,7 +2682,7 @@ mod tests {
 
         let fx = fixture();
         let cloud = fx.cloud();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
         fx.write("a", &lines("line 1", "line 20"));
         fx.commit();
         fx.repo.publish(&cloud).unwrap();
@@ -2702,7 +2757,7 @@ mod tests {
     #[test]
     fn identical_trees_on_diverged_heads_adopt_the_smaller_hash() {
         let fx = fixture();
-        let key = provider_key(&fx.cloud());
+        let key = provider_key(&fx.cloud()).unwrap();
         fx.write("CLAUDE.md", b"one\n");
         fx.commit();
         let base = fx.repo.git.rev("HEAD").unwrap();
@@ -2830,7 +2885,7 @@ mod tests {
         // `MAX_RECONCILE` into a permanent `Pending`.
         let tx = fx
             .repo
-            .begin_tx(&provider_key(&fx.cloud()), "HEAD", no_resolver)
+            .begin_tx(&provider_key(&fx.cloud()).unwrap(), "HEAD", no_resolver)
             .unwrap();
         assert!(
             tx.worktree.join(".gitattributes").is_file(),
@@ -2860,11 +2915,12 @@ mod tests {
     /// umask-derived mode before `publish` can tighten it, and a transaction
     /// worktree for as long as an apply runs. The directory is the only guard
     /// that covers the window git owns.
+    #[cfg(unix)]
     #[test]
     fn the_home_tmp_directory_is_kept_private() {
         let fx = fixture();
         let cloud = fx.cloud();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
         fx.write("CLAUDE.md", b"one\n");
         fx.commit();
         fx.repo.publish(&cloud).unwrap();
@@ -2905,7 +2961,7 @@ mod tests {
     fn a_resume_sweeps_the_temp_file_a_crashed_write_left_in_the_root() {
         let (fx, _b, bh) = two_devices();
         let cloud = fx.cloud();
-        let key = provider_key(&cloud);
+        let key = provider_key(&cloud).unwrap();
         let b_root = TempDir::new().unwrap();
         let b = Repo::open(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
         b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();

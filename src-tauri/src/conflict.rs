@@ -1265,13 +1265,18 @@ mod tests {
     /// Symlinks are never followed. Another device can commit a mode-120000
     /// blob at a live path; writing "through" it would put a user's merged
     /// bytes wherever it points.
+    #[cfg(unix)]
     #[test]
     fn resolve_refuses_to_write_through_a_symlink() {
         let home = TempDir::new().unwrap();
         let root = TempDir::new().unwrap();
         let repo = Repo::init(home.path(), "proj-claude", root.path(), "Mac A Pro", ID_A).unwrap();
         write(&repo.staging, "elsewhere.json", b"untouched");
-        std::os::unix::fs::symlink("elsewhere.json", repo.staging.join("settings.json")).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("elsewhere.json", repo.staging.join("settings.json"))
+                .unwrap();
+        }
         repo.git.ok(&["add", "-A"]).unwrap();
         repo.git.ok(&["commit", "-m", "seed"]).unwrap();
 

@@ -10,7 +10,8 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -213,18 +214,22 @@ pub fn lock(home: &Path) -> Result<HomeLock> {
 /// does.
 fn secure_home(home: &Path) -> Result<()> {
     fs::create_dir_all(home)?;
-    fs::set_permissions(home, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("securing {}", home.display()))
+    #[cfg(unix)]
+    {
+        fs::set_permissions(home, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("securing {}", home.display()))?;
+    }
+    Ok(())
 }
 
-/// 16 bytes of `/dev/urandom` as 32 lowercase hex chars.
+/// 16 bytes from `getrandom::fill`, as 32 lowercase hex chars.
 fn random_id() -> Result<String> {
     let mut buf = [0u8; 16];
-    File::open("/dev/urandom")?.read_exact(&mut buf)?;
+    getrandom::fill(&mut buf)?;
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Trimmed output of `hostname`, `"mac"` on any failure or empty result.
+/// Trimmed output of `hostname`, `"device"` on any failure or empty result.
 fn hostname() -> String {
     let name = Command::new("hostname")
         .output()
@@ -233,7 +238,7 @@ fn hostname() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
     if name.is_empty() {
-        "mac".to_string()
+        "device".to_string()
     } else {
         name
     }
@@ -260,10 +265,10 @@ mod tests {
         assert!(home.join("tmp").is_dir());
         assert!(home.join("config.json").is_file());
 
-        cfg.provider_dir = Some(PathBuf::from("/cloud"));
+        cfg.provider_dir = Some(PathBuf::from("cloud"));
         cfg.roots.push(Root {
             slug: "myproj-claude".into(),
-            path: PathBuf::from("/a/myproj/.claude"),
+            path: Path::new("a").join("myproj").join(".claude"),
             initializing: false,
         });
         cfg.save(home).unwrap();
@@ -279,20 +284,18 @@ mod tests {
 
     #[test]
     fn default_slug_uses_parent_and_undotted_name() {
-        let home = Path::new("/Users/x");
+        let home = Path::new("x");
         assert_eq!(
-            default_slug(Path::new("/a/myproj/.claude"), home),
+            default_slug(&Path::new("a").join("myproj").join(".claude"), home),
             "myproj-claude"
         );
         assert_eq!(
-            default_slug(Path::new("/a/myproj/CLAUDE.md"), home),
+            default_slug(&Path::new("a").join("myproj").join("CLAUDE.md"), home),
             "myproj-claude-md"
         );
-        assert_eq!(
-            default_slug(Path::new("/Users/x/.claude"), home),
-            "home-claude"
-        );
+        assert_eq!(default_slug(&home.join(".claude"), home), "home-claude");
         // A slug must never be empty: it becomes a cloud path component.
+        // `"/"` is a root with no file name on every OS, not a macOS path.
         assert_eq!(default_slug(Path::new("/"), home), "root");
     }
 
@@ -371,6 +374,7 @@ mod tests {
     /// repaired — not merely set at creation — when an older build or a stray
     /// chmod left it loose. `home` is a path that does not exist yet, so
     /// `create_dir_all` really creates it (a `TempDir` is already 0700).
+    #[cfg(unix)]
     #[test]
     fn the_home_directory_is_kept_private() {
         let td = TempDir::new().unwrap();
@@ -404,19 +408,19 @@ mod tests {
 
     #[test]
     fn is_agent_matches_anything_under_a_dotted_home_directory() {
-        let home = Path::new("/Users/x");
-        let root = |path: &str| Root {
+        let home = Path::new("x");
+        let root = |path: PathBuf| Root {
             slug: "t".into(),
-            path: PathBuf::from(path),
+            path,
             initializing: false,
         };
 
-        assert!(root("/Users/x/.claude").is_agent(home));
-        assert!(root("/Users/x/.codex").is_agent(home));
-        assert!(root("/Users/x/.config/opencode").is_agent(home));
-        assert!(!root("/Users/x/projects/site").is_agent(home));
-        assert!(!root("/Users/x/Downloads").is_agent(home));
-        assert!(!root("/opt/thing").is_agent(home));
+        assert!(root(home.join(".claude")).is_agent(home));
+        assert!(root(home.join(".codex")).is_agent(home));
+        assert!(root(home.join(".config").join("opencode")).is_agent(home));
+        assert!(!root(home.join("projects").join("site")).is_agent(home));
+        assert!(!root(home.join("Downloads")).is_agent(home));
+        assert!(!root(Path::new("opt").join("thing")).is_agent(home));
     }
 
     #[test]

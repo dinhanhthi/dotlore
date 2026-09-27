@@ -1,0 +1,92 @@
+name: CI
+
+# Build and test on every OS the app targets. Third-party actions are pinned
+# to the same commit SHAs as release.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Linux stays continue-on-error until Phase 4; Windows until Phase 5.
+    # A macOS failure fails the run. fail-fast is off so a red Linux or
+    # Windows leg cannot cancel the macOS job.
+    continue-on-error: ${{ startsWith(matrix.os, 'ubuntu-') || startsWith(matrix.os, 'windows-') }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - ubuntu-22.04
+          - ubuntu-22.04-arm
+          - windows-latest
+          - windows-11-arm
+    # -D warnings on every cargo invocation so cargo test reuses the build.
+    # Do not set CARGO_TARGET_DIR: rust-cache keys the runner default.
+    env:
+      RUSTFLAGS: -D warnings
+
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      # The pnpm version comes from package.json's packageManager field.
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Minimal profile omits rustfmt, which cargo fmt --check needs.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux packages
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+
+      - name: Install JS dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the UI
+        shell: bash
+        run: pnpm ui:build
+
+      - name: Build
+        shell: bash
+        run: cargo build --manifest-path src-tauri/Cargo.toml
+
+      - name: Test
+        shell: bash
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Check formatting
+        shell: bash
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: pnpm test
+        shell: bash
+        run: pnpm test
