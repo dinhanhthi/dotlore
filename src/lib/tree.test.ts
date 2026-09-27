@@ -124,6 +124,17 @@ describe("nodeWeight", () => {
     expect(nodeWeight(fileNode("half.md", limit / 2), limit)).toBe("warning");
   });
 
+  it("nodeWeight ramps by absolute size below half the limit", () => {
+    const mb = 1024 * 1024;
+    const big = 50 * mb;
+    expect(nodeWeight(fileNode("tiny.md", mb - 1), big)).toBe("ok");
+    expect(nodeWeight(fileNode("one.md", mb), big)).toBe("notice");
+    expect(nodeWeight(fileNode("four.md", 4 * mb - 1), big)).toBe("notice");
+    expect(nodeWeight(fileNode("heavy.md", 4 * mb), big)).toBe("heavy");
+    expect(nodeWeight(fileNode("twenty.md", 20 * mb), big)).toBe("heavy");
+    expect(nodeWeight(fileNode("half.md", 25 * mb), big)).toBe("warning");
+  });
+
   it("nodeWeight gives a folder the worst weight among its descendants", () => {
     const tree = buildTree([
       tracked("bundle/small.md", 10),

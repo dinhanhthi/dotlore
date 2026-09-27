@@ -33,8 +33,12 @@ function weightClass(weight: NodeWeight): string {
   switch (weight) {
     case "ok":
       return "text-muted-foreground";
+    case "notice":
+      return "text-foreground";
+    case "heavy":
+      return "text-size-heavy";
     case "warning":
-      return "text-status-conflict";
+      return "text-size-warning";
     case "danger":
       return "text-destructive";
   }

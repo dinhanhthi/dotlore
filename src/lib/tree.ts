@@ -4,7 +4,7 @@ export type TreeKind = "file" | "folder";
 
 export type FileStatus = "synced" | "conflict" | "pending";
 
-export type NodeWeight = "ok" | "warning" | "danger";
+export type NodeWeight = "ok" | "notice" | "heavy" | "warning" | "danger";
 
 export type TreeNode = {
   name: string;
@@ -23,9 +23,13 @@ const STATUS_RANK: Record<FileStatus, number> = {
 
 const WEIGHT_RANK: Record<NodeWeight, number> = {
   ok: 0,
-  warning: 1,
-  danger: 2,
+  notice: 1,
+  heavy: 2,
+  warning: 3,
+  danger: 4,
 };
+
+const MB = 1024 * 1024;
 
 function fileStatus(state: FileSync): FileStatus {
   return state === "Pending" ? "pending" : "synced";
@@ -48,6 +52,8 @@ export function nodeWeight(node: TreeNode, maxFileBytes: number): NodeWeight {
   if (node.kind === "file") {
     if (node.state === "TooLarge" || node.bytes > maxFileBytes) return "danger";
     if (node.bytes >= maxFileBytes / 2) return "warning";
+    if (node.bytes >= 4 * MB) return "heavy";
+    if (node.bytes >= MB) return "notice";
     return "ok";
   }
   let worst: NodeWeight = "ok";
