@@ -1,3 +1,9 @@
+## v0.5.1 (2026-09-27)
+
+### Sync
+
+- Fixed the cold-start freeze: the sync daemon held one lock across every project for its first cycle, so clicking anywhere could hang for up to ~30s with no indication why. The lock is now released between projects, and the footer shows "Syncing…" while a cycle is running. [#2ffc5494](https://github.com/dinhanhthi/dotlore/commit/2ffc5494)
+
 ## v0.5.0 (2026-09-27)
 
 ### Desktop app
