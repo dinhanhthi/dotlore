@@ -176,7 +176,7 @@ pub struct PatternCatalogDto {
 fn resolve_in_root(root: &config::Root, rel: &str) -> Result<PathBuf> {
     let real = std::fs::canonicalize(root.path.join(rel))?; // resolves symlinks
     let base = std::fs::canonicalize(&root.path)?;
-    if !real.starts_with(&base) {
+    if !crate::portable::starts_with_path(&real, &base) {
         bail!("path escapes the tracked root");
     }
     Ok(real)

@@ -20,6 +20,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use crate::nofollow::{
     is_unsafe_open, listing_replace_hook, open_chain, open_dir_nofollow, open_root_dir, read_dir_fd,
 };
+use crate::portable;
 use crate::project::{EntryList, Limits};
 
 /// What happened to one logical entry between two staging commits.
@@ -32,10 +33,33 @@ pub enum Status {
 
 /// The content of one file as far as dotlore cares: bytes plus the only mode
 /// bit git records.
+///
+/// `executable` is `None` when this filesystem cannot report the bit. That is
+/// not "not executable": the mode the tree already has for the path is kept,
+/// and a path with no tree entry is `100644`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FileState {
     pub bytes: Vec<u8>,
-    pub executable: bool,
+    pub executable: Option<bool>,
+}
+
+/// Bytes match, and the executable bit matches when both sides know it.
+///
+/// `None` agrees with either bit, so a filesystem that cannot report the bit
+/// is not drift against a tree that stored `100755`.
+pub(crate) fn states_match(a: &Option<FileState>, b: &Option<FileState>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.bytes == b.bytes && exec_agrees(a.executable, b.executable),
+        _ => false,
+    }
+}
+
+fn exec_agrees(a: Option<bool>, b: Option<bool>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => x == y,
+        _ => true,
+    }
 }
 
 /// Expected current root content per logical relative path; `None` means the
@@ -50,18 +74,30 @@ pub struct MirrorReport {
     /// Regular files over `Limits.max_file_bytes`. They are opaque: not
     /// copied, and not pruned from staging.
     pub skipped_too_large: Vec<(PathBuf, u64)>,
+    /// Non-portable names and case-collision losers. Not copied. The caller
+    /// puts back an index blob HEAD already has, so the skip is not a deletion.
+    /// A non-portable file already in staging is left in place.
+    pub skipped_nonportable: Vec<(PathBuf, String)>,
 }
 
 /// Copy a tracked root into its staging worktree, scoped by `entries` and
 /// filtered by `ignore_text` (gitignore syntax; the caller reads
 /// `<staging>/.dotloreignore` or passes a default). Byte- and mode-identical
 /// files are left untouched, so a quiet root reports `changed == false`.
+///
+/// `also_tracked` is paths already in the staging index. They join the live
+/// walk when deciding case collisions, so a second casing that this
+/// filesystem cannot store beside the live file is still seen. One dirent in
+/// a fold is one file on every volume: the live bytes are copied onto the
+/// byte-wise-first spelling already in the index, and that path is not a
+/// collision. Any other spelling in the fold stays one.
 pub fn root_to_staging(
     root: &Path,
     staging: &Path,
     entries: &EntryList,
     ignore_text: &str,
     limits: Limits,
+    also_tracked: &[PathBuf],
 ) -> Result<MirrorReport> {
     let md = fs::symlink_metadata(root)
         .with_context(|| format!("tracked root {} is unreadable", root.display()))?;
@@ -93,18 +129,180 @@ pub fn root_to_staging(
         &mut report,
     )?;
 
+    // One dirent in a fold is one file on every volume, not only a
+    // case-insensitive one. Copy its live bytes onto the byte-wise-first
+    // spelling already in the index. A second dirent (case-sensitive) and
+    // any index spelling with no dirent of its own stay collisions.
+    let mut copy_src: HashMap<PathBuf, PathBuf> = HashMap::new();
+    retarget_case_folds(&mut want, also_tracked, entries, &mut copy_src);
+
+    // Live files plus names already committed. A skipped path is not copied.
+    let mut tracked_names: Vec<String> = want
+        .iter()
+        .filter_map(|rel| rel.to_str().map(str::to_string))
+        .collect();
+    for rel in also_tracked {
+        if entries.contains_rel(rel) {
+            if let Some(name) = rel.to_str() {
+                tracked_names.push(name.to_string());
+            }
+        }
+    }
+    let skips = portable::publish_skips(tracked_names.iter().map(String::as_str));
+    for (rel, reason) in &skips {
+        want.remove(Path::new(rel.as_str()));
+        report
+            .skipped_nonportable
+            .push((PathBuf::from(rel.as_str()), reason.clone()));
+    }
+    // Byte-wise first spelling of each fold: the one `publish_skips` keeps.
+    let mut winner_of: HashMap<String, String> = HashMap::new();
+    for name in &tracked_names {
+        winner_of
+            .entry(name.to_lowercase())
+            .and_modify(|cur| {
+                if name.as_str() < cur.as_str() {
+                    *cur = name.clone();
+                }
+            })
+            .or_insert_with(|| name.clone());
+    }
+
     fs::create_dir_all(staging)?;
+    // Keep a skipped path's inode only when deleting it would delete something
+    // we are about to copy back, or when the name cannot exist on Windows.
+    // A case fold whose live dirent is gone must be free to drop the winner.
     let keep: HashSet<&Path> = want.iter().map(PathBuf::as_path).collect();
-    report.changed = delete_stale(staging, Path::new(""), &keep, &opaque, entries)?;
+    let mut preserve_case: HashSet<String> = HashSet::new();
+    for (rel, _) in &skips {
+        let fold = rel.to_lowercase();
+        let winner_kept = winner_of
+            .get(&fold)
+            .is_some_and(|winner| keep.contains(Path::new(winner.as_str())));
+        if portable::name_issue(rel).is_some() || winner_kept {
+            preserve_case.insert(fold);
+            opaque.insert(PathBuf::from(rel.as_str()));
+        }
+    }
+    let fold_volume = crate::platform::case_insensitive_fs(staging);
+    report.changed = delete_stale(
+        staging,
+        Path::new(""),
+        &keep,
+        &opaque,
+        entries,
+        &preserve_case,
+    )?;
     for rel in &want {
         // `delete_stale` ran above with `keep` built from `want`, which holds
         // `rel`, so a skipped entry keeps whatever staging already has.
-        match copy_if_changed(root, rel, &staging.join(rel))? {
-            Some(changed) => report.changed |= changed,
+        // A case-rename reads the live dirent and writes the index spelling.
+        let src_rel = copy_src.get(rel).map(PathBuf::as_path).unwrap_or(rel);
+        match copy_if_changed(root, src_rel, &staging.join(rel))? {
+            Some(changed) => {
+                report.changed |= changed;
+                // `fs::write` through the other casing does not rename the
+                // dirent. `git add` later uses the directory entry's name.
+                if fold_volume {
+                    match_file_spelling(staging, rel)?;
+                }
+            }
             None => report.skipped_symlinks.push(rel.clone()),
         }
     }
     Ok(report)
+}
+
+/// Point the one live dirent in a case fold at the spelling already in the index.
+///
+/// Runs on every volume. One dirent is one file: its bytes are copied onto
+/// the byte-wise-first index spelling, even when the dirent matches a losing
+/// spelling exactly. Any other index spelling has no dirent and stays a
+/// collision. Two dirents are left alone so a case-sensitive volume keeps both.
+fn retarget_case_folds(
+    want: &mut HashSet<PathBuf>,
+    also_tracked: &[PathBuf],
+    entries: &EntryList,
+    copy_src: &mut HashMap<PathBuf, PathBuf>,
+) {
+    let mut index_by_fold: HashMap<String, Vec<String>> = HashMap::new();
+    for rel in also_tracked {
+        if !entries.contains_rel(rel) {
+            continue;
+        }
+        let Some(name) = rel.to_str() else { continue };
+        index_by_fold
+            .entry(name.to_lowercase())
+            .or_default()
+            .push(name.to_string());
+    }
+    let mut live_by_fold: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for rel in want.iter() {
+        let Some(name) = rel.to_str() else { continue };
+        live_by_fold
+            .entry(name.to_lowercase())
+            .or_default()
+            .push(rel.clone());
+    }
+    for (fold, live) in live_by_fold {
+        if live.len() != 1 {
+            continue;
+        }
+        let rel = &live[0];
+        let Some(name) = rel.to_str() else { continue };
+        let Some(index_names) = index_by_fold.get(&fold) else {
+            continue;
+        };
+        // Byte-wise first, the spelling `publish_skips` would keep. With one
+        // index path that is the path already in HEAD.
+        let Some(head) = index_names.iter().min() else {
+            continue;
+        };
+        if head == name {
+            continue;
+        }
+        let head_path = PathBuf::from(head);
+        want.remove(rel);
+        want.insert(head_path.clone());
+        copy_src.insert(head_path, rel.clone());
+    }
+}
+
+/// Rename the staging dirent so its bytes match `rel`, on a volume that folds case.
+///
+/// Writing `A.md` when the directory entry is `a.md` updates the bytes and
+/// leaves the name `a.md`. The publish step adds whatever name `read_dir` returns.
+fn match_file_spelling(staging: &Path, rel: &Path) -> Result<()> {
+    let Some(want_name) = rel.file_name().and_then(|n| n.to_str()) else {
+        return Ok(());
+    };
+    let parent = rel.parent().unwrap_or(Path::new(""));
+    let dir = staging.join(parent);
+    let want_fold = want_name.to_lowercase();
+    let mut actual: Option<String> = None;
+    for entry in fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if name.to_lowercase() == want_fold {
+            actual = Some(name);
+            break;
+        }
+    }
+    let Some(actual) = actual else {
+        return Ok(());
+    };
+    if actual != want_name {
+        fs::rename(dir.join(&actual), dir.join(want_name)).with_context(|| {
+            format!(
+                "renaming {} to the index spelling {}",
+                parent.join(&actual).display(),
+                rel.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// Apply staging changes back to the live root.
@@ -147,7 +345,9 @@ pub fn apply_to_root(
             }
         };
 
-        if &current != expected {
+        // Unknown executable bit matches either side. Comparing it with `==`
+        // would skip every apply on a filesystem that cannot report the bit.
+        if !states_match(&current, expected) {
             skipped.push(rel.clone());
             continue;
         }
@@ -357,6 +557,7 @@ fn delete_stale(
     keep: &HashSet<&Path>,
     opaque: &HashSet<PathBuf>,
     entries: &EntryList,
+    preserve_case: &HashSet<String>,
 ) -> Result<bool> {
     if under_opaque(rel, opaque) {
         return Ok(false);
@@ -379,7 +580,7 @@ fn delete_stale(
         let path = entry.path();
         if fs::symlink_metadata(&path)?.is_dir() {
             if entries.contains_rel(&child) || entries.has_tracked_descendant(&child) {
-                changed |= delete_stale(staging, &child, keep, opaque, entries)?;
+                changed |= delete_stale(staging, &child, keep, opaque, entries, preserve_case)?;
                 if fs::read_dir(&path)?.next().is_none() {
                     fs::remove_dir(&path)?;
                 }
@@ -388,6 +589,15 @@ fn delete_stale(
             fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
             changed = true;
         } else if entries.contains_rel(&child) && !keep.contains(child.as_path()) {
+            // Set only when this fold's winner is still being copied, or when
+            // the name cannot exist on Windows. A shared lowercase key must
+            // not keep the winner after the live file is gone.
+            if child
+                .to_str()
+                .is_some_and(|name| preserve_case.contains(&name.to_lowercase()))
+            {
+                continue;
+            }
             fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
             changed = true;
         }
@@ -413,14 +623,14 @@ fn copy_if_changed(root: &Path, rel: &Path, dst: &Path) -> Result<Option<bool>> 
     if !md.is_file() {
         return Ok(None);
     }
-    let executable = require_exec_bit(&md)?;
+    let executable = exec_bit(&md);
     let mut bytes = Vec::new();
     src.read_to_end(&mut bytes)
         .with_context(|| format!("reading {}", root.join(rel).display()))?;
 
     match fs::symlink_metadata(dst) {
         Ok(dmd) if dmd.is_file() => {
-            if require_exec_bit(&dmd)? == executable && fs::read(dst)? == bytes {
+            if exec_agrees(exec_bit(&dmd), executable) && fs::read(dst)? == bytes {
                 return Ok(Some(false));
             }
         }
@@ -432,9 +642,12 @@ fn copy_if_changed(root: &Path, rel: &Path, dst: &Path) -> Result<Option<bool>> 
         fs::create_dir_all(parent)?;
     }
     fs::write(dst, &bytes).with_context(|| format!("writing {}", dst.display()))?;
+    // `None`: leave the worktree mode alone. `git add` would otherwise record
+    // `100644` for a file the tree already has at `100755`. The commit path
+    // puts the index mode back, and uses `100644` only for a new path.
     #[cfg(unix)]
-    {
-        fs::set_permissions(dst, fs::Permissions::from_mode(mode_for(executable)))?;
+    if let Some(bit) = executable {
+        fs::set_permissions(dst, fs::Permissions::from_mode(mode_for(bit)))?;
     }
     Ok(Some(true))
 }
@@ -590,7 +803,7 @@ fn current_state(path: &Path) -> Result<Option<Option<FileState>>> {
         Err(_) => Ok(None),
         Ok(md) if md.is_file() => Ok(Some(Some(FileState {
             bytes: fs::read(path)?,
-            executable: require_exec_bit(&md)?,
+            executable: exec_bit(&md),
         }))),
         Ok(_) => Ok(None),
     }
@@ -630,26 +843,10 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
         bail!("staging file {} is not a regular file", src.display());
     }
     let bytes = fs::read(src)?;
-    let exec = require_exec_bit(&md)?;
-    // Read on every target: the mode math below is `#[cfg(unix)]`, and an
-    // unread binding is a hard error under `-D warnings` on Windows.
-    #[cfg(not(unix))]
-    let _ = exec;
-    // Only the executable bit is ours to set. An existing target keeps its
-    // own permissions: settings.json holds API keys and is routinely 0600,
-    // and a fixed 0644 would silently make it world-readable.
+    // Only the executable bit is ours to set, and only when this filesystem
+    // can report it. Unknown must not be written as "not executable".
     #[cfg(unix)]
-    let mode = match fs::symlink_metadata(dst) {
-        Ok(dmd) if dmd.file_type().is_file() => {
-            let cur = dmd.permissions().mode() & 0o777;
-            if exec {
-                cur | 0o111
-            } else {
-                cur & !0o111
-            }
-        }
-        _ => mode_for(exec),
-    };
+    let mode = unix_dest_mode(dst, exec_bit(&md));
 
     let dir = dst
         .parent()
@@ -670,7 +867,7 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create_new(true);
         #[cfg(unix)]
-        {
+        if let Some(mode) = mode {
             opts.mode(mode);
         }
         let mut f = match opts.open(&tmp) {
@@ -684,8 +881,9 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
         // `mode` was masked by the umask at open; restore it exactly. On the
         // open handle: `File::set_permissions` is `fchmod`, so it cannot be
         // redirected by swapping the predictable temp path for a symlink.
+        // Unknown bit: do not call `set_permissions` at all.
         #[cfg(unix)]
-        {
+        if let Some(mode) = mode {
             f.set_permissions(fs::Permissions::from_mode(mode))?;
         }
         // Without this the rename can be durable while the bytes are not: a
@@ -704,26 +902,76 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
 
 // --- shared ---------------------------------------------------------------
 
+#[cfg(test)]
+thread_local! {
+    static EXEC_BIT_UNKNOWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn exec_bit_forced_unknown() -> bool {
+    EXEC_BIT_UNKNOWN.with(|c| c.get())
+}
+
+#[cfg(not(test))]
+fn exec_bit_forced_unknown() -> bool {
+    false
+}
+
+/// Test seam: [`exec_bit`] returns `None` on this thread, as it does on a
+/// filesystem that cannot report the bit.
+#[cfg(test)]
+pub(crate) fn with_exec_bit_unknown<T>(body: impl FnOnce() -> T) -> T {
+    EXEC_BIT_UNKNOWN.with(|c| c.set(true));
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    EXEC_BIT_UNKNOWN.with(|c| c.set(false));
+    match out {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
 /// Execute bit of `md`, when this platform can see one.
 ///
 /// Unix returns `Some(mode & 0o111 != 0)`. `None` means the filesystem cannot
-/// tell. [`require_exec_bit`] turns that into an error: it is not "not
-/// executable". Phase 2 decides how to keep the tree's mode instead.
-#[cfg(unix)]
+/// tell — not "not executable". Callers keep the tree's mode for that path.
 pub fn exec_bit(md: &fs::Metadata) -> Option<bool> {
-    Some(md.permissions().mode() & 0o111 != 0)
-}
-
-#[cfg(not(unix))]
-pub(crate) fn exec_bit(_md: &fs::Metadata) -> Option<bool> {
-    None
-}
-
-pub(crate) fn require_exec_bit(md: &fs::Metadata) -> Result<bool> {
-    match exec_bit(md) {
-        Some(bit) => Ok(bit),
-        None => bail!("this system cannot report the executable bit"),
+    if exec_bit_forced_unknown() {
+        return None;
     }
+    #[cfg(unix)]
+    {
+        Some(md.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = md;
+        None
+    }
+}
+
+/// `false` when [`exec_bit`] is `None` for every file (non-unix, or the test seam).
+pub(crate) fn reports_exec_bit() -> bool {
+    !exec_bit_forced_unknown() && cfg!(unix)
+}
+
+/// Mode to write on the way out. `None` means do not call `set_permissions`.
+///
+/// A known bit changes only `0o111` on an existing file; the other bits stay,
+/// so a `0600` secret does not become `0644`.
+#[cfg(unix)]
+fn unix_dest_mode(dst: &Path, exec: Option<bool>) -> Option<u32> {
+    let exec = exec?;
+    Some(match fs::symlink_metadata(dst) {
+        Ok(dmd) if dmd.file_type().is_file() => {
+            let cur = dmd.permissions().mode() & 0o777;
+            if exec {
+                cur | 0o111
+            } else {
+                cur & !0o111
+            }
+        }
+        _ => mode_for(exec),
+    })
 }
 
 #[cfg(unix)]
@@ -756,6 +1004,7 @@ fn plain_rel(rel: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, HashSet};
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
@@ -829,7 +1078,7 @@ mod tests {
         ignore: &str,
         limits: Limits,
     ) -> MirrorReport {
-        root_to_staging(root, staging, &tracked(keys), ignore, limits).unwrap()
+        root_to_staging(root, staging, &tracked(keys), ignore, limits, &[]).unwrap()
     }
 
     fn tiny_limits(max_file_bytes: u64) -> Limits {
@@ -917,6 +1166,7 @@ mod tests {
             &tracked(&["CLAUDE.md"]),
             "",
             Limits::default(),
+            &[],
         )
         .unwrap_err();
         assert!(err.to_string().contains("is not a directory"));
@@ -935,7 +1185,7 @@ mod tests {
         let old = || {
             Some(FileState {
                 bytes: b"old".to_vec(),
-                executable: false,
+                executable: Some(false),
             })
         };
         let mut snap = Snapshot::new();
@@ -1202,7 +1452,7 @@ mod tests {
             PathBuf::from("settings.json"),
             Some(FileState {
                 bytes: br#"{"key":"old"}"#.to_vec(),
-                executable: false,
+                executable: Some(false),
             }),
         );
         let skipped = apply_to_root(
@@ -1240,7 +1490,7 @@ mod tests {
             PathBuf::from("notes.md"),
             Some(FileState {
                 bytes: b"old".to_vec(),
-                executable: false,
+                executable: Some(false),
             }),
         );
         let skipped = apply_to_root(
@@ -1277,7 +1527,7 @@ mod tests {
         let state = |exec| {
             Some(FileState {
                 bytes: b"old".to_vec(),
-                executable: exec,
+                executable: Some(exec),
             })
         };
         let mut snap = Snapshot::new();
@@ -1395,7 +1645,7 @@ mod tests {
         let old = || {
             Some(FileState {
                 bytes: b"old".to_vec(),
-                executable: false,
+                executable: Some(false),
             })
         };
         let mut snap = Snapshot::new();
@@ -1928,6 +2178,210 @@ mod tests {
         assert_eq!(
             rep.skipped_too_large,
             vec![(PathBuf::from("big.md"), b"too-big!!".len() as u64)]
+        );
+    }
+
+    #[test]
+    fn nonportable_names_are_not_copied_and_an_existing_copy_is_kept() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        put(&root.join("ok.md"), "ok");
+        put(&root.join("a:b.md"), "new");
+        put(&root.join("CON.md"), "con");
+        put(&staging.join("a:b.md"), "old");
+
+        let rep = to_staging(&root, &staging, &["ok.md", "a:b.md", "CON.md"], "");
+        assert_eq!(fs::read(staging.join("ok.md")).unwrap(), b"ok");
+        assert_eq!(fs::read(staging.join("a:b.md")).unwrap(), b"old");
+        assert!(!staging.join("CON.md").exists());
+        assert_eq!(fs::read(root.join("a:b.md")).unwrap(), b"new");
+        assert_eq!(
+            rep.skipped_nonportable,
+            vec![
+                (
+                    PathBuf::from("CON.md"),
+                    "name cannot exist on Windows: is a reserved Windows device name".to_string()
+                ),
+                (
+                    PathBuf::from("a:b.md"),
+                    "name cannot exist on Windows: contains ':'".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_case_collision_loser_supplied_from_the_index_is_skipped() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        put(&root.join("A.md"), "upper");
+        put(&root.join("ok.md"), "ok");
+
+        let rep = root_to_staging(
+            &root,
+            &staging,
+            &tracked(&["A.md", "a.md", "ok.md"]),
+            "",
+            Limits::default(),
+            &[PathBuf::from("A.md"), PathBuf::from("a.md")],
+        )
+        .unwrap();
+        assert_eq!(fs::read(staging.join("A.md")).unwrap(), b"upper");
+        assert_eq!(fs::read(staging.join("ok.md")).unwrap(), b"ok");
+        assert!(rep
+            .skipped_nonportable
+            .iter()
+            .any(|(path, reason)| path == Path::new("a.md")
+                && reason == "differs only by case from A.md"));
+        assert!(!rep
+            .skipped_nonportable
+            .iter()
+            .any(|(path, _)| path == Path::new("A.md")));
+    }
+
+    /// Both spellings are in the index and the only dirent is the loser.
+    /// The live bytes belong on the byte-wise-first spelling; the loser stays
+    /// a collision.
+    #[test]
+    fn the_losing_dirent_is_copied_onto_the_index_winner() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        put(&root.join("a.md"), "new");
+        put(&root.join("ok.md"), "ok");
+        put(&staging.join("A.md"), "old");
+
+        let rep = root_to_staging(
+            &root,
+            &staging,
+            &tracked(&["A.md", "a.md", "ok.md"]),
+            "",
+            Limits::default(),
+            &[PathBuf::from("A.md"), PathBuf::from("a.md")],
+        )
+        .unwrap();
+        assert_eq!(fs::read(staging.join("A.md")).unwrap(), b"new");
+        assert_eq!(fs::read(staging.join("ok.md")).unwrap(), b"ok");
+        assert!(rep.skipped_nonportable.iter().any(|(path, reason)| {
+            path == Path::new("a.md") && reason == "differs only by case from A.md"
+        }));
+        assert!(!rep
+            .skipped_nonportable
+            .iter()
+            .any(|(path, _)| path == Path::new("A.md")));
+    }
+
+    /// One dirent plus one index path, on either kind of volume. The new bytes
+    /// land on the spelling already tracked; the renamed spelling is not a
+    /// second path and not a skip.
+    #[test]
+    fn one_live_dirent_is_copied_onto_the_tracked_spelling() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        put(&root.join("docs/notes.md"), "new");
+        put(&staging.join("docs/Notes.md"), "old");
+
+        let rep = root_to_staging(
+            &root,
+            &staging,
+            &tracked(&["docs/"]),
+            "",
+            Limits::default(),
+            &[PathBuf::from("docs/Notes.md")],
+        )
+        .unwrap();
+        assert_eq!(fs::read(staging.join("docs/Notes.md")).unwrap(), b"new");
+        assert!(
+            rep.skipped_nonportable.is_empty(),
+            "{:?}",
+            rep.skipped_nonportable
+        );
+    }
+
+    /// No dirent left in the fold: the winning spelling may leave staging.
+    /// `a:b.md` and `CON.md` are not case losers; an existing copy stays.
+    #[test]
+    fn deleting_the_live_file_drops_the_case_winner_and_keeps_nonportable() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        put(&root.join("ok.md"), "ok");
+        put(&staging.join("A.md"), "upper");
+        put(&staging.join("a:b.md"), "colon");
+        put(&staging.join("CON.md"), "con");
+        put(&staging.join("ok.md"), "old-ok");
+
+        let rep = root_to_staging(
+            &root,
+            &staging,
+            &tracked(&["ok.md", "A.md", "a.md", "a:b.md", "CON.md"]),
+            "",
+            Limits::default(),
+            &[
+                PathBuf::from("ok.md"),
+                PathBuf::from("A.md"),
+                PathBuf::from("a.md"),
+                PathBuf::from("a:b.md"),
+                PathBuf::from("CON.md"),
+            ],
+        )
+        .unwrap();
+        assert!(
+            !staging.join("A.md").exists(),
+            "winner stayed after the live file was deleted"
+        );
+        assert_eq!(fs::read(staging.join("a:b.md")).unwrap(), b"colon");
+        assert_eq!(fs::read(staging.join("CON.md")).unwrap(), b"con");
+        assert_eq!(fs::read(staging.join("ok.md")).unwrap(), b"ok");
+        assert!(rep
+            .skipped_nonportable
+            .iter()
+            .any(|(path, _)| path == Path::new("a.md")));
+        assert!(rep
+            .skipped_nonportable
+            .iter()
+            .any(|(path, _)| path == Path::new("a:b.md")));
+        assert!(rep
+            .skipped_nonportable
+            .iter()
+            .any(|(path, _)| path == Path::new("CON.md")));
+        assert!(!rep
+            .skipped_nonportable
+            .iter()
+            .any(|(path, _)| path == Path::new("A.md")));
+    }
+
+    /// Two real dirents are a case-sensitive collision, not one file to retarget.
+    #[test]
+    fn two_dirents_in_one_fold_are_not_retargeted() {
+        let mut want = HashSet::from([PathBuf::from("A.md"), PathBuf::from("a.md")]);
+        let mut copy_src = HashMap::new();
+        retarget_case_folds(
+            &mut want,
+            &[PathBuf::from("A.md"), PathBuf::from("a.md")],
+            &tracked(&["A.md", "a.md"]),
+            &mut copy_src,
+        );
+        assert!(want.contains(Path::new("A.md")));
+        assert!(want.contains(Path::new("a.md")));
+        assert!(copy_src.is_empty());
+    }
+
+    /// The dirent matches the losing index path exactly. It still moves onto
+    /// the byte-wise-first spelling; the other index path is not a dirent.
+    #[test]
+    fn a_dirent_matching_the_loser_retargets_onto_the_winner() {
+        let mut want = HashSet::from([PathBuf::from("a.md")]);
+        let mut copy_src = HashMap::new();
+        retarget_case_folds(
+            &mut want,
+            &[PathBuf::from("A.md"), PathBuf::from("a.md")],
+            &tracked(&["A.md", "a.md"]),
+            &mut copy_src,
+        );
+        assert!(want.contains(Path::new("A.md")));
+        assert!(!want.contains(Path::new("a.md")));
+        assert_eq!(
+            copy_src.get(Path::new("A.md")),
+            Some(&PathBuf::from("a.md"))
         );
     }
 }

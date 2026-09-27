@@ -11,7 +11,7 @@
 //! crash at any point resumes instead of re-mirroring a half-applied root onto
 //! a merged head.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
@@ -28,6 +28,8 @@ use serde::{Deserialize, Serialize};
 use crate::cloud::Cloud;
 use crate::git::Git;
 use crate::mirror::{self, FileState, Snapshot, Status};
+use crate::platform;
+use crate::portable;
 use crate::project::{self, EntryList, Limits, ProjectFile};
 
 /// Journal format; a file written by a newer build is refused, not guessed at.
@@ -103,6 +105,18 @@ pub enum ResumeOutcome {
     /// Some paths could not be applied yet (drift, a symlink, an unreadable
     /// source). The journal is intact for the next cycle.
     Pending(Vec<PathBuf>),
+}
+
+/// A path in an incoming tree that this device cannot store.
+///
+/// Recorded on the transaction and again on the next cycle. It does not keep
+/// the journal open and it is not published as a deletion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockedPath {
+    pub path: PathBuf,
+    pub reason: String,
+    /// Author of the commit that carries `path`: the source device name.
+    pub source: String,
 }
 
 /// A staging repo for one tracked root.
@@ -256,14 +270,23 @@ impl Repo {
         home_dir: &Path,
     ) -> Result<(bool, mirror::MirrorReport)> {
         let entries = project::read(&self.staging)?.tracked();
+        let already = index_paths(&self.git, &entries)?;
         let report = mirror::root_to_staging(
             &self.root,
             &self.staging,
             &entries,
             &self.ignore_text(home_dir),
             self.limits,
+            &already,
         )?;
+        // `core.autocrlf` is false, so git would store a CRLF edit of these
+        // two files as-is. Rewrite them to LF before `git add`.
+        project::rewrite_crlf_meta(&self.staging)?;
         stage_worktree(&self.git, &self.staging)?;
+        // `git add -u` on a case-insensitive index rewrites the other casing,
+        // and a missing worktree file stages a deletion. Put HEAD's blob back
+        // so neither becomes a commit.
+        restore_skipped(&self.git, &report.skipped_nonportable)?;
 
         let msg = format!("local {}", self.id8());
         // `--quiet` exits 1 when the index differs from HEAD; on an unborn
@@ -496,7 +519,7 @@ impl Repo {
             return Ok(MergeOutcome::AlreadyMerged);
         }
         if g.is_ancestor("HEAD", &r) {
-            g.ok(&["merge", "--ff-only", &r])?;
+            merge_preserving(g, &["merge", "--ff-only", &r], &[&r])?;
             return Ok(MergeOutcome::FastForward);
         }
         // Diverged heads that happen to hold the same tree: minting a merge
@@ -506,18 +529,22 @@ impl Repo {
             let theirs = g.rev(&r).unwrap_or_default();
             let ours = g.rev("HEAD").unwrap_or_default();
             return if theirs < ours {
-                g.ok(&["reset", "--hard", &r])?;
+                reset_hard(g, &r)?;
                 Ok(MergeOutcome::Adopted)
             } else {
                 Ok(MergeOutcome::AlreadyMerged)
             };
         }
 
-        let mut out = g.run(&["merge", "--no-edit", &r])?;
+        let mut out = run_preserving(g, &["merge", "--no-edit", &r], &["HEAD", &r])?;
         if !out.status.success()
             && String::from_utf8_lossy(&out.stderr).contains("unrelated histories")
         {
-            out = g.run(&["merge", "--no-edit", "--allow-unrelated-histories", &r])?;
+            out = run_preserving(
+                g,
+                &["merge", "--no-edit", "--allow-unrelated-histories", &r],
+                &["HEAD", &r],
+            )?;
         }
         if out.status.success() {
             return Ok(MergeOutcome::Clean);
@@ -540,6 +567,8 @@ impl Repo {
     /// `target` is an addition. Staging-private entries are excluded from both
     /// forms — they must never reach a live root. Paths outside `entries` are
     /// dropped after that, so an untracked blob never enters a change set.
+    /// Non-portable names and case-collision losers are dropped as well: they
+    /// are not applied, and a deletion of one is not recorded here.
     pub fn changes_since(
         &self,
         pre: Option<&str>,
@@ -601,7 +630,45 @@ impl Repo {
                 }
             }
         }
+        let mut revs = vec![target.to_string()];
+        if let Some(pre) = pre {
+            revs.push(pre.to_string());
+        }
+        let extra: Vec<PathBuf> = out.iter().map(|(_, path)| path.clone()).collect();
+        let skipped = self.publish_skip_set(&revs, entries, &extra)?;
+        out.retain(|(_, path)| !skipped.contains(path));
         Ok(out)
+    }
+
+    /// Include-list paths in `revs`, plus `extra`, that [`portable::publish_skips`] refuses.
+    fn publish_skip_set(
+        &self,
+        revs: &[String],
+        entries: &EntryList,
+        extra: &[PathBuf],
+    ) -> Result<HashSet<PathBuf>> {
+        let mut names = Vec::new();
+        for rev in revs {
+            for (mode, path) in self.ls_tree(rev)? {
+                if !mode.starts_with("100") || !entries.contains_rel(&path) {
+                    continue;
+                }
+                if let Some(name) = path.to_str() {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        for path in extra {
+            if entries.contains_rel(path) {
+                if let Some(name) = path.to_str() {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        Ok(portable::publish_skips(names.iter().map(String::as_str))
+            .into_iter()
+            .map(|(path, _)| PathBuf::from(path))
+            .collect())
     }
 
     /// What each path is expected to hold in the live root right now, read
@@ -634,7 +701,9 @@ impl Repo {
                     p.clone(),
                     Some(FileState {
                         bytes: out.stdout,
-                        executable: modes.get(p).map(|m| m == "100755").unwrap_or(false),
+                        // The tree recorded the bit, so it is known. A path
+                        // `git show` read but `ls-tree` missed is not executable.
+                        executable: Some(modes.get(p).is_some_and(|m| m == "100755")),
                     }),
                 );
                 continue;
@@ -650,6 +719,35 @@ impl Repo {
             }
         }
         Ok(snap)
+    }
+
+    /// Include-list paths in `rev` that this device cannot store.
+    ///
+    /// Classified from `git ls-tree`, not from [`Repo::changes_since`]: that
+    /// diff already drops these paths, so they never show up as a change.
+    pub fn blocked_in(&self, rev: &str) -> Result<Vec<BlockedPath>> {
+        let names = ls_names(&self.git, rev)?;
+        let flagged = platform::unrepresentable(
+            names.iter().map(String::as_str),
+            platform::case_insensitive_fs(&self.root),
+        );
+        if flagged.is_empty() {
+            return Ok(Vec::new());
+        }
+        let entries = project_at(&self.git, rev)?;
+        let mut out = Vec::new();
+        for (path, reason) in flagged {
+            let rel = PathBuf::from(&path);
+            if !entries.contains_rel(&rel) {
+                continue;
+            }
+            out.push(BlockedPath {
+                source: author_of(&self.git, rev, &path)?,
+                path: rel,
+                reason,
+            });
+        }
+        Ok(out)
     }
 
     /// `(mode, path)` for every entry of a commit's tree, recursively.
@@ -718,12 +816,15 @@ impl Repo {
             "worktree",
             "add",
             "-q",
+            "--no-checkout",
             "--detach",
             worktree
                 .to_str()
                 .ok_or_else(|| anyhow!("non-utf8 worktree path"))?,
             &start_rev,
         ])?;
+        let tw = Git::new(worktree.clone(), &self.device_name, &self.my_id);
+        reset_hard(&tw, &start_rev)?;
 
         let journal = Journal {
             version: JOURNAL_VERSION,
@@ -777,6 +878,7 @@ impl Repo {
             resolve_index,
             j: journal,
             blocked: Vec::new(),
+            unrepresentable: Vec::new(),
         }
     }
 
@@ -832,7 +934,13 @@ pub struct Transaction {
     /// The subset of the last [`Transaction::apply`] pass's skips that will
     /// not clear on their own. Not journalled: it is re-derived from the
     /// filesystem and the target on every pass.
+    ///
+    /// Also includes paths this device cannot represent, once apply is ready
+    /// to finalize. Those are not skips: the journal still finishes.
     blocked: Vec<PathBuf>,
+    /// Detail for the unrepresentable subset of [`Transaction::blocked`].
+    /// Not journalled; re-derived from the target tree on every apply.
+    unrepresentable: Vec<BlockedPath>,
 }
 
 impl Transaction {
@@ -857,8 +965,18 @@ impl Transaction {
     /// reports "skipped" as "pending" would retry these forever and freeze the
     /// root behind a status indistinguishable from "no bundles yet"; these are
     /// the ones a human has to clear.
+    ///
+    /// A path this device cannot represent is listed too, but only once the
+    /// other paths have been applied. It is not returned from [`Transaction::apply`],
+    /// so the journal finishes and the rest of the root keeps syncing.
     pub fn blocked(&self) -> &[PathBuf] {
         &self.blocked
+    }
+
+    /// Unrepresentable paths from the last apply, with the reason and the
+    /// source device name. Empty until apply has classified the target.
+    pub fn blocked_detail(&self) -> &[BlockedPath] {
+        &self.unrepresentable
     }
 
     /// The entries this transaction will write to the live root.
@@ -915,6 +1033,7 @@ impl Transaction {
             let mut skipped = Vec::new();
             let mut drifted = false;
             self.blocked.clear();
+            self.note_unrepresentable(repo)?;
             // One `ls-tree` plus one `git show` per path, hoisted: the
             // expectations cannot change during a pass, and per-path they made
             // a bootstrap Link of a large root an O(n²) tree read. Recomputed
@@ -954,11 +1073,11 @@ impl Transaction {
                     continue;
                 };
 
-                if current == desired {
+                if mirror::states_match(&current, &desired) {
                     // Including after a crash between the write and its
                     // acknowledgement: record it, do not write again.
                     self.acknowledge(&rel)?;
-                } else if current == expected {
+                } else if mirror::states_match(&current, &expected) {
                     self.j.intent = Some((status.into(), rel.clone()));
                     self.write_journal()?;
                     let mut snap = Snapshot::new();
@@ -989,6 +1108,14 @@ impl Transaction {
                 return Ok(self.unapplied());
             }
             if skipped.is_empty() {
+                // Representable files are applied. Names this device cannot
+                // store stay in the tree and on `blocked`, and do not keep
+                // the journal open.
+                for path in &self.unrepresentable {
+                    if !self.blocked.iter().any(|got| got == &path.path) {
+                        self.blocked.push(path.path.clone());
+                    }
+                }
                 self.j.phase = Phase::Finalizing;
                 self.write_journal()?;
             }
@@ -1016,7 +1143,7 @@ impl Transaction {
         }
 
         repo.git.ok(&["update-ref", "refs/heads/main", &target])?;
-        repo.git.ok(&["reset", "--hard", "refs/heads/main"])?;
+        reset_hard(&repo.git, &target)?;
 
         // A target that some device already advertises is, by construction,
         // already in the cloud along with everything it reaches: adoption and
@@ -1039,7 +1166,7 @@ impl Transaction {
                 // are simply redone. Clear a half-finished merge first, or the
                 // worktree index stays unmerged forever.
                 let _ = self.git.run(&["merge", "--abort"]);
-                self.git.ok(&["reset", "--hard", &self.j.start])?;
+                reset_hard(&self.git, &self.j.start)?;
                 self.j.attempts = 0;
                 self.write_journal()?;
                 Ok(ResumeOutcome::Restart)
@@ -1054,7 +1181,7 @@ impl Transaction {
                     .clone()
                     .ok_or_else(|| anyhow!("journal in {:?} with no target", self.j.phase))?;
                 let _ = self.git.run(&["merge", "--abort"]);
-                self.git.ok(&["reset", "--hard", &target])?;
+                reset_hard(&self.git, &target)?;
                 self.j.phase = Phase::Applying;
                 if let Some((_, rel)) = self.j.intent.take() {
                     sweep_tmp_litter(repo, &rel);
@@ -1081,6 +1208,15 @@ impl Transaction {
     }
 
     // --- internals --------------------------------------------------------
+
+    fn note_unrepresentable(&mut self, repo: &Repo) -> Result<()> {
+        let Some(rev) = self.j.target.clone() else {
+            self.unrepresentable.clear();
+            return Ok(());
+        };
+        self.unrepresentable = repo.blocked_in(&rev)?;
+        Ok(())
+    }
 
     fn unapplied(&self) -> Vec<PathBuf> {
         self.j
@@ -1133,11 +1269,11 @@ impl Transaction {
 
         // B: the root as it stood when apply started, path by path.
         match &self.j.pre {
-            Some(pre) => g.ok(&["reset", "--hard", pre])?,
+            Some(pre) => reset_hard(g, pre)?,
             None => {
                 let empty = g.ok(&["hash-object", "-w", "-t", "tree", "/dev/null"])?;
                 let base = g.ok(&["commit-tree", "-m", "empty baseline", &empty])?;
-                g.ok(&["reset", "--hard", &base])?
+                reset_hard(g, &base)?;
             }
         };
         for rel in self.j.applied.clone() {
@@ -1158,14 +1294,17 @@ impl Transaction {
             .ok_or_else(|| anyhow!("reconcile baseline has no commit"))?;
 
         // L: the same baseline carrying whatever the root holds right now.
-        mirror::root_to_staging(
+        let already = index_paths(g, &entries)?;
+        let mirrored = mirror::root_to_staging(
             &repo.root,
             &self.worktree,
             &entries,
             &repo.ignore_text(home_dir),
             repo.limits,
+            &already,
         )?;
         stage_worktree(g, &self.worktree)?;
+        restore_skipped(g, &mirrored.skipped_nonportable)?;
         g.ok(&[
             "commit",
             "--allow-empty",
@@ -1187,7 +1326,7 @@ impl Transaction {
             &target,
             &format!("{target}^{{tree}}"),
         ])?;
-        let out = g.run(&["merge", "--no-edit", &t])?;
+        let out = run_preserving(g, &["merge", "--no-edit", &t], &["HEAD", &t])?;
         if !out.status.success() {
             // Both sides are this device's own view of the root here, so the
             // loser sibling carries our id8 either way.
@@ -1240,12 +1379,14 @@ impl Transaction {
             "worktree",
             "add",
             "-q",
+            "--no-checkout",
             "--detach",
             self.worktree
                 .to_str()
                 .ok_or_else(|| anyhow!("non-utf8 worktree path"))?,
             &at,
         ])?;
+        reset_hard(&self.git, &at)?;
         Ok(())
     }
 
@@ -1269,6 +1410,146 @@ impl Transaction {
     fn write_journal(&self) -> Result<()> {
         write_durable(&self.journal_path, &serde_json::to_vec(&self.j)?)
     }
+}
+
+/// `git merge` / `reset --hard` update the worktree themselves. On a name the
+/// filesystem rejects, that update is what fails — before a later
+/// `update-index --skip-worktree` could run. Sparse-checkout is applied by
+/// those same commands: the blob stays in the index with the skip-worktree
+/// bit, so a later `git add -u` does not stage a deletion. `-c` keeps the
+/// setting off the saved repo config. No exclusion means the git argv is
+/// unchanged.
+///
+/// The case probe is the checkout worktree, not the live root: `reset` and
+/// `merge` write `git.repo`. A live project on another volume answers differently.
+fn arm_sparse(git: &Git, revs: &[&str]) -> Result<bool> {
+    let mut names = Vec::new();
+    for rev in revs {
+        names.extend(ls_names(git, rev)?);
+    }
+    let excluded = platform::unrepresentable(
+        names.iter().map(String::as_str),
+        platform::case_insensitive_fs(&git.repo),
+    );
+    if excluded.is_empty() {
+        return Ok(false);
+    }
+    // A pattern file is one path per line. Dropping a line leaves `*` matching
+    // that name, so checkout would write it. Fail instead of skipping.
+    for (path, _) in &excluded {
+        if path.contains('\n') || path.contains('\r') {
+            bail!("refusing checkout: excluded path {path:?} cannot be one sparse-checkout line");
+        }
+    }
+    let git_dir = git.ok(&["rev-parse", "--absolute-git-dir"])?;
+    let info = PathBuf::from(&git_dir).join("info");
+    fs::create_dir_all(&info)?;
+    let mut body = String::from("*\n");
+    // A pattern with no slash matches that basename in every directory, so
+    // `!a.md` also drops `docs/a.md`. The leading slash anchors it.
+    for (path, _) in excluded {
+        body.push_str("!/");
+        body.push_str(&sparse_escape(&path));
+        body.push('\n');
+    }
+    fs::write(info.join("sparse-checkout"), body)?;
+    Ok(true)
+}
+
+fn sparse_escape(rel: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = rel.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        let last = i + 1 == chars.len();
+        if matches!(c, '*' | '?' | '[' | ']' | '\\') || (last && *c == ' ') {
+            out.push('\\');
+        }
+        out.push(*c);
+    }
+    out
+}
+
+fn run_preserving(git: &Git, args: &[&str], revs: &[&str]) -> Result<std::process::Output> {
+    let sparse = arm_sparse(git, revs)?;
+    if !sparse {
+        return git.run(args);
+    }
+    // `core.ignorecase` folds `!/a.md` onto `A.md`, so the winner never lands.
+    let mut prefixed = Vec::with_capacity(args.len() + 4);
+    prefixed.push("-c");
+    prefixed.push("core.sparseCheckout=true");
+    prefixed.push("-c");
+    prefixed.push("core.ignorecase=false");
+    prefixed.extend_from_slice(args);
+    git.run(&prefixed)
+}
+
+fn merge_preserving(git: &Git, args: &[&str], revs: &[&str]) -> Result<()> {
+    let out = run_preserving(git, args, revs)?;
+    if !out.status.success() {
+        bail!(
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn reset_hard(git: &Git, rev: &str) -> Result<()> {
+    merge_preserving(git, &["reset", "--hard", rev], &[rev])
+}
+
+/// `git ls-tree -r -z --name-only`. `--end-of-options` keeps a flag-shaped rev
+/// from being parsed as one.
+fn ls_names(git: &Git, rev: &str) -> Result<Vec<String>> {
+    let out = git.run(&[
+        "ls-tree",
+        "-r",
+        "-z",
+        "--name-only",
+        "--end-of-options",
+        rev,
+    ])?;
+    if !out.status.success() {
+        bail!(
+            "git ls-tree {rev} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let mut names = Vec::new();
+    for raw in out.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let name = std::str::from_utf8(raw).with_context(|| format!("non-utf8 path in {rev}"))?;
+        names.push(name.to_string());
+    }
+    Ok(names)
+}
+
+fn project_at(git: &Git, rev: &str) -> Result<EntryList> {
+    let spec = format!("{rev}:{}", project::PROJECT_FILE);
+    let out = git.run(&["show", "--end-of-options", &spec])?;
+    if !out.status.success() {
+        return Ok(ProjectFile::default().tracked());
+    }
+    Ok(project::parse(&out.stdout)?.tracked())
+}
+
+fn author_of(git: &Git, rev: &str, path: &str) -> Result<String> {
+    let out = git.run(&[
+        "log",
+        "-1",
+        "--format=%an",
+        "--end-of-options",
+        rev,
+        "--",
+        path,
+    ])?;
+    if !out.status.success() {
+        bail!(
+            "git log {rev} -- {path} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 // --- journal and delivery state -------------------------------------------
@@ -1471,17 +1752,198 @@ fn usable_entry(path: &[u8]) -> Result<Option<PathBuf>> {
 /// copied in from the tracked root governs that project's repo, never ours,
 /// and must not be able to drop a file out of the synced set. `git add -u`
 /// then picks up tracked files the mirror deleted.
+/// Include-list paths currently in the index. Non-UTF-8 names are skipped:
+/// the portable check is defined on `&str`.
+fn index_paths(git: &Git, entries: &EntryList) -> Result<Vec<PathBuf>> {
+    let out = git.run(&["ls-files", "-z"])?;
+    if !out.status.success() {
+        bail!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let mut paths = Vec::new();
+    for raw in out.stdout.split(|b| *b == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let Ok(name) = std::str::from_utf8(raw) else {
+            continue;
+        };
+        let path = PathBuf::from(name);
+        if !plain_rel(&path) {
+            continue;
+        }
+        let private = path.components().any(|c| match c {
+            Component::Normal(n) => project::staging_private(&n.to_string_lossy()),
+            _ => true,
+        });
+        if !private && entries.contains_rel(&path) {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+/// Put each skipped path back to the blob HEAD already has.
+///
+/// A path HEAD does not have is unstaged, so a name we refused to copy cannot
+/// ride into the next commit. A path HEAD does have is restored, never removed.
+fn restore_skipped(git: &Git, skipped: &[(PathBuf, String)]) -> Result<()> {
+    if skipped.is_empty() {
+        return Ok(());
+    }
+    let has_head = git.rev("HEAD").is_some();
+    for (rel, _) in skipped {
+        let Some(rel_str) = rel.to_str() else {
+            continue;
+        };
+        let spec = literal(rel_str);
+        if has_head {
+            let listed = git.run(&["ls-tree", "-z", "--end-of-options", "HEAD", "--", &spec])?;
+            if !listed.status.success() {
+                bail!(
+                    "git ls-tree HEAD {rel_str} failed: {}",
+                    String::from_utf8_lossy(&listed.stderr).trim()
+                );
+            }
+            if let Some((mode, blob)) = cached_head_entry(&listed.stdout) {
+                git.ok(&[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &mode,
+                    &blob,
+                    rel_str,
+                ])?;
+                continue;
+            }
+        }
+        let removed = git.run(&["rm", "--cached", "-q", "--ignore-unmatch", "--", &spec])?;
+        if !removed.status.success() {
+            bail!(
+                "git rm --cached {rel_str} failed: {}",
+                String::from_utf8_lossy(&removed.stderr).trim()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `(mode, blob)` from one `git ls-tree -z` record, when the path is present.
+fn cached_head_entry(stdout: &[u8]) -> Option<(String, String)> {
+    let entry = stdout.split(|b| *b == 0).find(|e| !e.is_empty())?;
+    let tab = entry.iter().position(|b| *b == b'\t')?;
+    let meta = std::str::from_utf8(&entry[..tab]).ok()?;
+    let mut parts = meta.split_whitespace();
+    let mode = parts.next()?.to_string();
+    let kind = parts.next()?;
+    let blob = parts.next()?.to_string();
+    if kind != "blob" || !mode.starts_with("100") || blob.len() < 40 {
+        return None;
+    }
+    Some((mode, blob))
+}
+
 fn stage_worktree(git: &Git, worktree: &Path) -> Result<()> {
+    // Snapshot before `git add`. When the filesystem cannot report the
+    // executable bit, `git add` would replace a tree's `100755` with the
+    // worktree's mode. The pre-add index is the mode to keep.
+    let prior = if mirror::reports_exec_bit() {
+        None
+    } else {
+        Some(index_filemodes(git)?)
+    };
     let mut files = Vec::new();
     collect_files(worktree, Path::new(""), &mut files)?;
     files.sort();
     for chunk in files.chunks(ADD_CHUNK) {
-        let mut args = vec!["add", "-f", "--"];
+        // `core.ignorecase` folds the index, so `git add A.md` stores the new
+        // blob on `a.md` and the winning spelling never changes. A case-sensitive
+        // add writes the literal path. `git add -u` stays folded: a missing file
+        // stages every casing, and `restore_skipped` puts the loser back.
+        let mut args = vec!["-c", "core.ignorecase=false", "add", "-f", "--"];
         let specs: Vec<String> = chunk.iter().map(|f| literal(f)).collect();
         args.extend(specs.iter().map(String::as_str));
         git.ok(&args)?;
     }
     git.ok(&["add", "-u"])?;
+    if let Some(prior) = prior {
+        restore_unreported_modes(git, worktree, &prior)?;
+    }
+    Ok(())
+}
+
+/// `(mode, blob, path)` for stage-0 regular files in the index.
+fn index_entries(git: &Git) -> Result<Vec<(String, String, String)>> {
+    let out = git.run(&["ls-files", "-s", "-z"])?;
+    if !out.status.success() {
+        bail!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let mut files = Vec::new();
+    for entry in out.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let Some(tab) = entry.iter().position(|b| *b == b'\t') else {
+            continue;
+        };
+        let meta = std::str::from_utf8(&entry[..tab]).unwrap_or("");
+        let mut parts = meta.split_whitespace();
+        let (Some(mode), Some(blob), Some(stage)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if stage != "0" || (mode != "100644" && mode != "100755") {
+            continue;
+        }
+        let Ok(path) = std::str::from_utf8(&entry[tab + 1..]) else {
+            continue;
+        };
+        if !plain_rel(Path::new(path)) {
+            continue;
+        }
+        files.push((mode.to_string(), blob.to_string(), path.to_string()));
+    }
+    Ok(files)
+}
+
+fn index_filemodes(git: &Git) -> Result<HashMap<String, String>> {
+    Ok(index_entries(git)?
+        .into_iter()
+        .map(|(mode, _, path)| (path, mode))
+        .collect())
+}
+
+/// Put index modes back after `git add` when the filesystem cannot report
+/// the executable bit.
+///
+/// A path the index already had keeps that mode (the new blob stays). A path
+/// the index did not have becomes `100644`, even if the worktree file is
+/// executable. Only a regular file present in the worktree is rewritten, so
+/// a sparse-checkout entry that is not on disk keeps its skip-worktree bit.
+fn restore_unreported_modes(
+    git: &Git,
+    worktree: &Path,
+    prior: &HashMap<String, String>,
+) -> Result<()> {
+    for (mode, blob, path) in index_entries(git)? {
+        let disk = worktree.join(&path);
+        if !fs::symlink_metadata(&disk)
+            .map(|md| md.is_file())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let want = prior.get(&path).map(String::as_str).unwrap_or("100644");
+        if want != "100644" && want != "100755" {
+            continue;
+        }
+        if mode == want {
+            continue;
+        }
+        git.ok(&["update-index", "--add", "--cacheinfo", want, &blob, &path])?;
+    }
     Ok(())
 }
 
@@ -1531,7 +1993,7 @@ fn desired_state(worktree: &Path, rel: &Path, status: Status) -> Result<Option<O
     }
     Ok(Some(Some(FileState {
         bytes: fs::read(&src).with_context(|| format!("reading {}", src.display()))?,
-        executable: mirror::require_exec_bit(&md)?,
+        executable: mirror::exec_bit(&md),
     })))
 }
 
@@ -1557,7 +2019,7 @@ fn live_state(root: &Path, target: &Path) -> Result<Option<Option<FileState>>> {
         Err(_) => Ok(None),
         Ok(md) if md.is_file() => Ok(Some(Some(FileState {
             bytes: fs::read(target)?,
-            executable: mirror::require_exec_bit(&md)?,
+            executable: mirror::exec_bit(&md),
         }))),
         Ok(_) => Ok(None),
     }
@@ -1899,6 +2361,66 @@ mod tests {
         assert!(!fx.repo.commit_local(true, fx.home.path()).unwrap().0);
     }
 
+    /// The filesystem cannot report the executable bit. Editing a `100755`
+    /// file must keep that mode on the new blob. A new file is `100644` even
+    /// when the worktree file is executable.
+    #[cfg(unix)]
+    #[test]
+    fn unknown_exec_bit_keeps_tree_mode_and_new_files_are_plain() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn set_mode(path: &Path, mode: u32) {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        fn head_entry(fx: &Fx, rel: &str) -> (String, String) {
+            let line = fx.repo.git.ok(&["ls-tree", "HEAD", "--", rel]).unwrap();
+            assert!(!line.is_empty(), "{rel} is not in HEAD");
+            let mut parts = line.split_whitespace();
+            let mode = parts.next().unwrap().to_string();
+            let _kind = parts.next().unwrap();
+            let blob = parts.next().unwrap().to_string();
+            (mode, blob)
+        }
+
+        let fx = fixture();
+        fx.write("run.sh", b"#!/bin/sh\necho old\n");
+        set_mode(&fx.root.path().join("run.sh"), 0o755);
+        assert!(fx.commit());
+        let (mode, old_blob) = head_entry(&fx, "run.sh");
+        assert_eq!(mode, "100755");
+
+        // Both copies are non-executable on disk. Trusting that mode, or
+        // treating "unknown" as false, would commit `100644`.
+        set_mode(&fx.root.path().join("run.sh"), 0o644);
+        set_mode(&fx.repo.staging.join("run.sh"), 0o644);
+
+        mirror::with_exec_bit_unknown(|| {
+            fs::write(fx.root.path().join("run.sh"), b"#!/bin/sh\necho new\n").unwrap();
+            assert!(fx.commit());
+            let (mode, new_blob) = head_entry(&fx, "run.sh");
+            assert_eq!(mode, "100755", "tree mode was not kept");
+            assert_ne!(new_blob, old_blob);
+            let got = fx.repo.git.run(&["cat-file", "blob", &new_blob]).unwrap();
+            assert!(got.status.success());
+            assert_eq!(got.stdout, b"#!/bin/sh\necho new\n");
+
+            let body = b"#!/bin/sh\necho fresh\n";
+            fx.write("fresh.sh", body);
+            set_mode(&fx.root.path().join("fresh.sh"), 0o755);
+            // Same bytes already staged at 0755, so the mirror does not
+            // rewrite the file. `git add` would record `100755` unless a
+            // path the index did not have is forced to `100644`.
+            fs::write(fx.repo.staging.join("fresh.sh"), body).unwrap();
+            set_mode(&fx.repo.staging.join("fresh.sh"), 0o755);
+            assert!(fx.commit());
+            let (mode, fresh_blob) = head_entry(&fx, "fresh.sh");
+            assert_eq!(mode, "100644", "a new file must not become 100755");
+            let got = fx.repo.git.run(&["cat-file", "blob", &fresh_blob]).unwrap();
+            assert!(got.status.success());
+            assert_eq!(got.stdout, body);
+        });
+    }
+
     // --- changes_since ----------------------------------------------------
 
     #[test]
@@ -2035,6 +2557,57 @@ mod tests {
     }
 
     #[test]
+    fn changes_since_drops_a_nonportable_path() {
+        let fx = fixture();
+        fx.write("ok.md", b"ok\n");
+        fx.write("a:b.md", b"old\n");
+        assert!(fx.commit());
+        let pre = fx.repo.git.rev("HEAD").unwrap();
+        assert!(
+            !fx.repo
+                .git
+                .ok(&["ls-tree", "-r", "--name-only", "HEAD"])
+                .unwrap()
+                .lines()
+                .any(|l| l == "a:b.md"),
+            "a fresh commit must not publish a:b.md"
+        );
+
+        let src = fx.home.path().join("fixture-blob");
+        fs::write(&src, b"old\n").unwrap();
+        let oid = fx
+            .repo
+            .git
+            .ok(&["hash-object", "-w", "--", src.to_str().unwrap()])
+            .unwrap();
+        fx.repo
+            .git
+            .ok(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "100644",
+                &oid,
+                "a:b.md",
+            ])
+            .unwrap();
+        fx.repo.git.ok(&["commit", "-m", "legacy"]).unwrap();
+        let target = fx.repo.git.rev("HEAD").unwrap();
+        let entries = fx.repo.project_file().unwrap().tracked();
+
+        let got = fx
+            .repo
+            .changes_since(Some(&pre), &target, &entries)
+            .unwrap();
+        assert!(
+            got.is_empty(),
+            "legacy a:b.md must not enter the change set: {got:?}"
+        );
+        let got = fx.repo.changes_since(None, &target, &entries).unwrap();
+        assert_eq!(got, vec![(Status::Added, PathBuf::from("ok.md"))]);
+    }
+
+    #[test]
     fn a_bootstrap_link_change_set_is_scoped_to_the_target_include_list() {
         let fx = fixture();
         fx.write("keep.md", b"keep");
@@ -2105,11 +2678,14 @@ mod tests {
             snap[Path::new("CLAUDE.md")],
             Some(FileState {
                 bytes: b"one\n".to_vec(),
-                executable: false
+                executable: Some(false)
             })
         );
         #[cfg(unix)]
-        assert!(snap[Path::new("hooks/run.sh")].as_ref().unwrap().executable);
+        assert_eq!(
+            snap[Path::new("hooks/run.sh")].as_ref().unwrap().executable,
+            Some(true)
+        );
         assert_eq!(snap[Path::new("nope.md")], None);
 
         // A git failure that is not "this path is not in that commit" must
@@ -2485,6 +3061,155 @@ mod tests {
         assert_eq!(
             b.git.rev("refs/heads/main"),
             fx.repo.git.rev("refs/heads/main")
+        );
+    }
+
+    /// `a:b.md` cannot be checked out under the Windows seam. The journal still
+    /// finishes, the other file lands, and the blob is not deleted.
+    #[test]
+    fn an_unrepresentable_path_finishes_the_journal() {
+        let fx = fixture();
+        fx.write("ok.md", b"ok\n");
+        fx.track(&["a:b.md"]);
+        assert!(fx.commit());
+        let blob_file = fx.home.path().join("blob");
+        fs::write(&blob_file, b"colon\n").unwrap();
+        let oid = fx
+            .repo
+            .git
+            .ok(&["hash-object", "-w", "--", blob_file.to_str().unwrap()])
+            .unwrap();
+        let _ = fs::remove_file(&blob_file);
+        fx.repo
+            .git
+            .ok(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "100644",
+                &oid,
+                "a:b.md",
+            ])
+            .unwrap();
+        fx.repo.git.ok(&["commit", "-m", "legacy"]).unwrap();
+        let blob = fx.repo.git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap();
+        let sent = fx.repo.git.rev("HEAD").unwrap();
+        fx.repo.publish(&fx.cloud()).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&fx.cloud(), FetchMode::Normal).unwrap();
+        let key = provider_key(&fx.cloud()).unwrap();
+
+        crate::platform::with_representable_here(crate::platform::windows_names, || {
+            let mut tx = b
+                .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+                .unwrap();
+            tx.set_target(&b).unwrap();
+            let skipped = tx.apply(&b, bh.path()).unwrap();
+            assert!(
+                skipped.is_empty(),
+                "journal would stay pending: {skipped:?}"
+            );
+            assert!(tx.blocked().contains(&PathBuf::from("a:b.md")));
+            assert_eq!(
+                tx.blocked_detail(),
+                &[BlockedPath {
+                    path: PathBuf::from("a:b.md"),
+                    reason: "name cannot exist on Windows: contains ':'".into(),
+                    source: "Mac A Pro".into(),
+                }]
+            );
+            assert_eq!(fs::read(b_root.path().join("ok.md")).unwrap(), b"ok\n");
+            assert!(!b_root.path().join("a:b.md").exists());
+            assert_eq!(tx.phase(), Phase::Finalizing);
+            drop(tx);
+
+            let mut tx = b.pending_tx(no_resolver).unwrap().unwrap();
+            assert_eq!(tx.resume(&b, bh.path()).unwrap(), ResumeOutcome::Finished);
+            assert!(b.pending_tx(no_resolver).unwrap().is_none());
+            assert_eq!(b.git.rev("HEAD").unwrap(), sent);
+            assert_eq!(b.git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap(), blob);
+            let deleted = b
+                .git
+                .ok(&[
+                    "log",
+                    "--diff-filter=D",
+                    "--name-only",
+                    "--format=",
+                    "--end-of-options",
+                    "HEAD",
+                ])
+                .unwrap();
+            assert!(
+                !deleted.lines().any(|line| line == "a:b.md"),
+                "recorded a deletion: {deleted}"
+            );
+        });
+    }
+
+    /// `!a.md` matches that basename in every directory. A root case pair must
+    /// not keep `docs/a.md` out of the checkout, or apply blocks and the journal
+    /// stays open.
+    #[test]
+    fn a_nested_basename_survives_a_root_case_collision() {
+        let fx = fixture();
+        fx.write("A.md", b"upper\n");
+        fx.write("docs/a.md", b"nested\n");
+        assert!(fx.commit());
+
+        let blob_file = fx.home.path().join("blob");
+        fs::write(&blob_file, b"lower\n").unwrap();
+        let oid = fx
+            .repo
+            .git
+            .ok(&["hash-object", "-w", "--", blob_file.to_str().unwrap()])
+            .unwrap();
+        let _ = fs::remove_file(&blob_file);
+        fx.repo
+            .git
+            .ok(&[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                "100644",
+                &oid,
+                "a.md",
+            ])
+            .unwrap();
+        fx.repo.git.ok(&["commit", "-m", "case pair"]).unwrap();
+        fx.repo.publish(&fx.cloud()).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&fx.cloud(), FetchMode::Normal).unwrap();
+        let key = provider_key(&fx.cloud()).unwrap();
+
+        let mut tx = b
+            .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+            .unwrap();
+        tx.set_target(&b).unwrap();
+        let skipped = tx.apply(&b, bh.path()).unwrap();
+        assert!(
+            skipped.is_empty(),
+            "journal would stay pending: {skipped:?}"
+        );
+        assert_eq!(
+            fs::read(b_root.path().join("docs/a.md")).unwrap(),
+            b"nested\n"
+        );
+        assert_eq!(fs::read(b_root.path().join("A.md")).unwrap(), b"upper\n");
+        assert_eq!(tx.phase(), Phase::Finalizing);
+        drop(tx);
+
+        let mut tx = b.pending_tx(no_resolver).unwrap().unwrap();
+        assert_eq!(tx.resume(&b, bh.path()).unwrap(), ResumeOutcome::Finished);
+        assert!(b.pending_tx(no_resolver).unwrap().is_none());
+        assert_eq!(
+            fs::read(b_root.path().join("docs/a.md")).unwrap(),
+            b"nested\n"
         );
     }
 

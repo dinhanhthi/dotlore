@@ -6,9 +6,12 @@
 //! per-key merge; a `Removed` key under a still-tracked parent punches a hole
 //! in that parent (the path stops syncing, live bytes stay).
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -493,6 +496,7 @@ pub fn seed(
 }
 
 fn build_ignore(root: &Path, ignore_text: &str) -> Result<Gitignore> {
+    let ignore_text = normalize_lf(ignore_text);
     let mut b = GitignoreBuilder::new(root);
     for line in ignore_text.lines() {
         b.add_line(None, line)?;
@@ -589,8 +593,12 @@ pub struct EntryList {
 }
 
 /// Parse a `.dotloreproject` body. Every key must be a plain relative path.
+///
+/// A CRLF body parses as the same value as the LF body. [`ProjectFile::to_bytes`]
+/// and [`write_ignore`] write LF, so a Windows edit is not stored back with CR.
 pub fn parse(bytes: &[u8]) -> Result<ProjectFile> {
-    let file: ProjectFile = serde_json::from_slice(bytes)?;
+    let bytes = normalize_lf_bytes(bytes);
+    let file: ProjectFile = serde_json::from_slice(&bytes)?;
     for key in file.entries.keys() {
         if !plain_rel(Path::new(key)) {
             bail!("project entry is not a plain relative path: {key:?}");
@@ -632,8 +640,121 @@ pub fn write(dir: &Path, file: &ProjectFile) -> Result<()> {
     fs::write(&path, file.to_bytes()?).with_context(|| format!("writing {}", path.display()))
 }
 
+/// Write `<dir>/.dotloreignore`. Carriage returns are turned into LF first,
+/// so a CRLF edit is not written back as CRLF.
+pub fn write_ignore(dir: &Path, text: &str) -> Result<()> {
+    let path = dir.join(IGNORE_FILE);
+    let body = normalize_lf(text);
+    fs::write(&path, body.as_bytes()).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Turn CRLF into LF in `.dotloreproject` and `.dotloreignore` only.
+///
+/// Staging sets `core.autocrlf=false`, so a Windows edit of either file would
+/// otherwise be committed with CR and churn on every other device. A file with
+/// no CR is left untouched. Anything else in `dir` is left untouched. A file
+/// that is missing, not a regular file, or cannot be read is skipped. The open
+/// does not follow a symlink: a mode-120000 blob checked out into staging must
+/// not be rewritten through.
+pub(crate) fn rewrite_crlf_meta(dir: &Path) -> Result<()> {
+    for name in [PROJECT_FILE, IGNORE_FILE] {
+        let path = dir.join(name);
+        let Ok(bytes) = read_regular(&path) else {
+            continue;
+        };
+        if !bytes.contains(&b'\r') {
+            continue;
+        }
+        let lf = normalize_lf_bytes(&bytes);
+        write_regular(&path, lf.as_ref()).with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Open `path` only when `symlink_metadata` says it is a regular file.
+/// `O_NOFOLLOW` refuses a symlink swapped in after that check. Neither call
+/// is `fs::read` / `fs::write`, which follow links.
+fn read_regular(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = open_regular(path, false)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn write_regular(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    open_regular(path, true)?.write_all(bytes)
+}
+
+fn open_regular(path: &Path, write: bool) -> io::Result<fs::File> {
+    match fs::symlink_metadata(path) {
+        Ok(md) if md.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
+        Err(e) => return Err(e),
+    }
+    let mut opts = fs::OpenOptions::new();
+    if write {
+        opts.write(true).truncate(true);
+    } else {
+        opts.read(true);
+    }
+    // Same flag values as `nofollow.rs`. A symlink open fails instead of
+    // following.
+    #[cfg(target_os = "macos")]
+    opts.custom_flags(0x0100);
+    #[cfg(target_os = "linux")]
+    opts.custom_flags(0x20000);
+    opts.open(path)
+}
+
+/// `\r\n` and a lone `\r` become `\n`. Bytes without CR are returned as-is.
+fn normalize_lf_bytes(bytes: &[u8]) -> Cow<'_, [u8]> {
+    if !bytes.contains(&b'\r') {
+        return Cow::Borrowed(bytes);
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\r' {
+            out.push(b'\n');
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    Cow::Owned(out)
+}
+
+/// [`normalize_lf_bytes`] for text. A string with no CR is borrowed unchanged.
+fn normalize_lf(text: &str) -> Cow<'_, str> {
+    if !text.contains('\r') {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('\r') {
+        out.push_str(&rest[..i]);
+        out.push('\n');
+        rest = &rest[i + 1..];
+        if let Some(stripped) = rest.strip_prefix('\n') {
+            rest = stripped;
+        }
+    }
+    out.push_str(rest);
+    Cow::Owned(out)
+}
+
 impl ProjectFile {
     /// Canonical JSON. `BTreeMap` keeps the bytes identical across devices.
+    /// No carriage return: a CRLF body re-serialises as this LF form.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(self)?)
     }
@@ -864,6 +985,81 @@ mod tests {
     }
 
     #[test]
+    fn parse_of_crlf_matches_lf_and_reserialises_without_cr() {
+        let lf = "{\n\"entries\":{\"CLAUDE.md\":{\"gen\":1,\"state\":\"tracked\"}}\n}";
+        let crlf = lf.replace('\n', "\r\n");
+        let from_lf = parse(lf.as_bytes()).unwrap();
+        let from_crlf = parse(crlf.as_bytes()).unwrap();
+        assert_eq!(from_lf, from_crlf);
+        let again = from_crlf.to_bytes().unwrap();
+        assert!(!again.contains(&b'\r'));
+        assert_eq!(parse(&again).unwrap(), from_lf);
+    }
+
+    #[test]
+    fn a_crlf_ignore_file_parses_like_lf_and_is_written_with_lf() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let lf = "*.log\n/secret/\n";
+        let crlf = "*.log\r\n/secret/\r\n";
+        let root = Path::new(".");
+        let from_lf = build_ignore(root, lf).unwrap();
+        let from_crlf = build_ignore(root, crlf).unwrap();
+        for rel in ["a.log", "notes.md", "secret/x"] {
+            let rel = Path::new(rel);
+            assert_eq!(
+                from_lf.matched_path_or_any_parents(rel, false).is_ignore(),
+                from_crlf
+                    .matched_path_or_any_parents(rel, false)
+                    .is_ignore(),
+                "{rel:?}"
+            );
+        }
+        assert!(from_lf
+            .matched_path_or_any_parents(Path::new("a.log"), false)
+            .is_ignore());
+        write_ignore(dir.path(), crlf).unwrap();
+        let written = fs::read(dir.path().join(IGNORE_FILE)).unwrap();
+        assert_eq!(written, lf.as_bytes());
+        assert!(!written.contains(&b'\r'));
+    }
+
+    #[test]
+    fn rewrite_crlf_meta_turns_only_the_meta_files_into_lf() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(dir.path().join(PROJECT_FILE), b"{\"entries\":{}}\r\n").unwrap();
+        fs::write(dir.path().join(IGNORE_FILE), b"*.log\r\n").unwrap();
+        fs::write(dir.path().join("notes.md"), b"keep\r\n").unwrap();
+        rewrite_crlf_meta(dir.path()).unwrap();
+        assert_eq!(
+            fs::read(dir.path().join(PROJECT_FILE)).unwrap(),
+            b"{\"entries\":{}}\n"
+        );
+        assert_eq!(fs::read(dir.path().join(IGNORE_FILE)).unwrap(), b"*.log\n");
+        assert_eq!(fs::read(dir.path().join("notes.md")).unwrap(), b"keep\r\n");
+        let project = fs::read(dir.path().join(PROJECT_FILE)).unwrap();
+        rewrite_crlf_meta(dir.path()).unwrap();
+        assert_eq!(fs::read(dir.path().join(PROJECT_FILE)).unwrap(), project);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rewrite_crlf_meta_does_not_follow_a_symlink() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = dir.path().join("outside-ignore");
+        fs::write(&outside, b"*.log\r\n").unwrap();
+        symlink(&outside, dir.path().join(IGNORE_FILE)).unwrap();
+        fs::write(dir.path().join(PROJECT_FILE), b"{}\r\n").unwrap();
+        rewrite_crlf_meta(dir.path()).unwrap();
+        assert_eq!(fs::read(&outside).unwrap(), b"*.log\r\n");
+        assert!(fs::symlink_metadata(dir.path().join(IGNORE_FILE))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(dir.path().join(PROJECT_FILE)).unwrap(), b"{}\n");
+    }
+
+    #[test]
     fn parse_rejects_a_non_plain_entry_path() {
         let rec = r#"{"gen":1,"state":"tracked"}"#;
         for key in ["/abs", "../x", ""] {
@@ -1081,8 +1277,15 @@ mod tests {
                 },
             );
         }
-        crate::mirror::root_to_staging(root, &staging, &file.tracked(), ignore, Limits::default())
-            .unwrap();
+        crate::mirror::root_to_staging(
+            root,
+            &staging,
+            &file.tracked(),
+            ignore,
+            Limits::default(),
+            &[],
+        )
+        .unwrap();
         fn go(base: &Path, dir: &Path, out: &mut Vec<String>) {
             for e in fs::read_dir(dir).unwrap().flatten() {
                 let p = e.path();

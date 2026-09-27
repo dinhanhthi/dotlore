@@ -28,9 +28,10 @@ use crate::config::{self, Config, HomeLock, Root};
 use crate::conflict;
 use crate::git::{self, Git};
 use crate::mirror::{self, FileState, Node};
+use crate::portable;
 use crate::project::{self, Limits, SensitiveMatcher, Sensitivity, State};
 use crate::repo::{
-    provider_key, remote_ref, unique_id, FetchMode, Repo, ResumeOutcome, Transaction,
+    provider_key, remote_ref, unique_id, BlockedPath, FetchMode, Repo, ResumeOutcome, Transaction,
 };
 
 /// Where one tracked root stands after a cycle.
@@ -136,6 +137,9 @@ pub struct AddRootReport {
     pub slug: String,
     pub skipped_folders: Vec<project::Skipped>,
     pub skipped_too_large: Vec<(PathBuf, u64)>,
+    /// Non-portable names and case-collision losers the first mirror refused
+    /// to publish. The live files are untouched.
+    pub skipped_nonportable: Vec<(PathBuf, String)>,
 }
 
 /// A new root whose staging repo exists, but whose pattern files are not
@@ -180,7 +184,7 @@ impl AddSeed {
         )?;
         repo.limits = self.limits;
         project::write(&repo.staging, &file)?;
-        fs::write(repo.staging.join(project::IGNORE_FILE), &self.ignore)?;
+        project::write_ignore(&repo.staging, &self.ignore)?;
         // `cloud_base` is already `<provider>/dotlore`. `cloud_at` would append
         // another `dotlore` segment.
         let cloud = Cloud {
@@ -198,6 +202,7 @@ impl AddSeed {
             slug: self.slug.clone(),
             skipped_folders,
             skipped_too_large: report.skipped_too_large,
+            skipped_nonportable: report.skipped_nonportable,
         })
     }
 }
@@ -301,6 +306,12 @@ pub struct Engine {
     /// In memory only, so a second add cannot archive the staging repo while
     /// pattern seeding runs without the home lock.
     pending_adds: Vec<(String, PathBuf)>,
+    /// Paths the latest cycle refused to publish, keyed by slug. Not saved.
+    /// Reasons are `name cannot exist on Windows: …` or `differs only by case from …`.
+    pub skipped_nonportable: BTreeMap<String, Vec<(PathBuf, String)>>,
+    /// Paths the latest cycle could not represent, keyed by slug. Not saved:
+    /// the next cycle derives the same list from the tree.
+    blocked_paths: BTreeMap<String, Vec<BlockedPath>>,
 }
 
 impl Engine {
@@ -317,7 +328,20 @@ impl Engine {
             cloud: cloud_at(&provider),
             cfg,
             pending_adds: Vec::new(),
+            skipped_nonportable: BTreeMap::new(),
+            blocked_paths: BTreeMap::new(),
         })
+    }
+
+    /// Paths from the latest cycle that this device cannot represent.
+    ///
+    /// Each entry has the reason and the source device name. The same list
+    /// comes back on the next cycle, with no new commit and no open journal.
+    pub fn blocked(&self, slug: &str) -> &[BlockedPath] {
+        match self.blocked_paths.get(slug) {
+            Some(paths) => paths.as_slice(),
+            None => &[],
+        }
     }
 
     // --- public entry points ----------------------------------------------
@@ -343,6 +367,8 @@ impl Engine {
                     self.cancel_add_root(&seed.slug);
                     return Err(err);
                 }
+                self.skipped_nonportable
+                    .insert(report.slug.clone(), report.skipped_nonportable.clone());
                 Ok(report)
             }
         }
@@ -381,6 +407,7 @@ impl Engine {
                     slug,
                     skipped_folders: Vec::new(),
                     skipped_too_large: Vec::new(),
+                    skipped_nonportable: Vec::new(),
                 }));
             }
             None if cloud.slug_dir(&slug)?.join("manifest.json").exists() => bail!(
@@ -496,7 +523,7 @@ impl Engine {
         if let Some((other, _)) = self
             .pending_adds
             .iter()
-            .find(|(_, pending)| pending == path)
+            .find(|(_, pending)| portable::same_path(pending, path))
         {
             bail!("{} is already being added as {other}", path.display());
         }
@@ -1281,14 +1308,16 @@ impl Engine {
 
     /// The cycle, with any failure turned into `Error` so the journal and the
     /// pinned objects survive for the next attempt.
-    fn run_cycle(&self, cloud: &Cloud, root: &Root, mode: FetchMode) -> RootStatus {
+    fn run_cycle(&mut self, cloud: &Cloud, root: &Root, mode: FetchMode) -> RootStatus {
         match self.cycle(cloud, root, mode) {
             Ok(s) => s,
             Err(e) => RootStatus::Error(format!("{e:#}")),
         }
     }
 
-    fn cycle(&self, cloud: &Cloud, root: &Root, mode: FetchMode) -> Result<RootStatus> {
+    fn cycle(&mut self, cloud: &Cloud, root: &Root, mode: FetchMode) -> Result<RootStatus> {
+        self.skipped_nonportable.remove(&root.slug);
+        self.blocked_paths.remove(&root.slug);
         if git::which_git().is_none() {
             return Ok(RootStatus::GitMissing);
         }
@@ -1342,7 +1371,9 @@ impl Engine {
         };
 
         if pending.is_none() && root_present(&root.path) {
-            repo.commit_local(false, &self.home_dir)?;
+            let (_, report) = repo.commit_local(false, &self.home_dir)?;
+            self.skipped_nonportable
+                .insert(root.slug.clone(), report.skipped_nonportable);
         }
         // Decided against durable `main`, before anything is merged, so the
         // answer does not depend on this transaction succeeding or on the
@@ -1359,7 +1390,7 @@ impl Engine {
             None if repo.has_main() => {
                 if ahead.is_empty() {
                     repo.publish(cloud)?;
-                    return root_status(&repo);
+                    return self.finish_blocked(&repo, &root.slug, root_status(&repo)?);
                 }
                 (repo.begin_tx(&key, "HEAD", conflict::resolve_index)?, ahead)
             }
@@ -1385,7 +1416,27 @@ impl Engine {
         }
         tx.finalize(&repo)?;
         repo.publish(cloud)?;
-        root_status(&repo)
+        self.finish_blocked(&repo, &root.slug, root_status(&repo)?)
+    }
+
+    /// Re-read unrepresentable paths from `main` so a finished journal still
+    /// reports them on this cycle and the next.
+    fn finish_blocked(
+        &mut self,
+        repo: &Repo,
+        slug: &str,
+        status: RootStatus,
+    ) -> Result<RootStatus> {
+        let Some(rev) = repo.git.rev("refs/heads/main") else {
+            return Ok(status);
+        };
+        let found = repo.blocked_in(&rev)?;
+        if found.is_empty() {
+            self.blocked_paths.remove(slug);
+        } else {
+            self.blocked_paths.insert(slug.to_string(), found);
+        }
+        Ok(status)
     }
 
     // --- small shared pieces ----------------------------------------------
@@ -1438,7 +1489,7 @@ impl Engine {
     fn register(&mut self, g: &HomeLock, root: Root) -> Result<()> {
         self.cfg
             .roots
-            .retain(|r| r.slug != root.slug && r.path != root.path);
+            .retain(|r| r.slug != root.slug && !portable::same_path(&r.path, &root.path));
         // Adding the path again is the only way back onto the import list.
         // Cleared here so the root and the shorter dismissal list share this save.
         self.cfg
@@ -1492,7 +1543,12 @@ impl Engine {
         if let Some(r) = self.cfg.roots.iter().find(|r| r.slug == slug) {
             bail!("{slug} is already tracked at {}", r.path.display());
         }
-        if let Some(r) = self.cfg.roots.iter().find(|r| r.path == path) {
+        if let Some(r) = self
+            .cfg
+            .roots
+            .iter()
+            .find(|r| portable::same_path(&r.path, path))
+        {
             bail!("{} is already tracked as {}", path.display(), r.slug);
         }
         Ok(())
@@ -1604,7 +1660,11 @@ pub fn configure_provider(
             );
         }
     }
-    if cfg.provider_dir.as_deref() == Some(dest.as_path()) {
+    if cfg
+        .provider_dir
+        .as_deref()
+        .is_some_and(|stored| portable::same_path(stored, &dest))
+    {
         return Ok(Vec::new());
     }
 
@@ -1616,6 +1676,8 @@ pub fn configure_provider(
             cloud: cloud_at(&src),
             cfg,
             pending_adds: Vec::new(),
+            skipped_nonportable: BTreeMap::new(),
+            blocked_paths: BTreeMap::new(),
         };
         let src_cloud = e.cloud();
         for slug in e
@@ -1645,6 +1707,8 @@ pub fn configure_provider(
         cloud: cloud_at(&dest),
         cfg,
         pending_adds: Vec::new(),
+        skipped_nonportable: BTreeMap::new(),
+        blocked_paths: BTreeMap::new(),
     };
     let dest_cloud = e.cloud();
     let mut out = Vec::new();
@@ -1829,11 +1893,11 @@ fn is_catalog_agent(home_dir: &Path, stored: &Path) -> bool {
 /// The final component is not followed, so a removed directory and a
 /// symlink left in its place still match the path that was stored.
 fn same_agent_path(a: &Path, b: &Path) -> bool {
-    if a == b {
+    if portable::same_path(a, b) {
         return true;
     }
     match (catalog_stored_path(a), catalog_stored_path(b)) {
-        (Some(a), Some(b)) => a == b,
+        (Some(a), Some(b)) => portable::same_path(&a, &b),
         _ => false,
     }
 }
@@ -1913,9 +1977,11 @@ fn canonical(p: &Path) -> PathBuf {
     p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// Equal, or one inside the other.
+/// Equal, or one inside the other. A Windows `\\?\` prefix does not count.
 fn related(a: &Path, b: &Path) -> bool {
-    a == b || a.starts_with(b) || b.starts_with(a)
+    portable::same_path(a, b)
+        || portable::starts_with_path(a, b)
+        || portable::starts_with_path(b, a)
 }
 
 fn device_name(names: &std::collections::HashMap<String, String>, id8: &str) -> String {
@@ -1940,7 +2006,7 @@ fn root_state(path: &Path) -> Result<Option<FileState>> {
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         Ok(md) if md.is_file() => Ok(Some(FileState {
             bytes: fs::read(path)?,
-            executable: mirror::require_exec_bit(&md)?,
+            executable: mirror::exec_bit(&md),
         })),
         Ok(_) => bail!("{} is not a regular file", path.display()),
     }
@@ -4133,5 +4199,613 @@ mod tests {
         assert!(a.engine.wipe_cloud_data().is_err());
         assert!(cloud_of(&a).read_manifest("proj-claude").is_some());
         assert!(staging(&a).join(".git").is_dir());
+    }
+
+    fn repo_of(dev: &Dev) -> Repo {
+        dev.engine
+            .repo_for(&dev.engine.root_cfg("proj-claude").unwrap())
+            .unwrap()
+    }
+
+    /// Fetch every published bundle, oldest first, so an incremental bundle
+    /// has the prerequisite commits the previous one carried.
+    fn with_published(dev: &Dev, f: impl FnOnce(&crate::git::Git)) {
+        let bare = TempDir::new().unwrap();
+        let git = crate::git::Git::new(bare.path().to_path_buf(), "Mac A Pro", &"c".repeat(32));
+        git.ok(&["init", "--bare", "-q"]).unwrap();
+        let mut bundles = cloud_of(dev).list_bundles("proj-claude");
+        assert!(!bundles.is_empty(), "nothing was published");
+        bundles.sort_by_key(|b| b.seq);
+        for bundle in &bundles {
+            let path = bundle.path.to_str().expect("utf-8 bundle path");
+            git.ok(&["fetch", "-q", path, "main"]).unwrap();
+        }
+        f(&git);
+    }
+
+    /// `git ls-tree -r --name-only` of the newest published bundle.
+    fn published_paths(dev: &Dev) -> Vec<String> {
+        let mut paths = Vec::new();
+        with_published(dev, |git| {
+            let listed = git
+                .ok(&["ls-tree", "-r", "--name-only", "FETCH_HEAD"])
+                .unwrap();
+            paths = listed
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
+        });
+        paths.sort();
+        paths
+    }
+
+    fn track_key(dev: &Dev, key: &str) {
+        let repo = repo_of(dev);
+        let mut file = crate::project::read(&repo.staging).unwrap();
+        file.entries.insert(
+            key.to_string(),
+            crate::project::EntryRecord {
+                gen: 1,
+                state: crate::project::State::Tracked,
+            },
+        );
+        crate::project::write(&repo.staging, &file).unwrap();
+        repo.git
+            .ok(&["add", "-f", "--", ":(literal).dotloreproject"])
+            .unwrap();
+    }
+
+    /// Commit `body` at `rel` straight into the index, without a second worktree
+    /// file. APFS cannot hold both casings; the tree still can.
+    fn commit_index_blob(dev: &Dev, rel: &str, body: &[u8]) {
+        let repo = repo_of(dev);
+        let src = dev.home.path().join("fixture-blob");
+        fs::write(&src, body).unwrap();
+        let oid = repo
+            .git
+            .ok(&["hash-object", "-w", "--", src.to_str().unwrap()])
+            .unwrap();
+        let _ = fs::remove_file(&src);
+        repo.git
+            .ok(&["update-index", "--add", "--cacheinfo", "100644", &oid, rel])
+            .unwrap();
+        if !repo
+            .git
+            .run(&["diff", "--cached", "--quiet"])
+            .unwrap()
+            .status
+            .success()
+        {
+            repo.git.ok(&["commit", "-m", "fixture"]).unwrap();
+        }
+    }
+
+    fn seed_portable_names(dev: &mut Dev) {
+        dev.engine.cfg.default_patterns = Some(vec![
+            "ok.md".into(),
+            "a:b.md".into(),
+            "CON.md".into(),
+            "A.md".into(),
+            "a.md".into(),
+        ]);
+        dev.engine.cfg.save(dev.home.path()).unwrap();
+        write(dev, "ok.md", b"ok\n");
+        write(dev, "a:b.md", b"colon\n");
+        write(dev, "CON.md", b"con\n");
+        write(dev, "A.md", b"upper\n");
+    }
+
+    #[test]
+    fn nonportable_names_are_not_published_and_are_reported() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        seed_portable_names(&mut a);
+
+        let report = a
+            .engine
+            .add_root(a.root.path(), Some("proj-claude"))
+            .unwrap();
+        assert_eq!(
+            report.skipped_nonportable,
+            vec![
+                (
+                    PathBuf::from("CON.md"),
+                    "name cannot exist on Windows: is a reserved Windows device name".into()
+                ),
+                (
+                    PathBuf::from("a:b.md"),
+                    "name cannot exist on Windows: contains ':'".into()
+                ),
+            ]
+        );
+        assert_eq!(fs::read(a.root.path().join("a:b.md")).unwrap(), b"colon\n");
+        assert_eq!(fs::read(a.root.path().join("CON.md")).unwrap(), b"con\n");
+        assert_eq!(fs::read(a.root.path().join("ok.md")).unwrap(), b"ok\n");
+
+        let tree = published_paths(&a);
+        assert!(tree.iter().any(|p| p == "ok.md"), "{tree:?}");
+        assert!(tree.iter().any(|p| p == "A.md"), "{tree:?}");
+        assert!(
+            !tree
+                .iter()
+                .any(|p| p == "a:b.md" || p == "CON.md" || p == "a.md"),
+            "non-portable paths entered the bundle: {tree:?}"
+        );
+
+        // The live volume cannot hold both casings. The staging tree can.
+        assert_eq!(
+            crate::portable::publish_skips(["A.md", "a.md", "ok.md"]),
+            vec![(
+                "a.md".to_string(),
+                "differs only by case from A.md".to_string()
+            )]
+        );
+        track_key(&a, "a.md");
+        commit_index_blob(&a, "a.md", b"lower\n");
+        let blob = repo_of(&a).git.ok(&["rev-parse", "HEAD:a.md"]).unwrap();
+        a.engine.sync_root("proj-claude").unwrap();
+        let repo = repo_of(&a);
+        assert_eq!(repo.git.ok(&["rev-parse", "HEAD:a.md"]).unwrap(), blob);
+        assert!(
+            repo.git
+                .ok(&["ls-tree", "-r", "--name-only", "HEAD"])
+                .unwrap()
+                .lines()
+                .any(|l| l == "a.md"),
+            "already-staged collision loser must not be deleted"
+        );
+        let skips = a
+            .engine
+            .skipped_nonportable
+            .get("proj-claude")
+            .expect("cycle report");
+        assert!(
+            skips.iter().any(|(path, reason)| {
+                path == Path::new("a.md") && reason == "differs only by case from A.md"
+            }),
+            "cycle report: {skips:?}"
+        );
+        assert!(skips.iter().any(|(path, reason)| {
+            path == Path::new("a:b.md") && reason == "name cannot exist on Windows: contains ':'"
+        }));
+        let tree = published_paths(&a);
+        assert!(tree.iter().any(|p| p == "ok.md"), "{tree:?}");
+        assert!(
+            !tree.iter().any(|p| p == "a:b.md" || p == "CON.md"),
+            "{tree:?}"
+        );
+    }
+
+    #[test]
+    fn an_already_staged_nonportable_path_keeps_its_old_blob() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.cfg.default_patterns = Some(vec!["ok.md".into(), "a:b.md".into()]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+        write(&a, "ok.md", b"ok\n");
+        write(&a, "a:b.md", b"old\n");
+        a.engine
+            .add_root(a.root.path(), Some("proj-claude"))
+            .unwrap();
+
+        // As if a 0.3.0 device had already committed the file.
+        let repo = repo_of(&a);
+        fs::write(repo.staging.join("a:b.md"), b"old\n").unwrap();
+        repo.git
+            .ok(&["add", "-f", "--", ":(literal)a:b.md"])
+            .unwrap();
+        repo.git.ok(&["commit", "-m", "legacy"]).unwrap();
+        let rev = repo.git.rev("HEAD").unwrap();
+        let blob = repo.git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap();
+
+        fs::write(a.root.path().join("a:b.md"), b"new\n").unwrap();
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        let repo = repo_of(&a);
+        assert_eq!(
+            repo.git.rev("HEAD").unwrap(),
+            rev,
+            "edited legacy path must not commit"
+        );
+        assert_eq!(repo.git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap(), blob);
+        assert_eq!(fs::read(a.root.path().join("a:b.md")).unwrap(), b"new\n");
+        let diff = repo
+            .git
+            .ok(&["diff", "--name-status", &rev, "HEAD"])
+            .unwrap();
+        assert!(
+            !diff
+                .lines()
+                .any(|l| l.starts_with('D') && l.contains("a:b.md")),
+            "recorded a deletion: {diff}"
+        );
+        let skips = a
+            .engine
+            .skipped_nonportable
+            .get("proj-claude")
+            .expect("cycle report");
+        assert!(
+            skips.iter().any(|(path, reason)| {
+                path == Path::new("a:b.md")
+                    && reason == "name cannot exist on Windows: contains ':'"
+            }),
+            "cycle report: {skips:?}"
+        );
+        let tree = published_paths(&a);
+        assert!(tree.iter().any(|p| p == "ok.md"), "{tree:?}");
+        assert!(
+            tree.iter().any(|p| p == "a:b.md"),
+            "old blob left the bundle: {tree:?}"
+        );
+        let mut bare_blob = String::new();
+        with_published(&a, |git| {
+            bare_blob = git.ok(&["rev-parse", "FETCH_HEAD:a:b.md"]).unwrap();
+        });
+        assert_eq!(bare_blob, blob);
+    }
+
+    #[test]
+    fn the_case_collision_loser_is_the_same_across_two_cycles() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.cfg.default_patterns = Some(vec!["ok.md".into(), "A.md".into(), "a.md".into()]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+        write(&a, "ok.md", b"ok\n");
+        write(&a, "A.md", b"upper\n");
+        a.engine
+            .add_root(a.root.path(), Some("proj-claude"))
+            .unwrap();
+        track_key(&a, "a.md");
+        commit_index_blob(&a, "a.md", b"lower\n");
+        let rev = repo_of(&a).git.rev("HEAD").unwrap();
+        let blob = repo_of(&a).git.ok(&["rev-parse", "HEAD:a.md"]).unwrap();
+
+        let mut losers = Vec::new();
+        for _ in 0..2 {
+            a.engine.sync_root("proj-claude").unwrap();
+            let skips = a
+                .engine
+                .skipped_nonportable
+                .get("proj-claude")
+                .expect("cycle report")
+                .clone();
+            let loser: Vec<_> = skips
+                .iter()
+                .filter(|(path, _)| path == Path::new("a.md") || path == Path::new("A.md"))
+                .cloned()
+                .collect();
+            losers.push(loser);
+            assert_eq!(repo_of(&a).git.rev("HEAD").unwrap(), rev);
+            assert_eq!(
+                repo_of(&a).git.ok(&["rev-parse", "HEAD:a.md"]).unwrap(),
+                blob
+            );
+        }
+        assert_eq!(
+            losers[0], losers[1],
+            "loser changed across cycles: {losers:?}"
+        );
+        assert_eq!(
+            losers[0],
+            vec![(
+                PathBuf::from("a.md"),
+                "differs only by case from A.md".to_string()
+            )]
+        );
+    }
+
+    /// `docs/Notes.md` in HEAD and a dirent `docs/notes.md` are one file on
+    /// every volume: one dirent, one index path. The edited bytes must land
+    /// on the path already in HEAD, and the cycle must not leave a journal open.
+    #[test]
+    fn a_case_only_rename_under_a_directory_include_publishes_the_new_bytes() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.cfg.default_patterns = Some(vec!["docs/".into()]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+        write(&a, "docs/Notes.md", b"old\n");
+        a.engine
+            .add_root(a.root.path(), Some("proj-claude"))
+            .unwrap();
+        let before = repo_of(&a)
+            .git
+            .ok(&["ls-tree", "-r", "--name-only", "HEAD"])
+            .unwrap();
+        assert!(
+            before.lines().any(|l| l == "docs/Notes.md"),
+            "fixture tree: {before}"
+        );
+
+        fs::rename(
+            a.root.path().join("docs/Notes.md"),
+            a.root.path().join("docs/notes.md"),
+        )
+        .unwrap();
+        fs::write(a.root.path().join("docs/notes.md"), b"new\n").unwrap();
+
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        let repo = repo_of(&a);
+        assert!(
+            repo.pending_tx(crate::conflict::resolve_index)
+                .unwrap()
+                .is_none(),
+            "journal left open"
+        );
+        assert!(!repo.staging.join(".git/dotlore-apply.json").exists());
+        let tree = repo
+            .git
+            .ok(&["ls-tree", "-r", "--name-only", "HEAD"])
+            .unwrap();
+        assert!(
+            tree.lines().any(|l| l == "docs/Notes.md"),
+            "HEAD path lost: {tree}"
+        );
+        assert!(
+            !tree.lines().any(|l| l == "docs/notes.md"),
+            "case-renamed spelling was published as a second path: {tree}"
+        );
+        let shown = repo
+            .git
+            .run(&["show", "--end-of-options", "HEAD:docs/Notes.md"])
+            .unwrap();
+        assert!(
+            shown.status.success(),
+            "{}",
+            String::from_utf8_lossy(&shown.stderr)
+        );
+        assert_eq!(shown.stdout, b"new\n");
+    }
+
+    /// The index already has both spellings and the live dirent is the loser
+    /// (`a.md`). The edit must be published on `A.md`. `a.md` keeps its old blob.
+    #[test]
+    fn editing_the_losing_case_spelling_publishes_onto_the_winner() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.cfg.default_patterns = Some(vec!["ok.md".into(), "A.md".into(), "a.md".into()]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+        write(&a, "ok.md", b"ok\n");
+        write(&a, "A.md", b"old\n");
+        a.engine
+            .add_root(a.root.path(), Some("proj-claude"))
+            .unwrap();
+        track_key(&a, "a.md");
+        commit_index_blob(&a, "a.md", b"lower\n");
+        let loser = repo_of(&a).git.ok(&["rev-parse", "HEAD:a.md"]).unwrap();
+
+        fs::rename(a.root.path().join("A.md"), a.root.path().join("a.md")).unwrap();
+        fs::write(a.root.path().join("a.md"), b"new\n").unwrap();
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        let repo = repo_of(&a);
+        assert!(
+            repo.pending_tx(crate::conflict::resolve_index)
+                .unwrap()
+                .is_none(),
+            "journal left open"
+        );
+        let shown = repo
+            .git
+            .run(&["show", "--end-of-options", "HEAD:A.md"])
+            .unwrap();
+        assert!(
+            shown.status.success(),
+            "{}",
+            String::from_utf8_lossy(&shown.stderr)
+        );
+        assert_eq!(shown.stdout, b"new\n");
+        assert_eq!(repo.git.ok(&["rev-parse", "HEAD:a.md"]).unwrap(), loser);
+        assert!(
+            repo.git
+                .ok(&["ls-tree", "-r", "--name-only", "HEAD"])
+                .unwrap()
+                .lines()
+                .any(|l| l == "a.md"),
+            "collision loser was deleted"
+        );
+        let tree = published_paths(&a);
+        assert!(tree.iter().any(|p| p == "A.md"), "{tree:?}");
+        assert!(tree.iter().any(|p| p == "ok.md"), "{tree:?}");
+    }
+
+    /// Deleting the only live file in a case fold publishes a deletion of the
+    /// winning spelling. The loser and a truly non-portable path stay.
+    #[test]
+    fn deleting_the_live_case_file_unpublishes_the_winner_only() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        a.engine.cfg.default_patterns = Some(vec![
+            "ok.md".into(),
+            "A.md".into(),
+            "a.md".into(),
+            "a:b.md".into(),
+            "CON.md".into(),
+        ]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+        write(&a, "ok.md", b"ok\n");
+        write(&a, "A.md", b"upper\n");
+        write(&a, "a:b.md", b"colon\n");
+        write(&a, "CON.md", b"con\n");
+        a.engine
+            .add_root(a.root.path(), Some("proj-claude"))
+            .unwrap();
+        track_key(&a, "a.md");
+        commit_index_blob(&a, "a.md", b"lower\n");
+
+        let repo = repo_of(&a);
+        fs::write(repo.staging.join("a:b.md"), b"colon\n").unwrap();
+        fs::write(repo.staging.join("CON.md"), b"con\n").unwrap();
+        repo.git
+            .ok(&["add", "-f", "--", ":(literal)a:b.md", ":(literal)CON.md"])
+            .unwrap();
+        repo.git.ok(&["commit", "-m", "legacy"]).unwrap();
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        let loser = repo_of(&a).git.ok(&["rev-parse", "HEAD:a.md"]).unwrap();
+        let colon = repo_of(&a).git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap();
+        let con = repo_of(&a).git.ok(&["rev-parse", "HEAD:CON.md"]).unwrap();
+
+        fs::remove_file(a.root.path().join("A.md")).unwrap();
+        fs::remove_file(a.root.path().join("a:b.md")).unwrap();
+        fs::remove_file(a.root.path().join("CON.md")).unwrap();
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        let repo = repo_of(&a);
+        let head = repo
+            .git
+            .ok(&["ls-tree", "-r", "--name-only", "HEAD"])
+            .unwrap();
+        assert!(
+            !head.lines().any(|l| l == "A.md"),
+            "winner was not deleted: {head}"
+        );
+        assert!(head.lines().any(|l| l == "a.md"), "{head}");
+        assert!(head.lines().any(|l| l == "a:b.md"), "{head}");
+        assert!(head.lines().any(|l| l == "CON.md"), "{head}");
+        assert!(head.lines().any(|l| l == "ok.md"), "{head}");
+        assert_eq!(repo.git.ok(&["rev-parse", "HEAD:a.md"]).unwrap(), loser);
+        assert_eq!(repo.git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap(), colon);
+        assert_eq!(repo.git.ok(&["rev-parse", "HEAD:CON.md"]).unwrap(), con);
+        let tree = published_paths(&a);
+        assert!(!tree.iter().any(|p| p == "A.md"), "{tree:?}");
+        assert!(tree.iter().any(|p| p == "a.md"), "{tree:?}");
+        assert!(tree.iter().any(|p| p == "a:b.md"), "{tree:?}");
+        assert!(tree.iter().any(|p| p == "CON.md"), "{tree:?}");
+        assert!(tree.iter().any(|p| p == "ok.md"), "{tree:?}");
+    }
+
+    /// A bundle from device B carries `a:b.md`, which Windows cannot store.
+    /// The seam stands in for that OS. The other file still lands, the journal
+    /// closes, and this device does not publish a deletion of the blocked path.
+    #[test]
+    fn an_unrepresentable_path_from_device_b_is_blocked_and_not_deleted() {
+        let provider = TempDir::new().unwrap();
+        let mut b = device(provider.path(), 'b');
+        b.engine.cfg.default_patterns = Some(vec!["ok.md".into(), "a:b.md".into()]);
+        b.engine.cfg.save(b.home.path()).unwrap();
+        write(&b, "ok.md", b"ok\n");
+        write(&b, "a:b.md", b"colon\n");
+        b.engine
+            .add_root(b.root.path(), Some("proj-claude"))
+            .unwrap();
+
+        let repo = repo_of(&b);
+        fs::write(repo.staging.join("a:b.md"), b"colon\n").unwrap();
+        repo.git
+            .ok(&["add", "-f", "--", ":(literal)a:b.md"])
+            .unwrap();
+        repo.git.ok(&["commit", "-m", "legacy"]).unwrap();
+        let blob = repo.git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap();
+        b.engine.sync_root("proj-claude").unwrap();
+        assert!(
+            published_paths(&b).iter().any(|p| p == "a:b.md"),
+            "fixture bundle lost a:b.md"
+        );
+
+        let mut a = device(provider.path(), 'a');
+        let live = a.root.path().to_path_buf();
+        crate::platform::with_representable_here(crate::platform::windows_names, || {
+            let status = a.engine.link_root("proj-claude", &live).unwrap();
+            assert_eq!(status, RootStatus::Synced, "{status:?}");
+            assert_eq!(fs::read(live.join("ok.md")).unwrap(), b"ok\n");
+            assert!(
+                !live.join("a:b.md").exists(),
+                "unrepresentable path was written into the live root"
+            );
+            let want = vec![BlockedPath {
+                path: PathBuf::from("a:b.md"),
+                reason: "name cannot exist on Windows: contains ':'".into(),
+                source: "Mac b Pro".into(),
+            }];
+            assert_eq!(a.engine.blocked("proj-claude"), want.as_slice());
+            let repo = repo_of(&a);
+            assert!(
+                repo.pending_tx(crate::conflict::resolve_index)
+                    .unwrap()
+                    .is_none(),
+                "journal left open"
+            );
+            assert_eq!(repo.git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap(), blob);
+            let head = repo.git.rev("HEAD").unwrap();
+
+            assert_eq!(
+                a.engine.sync_root("proj-claude").unwrap(),
+                RootStatus::Synced
+            );
+            let repo = repo_of(&a);
+            assert_eq!(
+                repo.git.rev("HEAD").unwrap(),
+                head,
+                "second cycle committed"
+            );
+            assert_eq!(repo.git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap(), blob);
+            assert_eq!(a.engine.blocked("proj-claude"), want.as_slice());
+            assert!(repo
+                .pending_tx(crate::conflict::resolve_index)
+                .unwrap()
+                .is_none());
+
+            // A real publish (adoption may not bundle a commit the cloud
+            // already has). The new tree must keep the same blob.
+            fs::write(live.join("ok.md"), b"ok2\n").unwrap();
+            assert_eq!(
+                a.engine.sync_root("proj-claude").unwrap(),
+                RootStatus::Synced
+            );
+            let repo = repo_of(&a);
+            assert_ne!(repo.git.rev("HEAD").unwrap(), head);
+            assert_eq!(repo.git.ok(&["rev-parse", "HEAD:a:b.md"]).unwrap(), blob);
+            assert_eq!(a.engine.blocked("proj-claude"), want.as_slice());
+            let deleted = repo
+                .git
+                .ok(&[
+                    "log",
+                    "--diff-filter=D",
+                    "--name-only",
+                    "--format=",
+                    "--end-of-options",
+                    "HEAD",
+                ])
+                .unwrap();
+            assert!(
+                !deleted.lines().any(|line| line == "a:b.md"),
+                "published a deletion: {deleted}"
+            );
+            let bare = TempDir::new().unwrap();
+            let git = crate::git::Git::new(bare.path().to_path_buf(), "reader", &"c".repeat(32));
+            git.ok(&["init", "--bare", "-q"]).unwrap();
+            let mut bundles = cloud_of(&a).list_bundles("proj-claude");
+            assert!(
+                bundles.iter().any(|bundle| bundle.device.starts_with('a')),
+                "this device published nothing"
+            );
+            // A's bundle is incremental on B's history, so B has to be fetched first.
+            bundles.sort_by(|left, right| {
+                let rank = |device: &str| usize::from(!device.starts_with('b'));
+                rank(&left.device)
+                    .cmp(&rank(&right.device))
+                    .then(left.seq.cmp(&right.seq))
+            });
+            for bundle in &bundles {
+                let path = bundle.path.to_str().expect("utf-8 bundle path");
+                git.ok(&["fetch", "-q", path, "main"]).unwrap();
+            }
+            assert_eq!(git.ok(&["rev-parse", "FETCH_HEAD:a:b.md"]).unwrap(), blob);
+        });
     }
 }

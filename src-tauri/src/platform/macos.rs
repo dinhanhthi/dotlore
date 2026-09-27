@@ -52,3 +52,35 @@ fn name_of(p: &Path) -> String {
         .unwrap_or_default()
         .to_string()
 }
+
+/// APFS accepts `:`, reserved device names, and trailing dots or spaces.
+/// NUL and an empty path are the only names that cannot exist. Case
+/// collisions are [`super::case_insensitive_fs`]'s decision, not this one.
+pub(super) fn name_representable_here(rel: &str) -> bool {
+    !rel.is_empty() && !rel.contains('\0')
+}
+
+/// `true` when `root`'s volume folds case. A missing path or a failed probe
+/// is treated as insensitive: that is the APFS default, and checking out two
+/// casings there is the failure mode worth avoiding.
+pub(super) fn case_insensitive_fs(root: &Path) -> bool {
+    use std::os::raw::{c_char, c_int, c_long};
+    use std::os::unix::ffi::OsStrExt;
+
+    extern "C" {
+        fn pathconf(path: *const c_char, name: c_int) -> c_long;
+    }
+
+    // sys/unistd.h: `_PC_CASE_SENSITIVE` is 11. 1 = sensitive, 0 = not.
+    const PC_CASE_SENSITIVE: c_int = 11;
+
+    let Ok(c) = std::ffi::CString::new(root.as_os_str().as_bytes()) else {
+        return true;
+    };
+    // SAFETY: pathconf does not retain `c`.
+    let v = unsafe { pathconf(c.as_ptr(), PC_CASE_SENSITIVE) };
+    if v < 0 {
+        return true;
+    }
+    v == 0
+}

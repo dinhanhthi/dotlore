@@ -346,7 +346,7 @@ fn ignored(matchers: &[(PathBuf, Gitignore, Option<EntryList>)], p: &Path) -> bo
     let dir = fs::symlink_metadata(p).map(|md| md.is_dir());
     let mut contained = false;
     for (root, gi, include) in matchers {
-        let Ok(rel) = p.strip_prefix(root) else {
+        let Some(rel) = rel_under(p, root) else {
             continue;
         };
         contained = true;
@@ -358,18 +358,18 @@ fn ignored(matchers: &[(PathBuf, Gitignore, Option<EntryList>)], p: &Path) -> bo
         // a nested entry still vote "wake" so creating or deleting the parent
         // directory of a tracked file is seen.
         if let Some(include) = include {
-            if !include.contains_rel(rel) && !include.has_tracked_descendant(rel) {
+            if !include.contains_rel(&rel) && !include.has_tracked_descendant(&rel) {
                 continue;
             }
         }
         // Relative paths only: the matcher panics on an absolute path it
         // cannot strip its own root from.
-        let hit = staging_private(rel)
+        let hit = staging_private(&rel)
             || match dir {
-                Ok(d) => gi.matched_path_or_any_parents(rel, d).is_ignore(),
+                Ok(d) => gi.matched_path_or_any_parents(&rel, d).is_ignore(),
                 Err(_) => {
-                    gi.matched_path_or_any_parents(rel, true).is_ignore()
-                        && gi.matched_path_or_any_parents(rel, false).is_ignore()
+                    gi.matched_path_or_any_parents(&rel, true).is_ignore()
+                        && gi.matched_path_or_any_parents(&rel, false).is_ignore()
                 }
             };
         if !hit {
@@ -377,6 +377,17 @@ fn ignored(matchers: &[(PathBuf, Gitignore, Option<EntryList>)], p: &Path) -> bo
         }
     }
     contained
+}
+
+/// `path` relative to `root`, after dropping a Windows `\\?\` prefix on either
+/// side. `watch_filters` keys roots by `canonicalize`, which is `\\?\…` on
+/// Windows, while a watcher event may not be.
+fn rel_under(path: &Path, root: &Path) -> Option<PathBuf> {
+    let path = crate::portable::without_verbatim(path);
+    let root = crate::portable::without_verbatim(root);
+    path.strip_prefix(root.as_ref())
+        .ok()
+        .map(|rel| rel.to_path_buf())
 }
 
 /// A name the mirror never carries either way, for any root.
