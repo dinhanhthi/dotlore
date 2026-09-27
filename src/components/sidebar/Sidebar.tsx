@@ -151,6 +151,7 @@ export function Sidebar() {
     slug: string;
   } | null>(null);
   const [removeTarget, setRemoveTarget] = useState<RootRow | null>(null);
+  const [linkingSlug, setLinkingSlug] = useState<string | null>(null);
 
   const toggleCollapsed = useCallback((id: string) => {
     setCollapsed((current) => {
@@ -264,12 +265,15 @@ export function Sidebar() {
     if (locked) return;
     const path = await pickLocalPath();
     if (path === null) return;
+    setLinkingSlug(slug);
     try {
       if ((await linkRoot(slug, path)) === BLOCKED) return;
       await refreshRoots();
       selectRoot(slug);
     } catch {
       // Banner is set by `runTask()`.
+    } finally {
+      setLinkingSlug(null);
     }
   }
 
@@ -285,6 +289,7 @@ export function Sidebar() {
         conflictCount={conflictCount(row)}
         starred={starred.has(row.slug)}
         linked={row.linked}
+        linking={linkingSlug === row.slug}
         onClick={() => selectRoot(row.slug)}
         onConflictClick={() => {
           openFirstConflict(row.slug);

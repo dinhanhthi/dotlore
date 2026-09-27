@@ -1,4 +1,4 @@
-import { FolderOpen, Star, Trash2, Unlink } from "lucide-react";
+import { FolderOpen, Loader2, Star, Trash2, Unlink } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +45,8 @@ type SidebarItemProps = {
   count?: number;
   starred?: boolean;
   linked?: boolean;
+  /** A link to a local folder is in progress for this row. */
+  linking?: boolean;
   onClick: () => void;
   onConflictClick?: () => void;
   onToggleStar?: () => void;
@@ -66,6 +68,7 @@ export function SidebarItem({
   count = 0,
   starred = false,
   linked,
+  linking = false,
   onClick,
   onConflictClick,
   onToggleStar,
@@ -105,14 +108,19 @@ export function SidebarItem({
         <button
           type="button"
           aria-label="Link to a local folder"
-          disabled={writeDisabled}
+          aria-busy={linking || undefined}
+          disabled={writeDisabled || linking}
           onClick={(event) => {
             event.stopPropagation();
             onLink();
           }}
           className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
         >
-          <Unlink aria-hidden className="size-3.5" />
+          {linking ? (
+            <Loader2 aria-hidden className="size-3.5 animate-spin" />
+          ) : (
+            <Unlink aria-hidden className="size-3.5" />
+          )}
         </button>
       )}
       {conflictCount > 0 && (

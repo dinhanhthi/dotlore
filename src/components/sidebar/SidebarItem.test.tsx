@@ -17,6 +17,21 @@ describe("SidebarItem", () => {
     expect(html).toContain('aria-label="Link to a local folder"');
   });
 
+  it("shows a spinner in the link button while linking", () => {
+    const html = renderToStaticMarkup(
+      <SidebarItem
+        label="Old Mac Notes"
+        linked={false}
+        linking
+        onClick={() => {}}
+        onLink={() => {}}
+      />,
+    );
+
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain("animate-spin");
+  });
+
   it("does not show the link button on a linked row", () => {
     const html = renderToStaticMarkup(
       <SidebarItem
