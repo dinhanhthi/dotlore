@@ -129,6 +129,15 @@ export type StatusPayload = {
   error: string | null;
 };
 
+/** Mirrors `commands::DeviceRow`. `last_seen` is Unix seconds. */
+export type DeviceRow = {
+  id: string;
+  name: string;
+  projects: number;
+  last_seen: number | null;
+  is_me: boolean;
+};
+
 /** Mirrors `commands::SiblingDto` (snake_case fields). */
 export type SiblingDto = {
   path: string;

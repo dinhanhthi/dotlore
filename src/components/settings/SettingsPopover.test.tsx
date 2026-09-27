@@ -25,7 +25,28 @@ const {
   syncEffects,
   sensitivePatterns,
   setSensitivePatterns,
+  inputs,
+  deviceName,
+  setDeviceName,
+  listDevices,
 } = vi.hoisted(() => ({
+  inputs: new Map<
+    string,
+    { onBlur?: (event: { target: { value: string } }) => void }
+  >(),
+  deviceName: vi.fn((): Promise<string> => Promise.resolve("Thi's MacBook")),
+  setDeviceName: vi.fn(async (name: string): Promise<string> => name),
+  listDevices: vi.fn(
+    (): Promise<
+      {
+        id: string;
+        name: string;
+        projects: number;
+        last_seen: number | null;
+        is_me: boolean;
+      }[]
+    > => Promise.resolve([]),
+  ),
   BLOCKED: Symbol("blocked"),
   seedLists: new Map<string, { lines: string[]; onCommit: (lines: string[]) => void }>(),
   syncEffects: { on: false },
@@ -66,6 +87,19 @@ vi.mock("@/components/ui/button", async () => {
         );
       }
       return actual.Button(props);
+    },
+  };
+});
+
+vi.mock("@/components/ui/input", async () => {
+  const actual = await vi.importActual<typeof import("@/components/ui/input")>(
+    "@/components/ui/input",
+  );
+  return {
+    ...actual,
+    Input: (props: ComponentProps<typeof actual.Input>) => {
+      if (props.id) inputs.set(props.id, props as never);
+      return actual.Input(props);
     },
   };
 });
@@ -143,6 +177,9 @@ vi.mock("@/lib/ipc", () => ({
   setPatternCatalog: () => Promise.resolve(),
   sensitivePatterns,
   setSensitivePatterns,
+  deviceName,
+  setDeviceName,
+  listDevices,
 }));
 
 function wrap(
@@ -233,6 +270,102 @@ describe("SettingsSync", () => {
     expect(html).toContain("Max folder size when adding");
     expect(html).toContain("every sync");
     expect(html).toContain("first added");
+  });
+});
+
+/**
+ * A synchronous thenable that resolves on its first call only, so a load
+ * lands during a server render without re-rendering forever.
+ */
+function servedOnce<T>(value: T): () => Promise<T> {
+  let done = false;
+  return () =>
+    ({
+      then(resolve: (v: T) => void) {
+        if (!done) {
+          done = true;
+          resolve(value);
+        }
+        return { catch() {} };
+      },
+    }) as unknown as Promise<T>;
+}
+
+describe("SettingsSync devices", () => {
+  const now = Math.floor(Date.now() / 1000);
+
+  beforeEach(() => {
+    inputs.clear();
+    setDeviceName.mockReset();
+    setDeviceName.mockImplementation(async (name: string) => name);
+    deviceName.mockReset();
+    deviceName.mockImplementation(servedOnce("Thi's MacBook"));
+    listDevices.mockReset();
+    listDevices.mockImplementation(
+      servedOnce([
+        {
+          id: "a".repeat(32),
+          name: "Thi's MacBook",
+          projects: 3,
+          last_seen: now - 120,
+          is_me: true,
+        },
+        {
+          id: "b".repeat(32),
+          name: "Office iMac",
+          projects: 1,
+          last_seen: null,
+          is_me: false,
+        },
+      ]),
+    );
+    syncEffects.on = true;
+    return () => {
+      syncEffects.on = false;
+    };
+  });
+
+  async function settle() {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it("shows this Mac's name and every connected device", () => {
+    const html = wrap(<SettingsSync onChangeFolder={() => {}} />);
+    expect(html).toContain("Device name");
+    expect(html).toMatch(/id="device-name"[^>]*value="Thi&#x27;s MacBook"/);
+    expect(html).toContain("Connected devices");
+    expect(html).toContain("Office iMac");
+    expect(html).toContain("This Mac");
+    expect(html).toContain("3 projects");
+    expect(html).toContain("1 project ·");
+    expect(html).toContain("2 min ago");
+    expect(html).toContain("Never synced");
+  });
+
+  it("saves the trimmed name on blur", async () => {
+    wrap(<SettingsSync onChangeFolder={() => {}} />);
+    inputs.get("device-name")?.onBlur?.({ target: { value: "  Work Mac " } });
+    await settle();
+    expect(setDeviceName).toHaveBeenCalledWith("Work Mac");
+  });
+
+  it("does not save an empty or unchanged name", async () => {
+    wrap(<SettingsSync onChangeFolder={() => {}} />);
+    inputs
+      .get("device-name")
+      ?.onBlur?.({ target: { value: " Thi's MacBook " } });
+    inputs.get("device-name")?.onBlur?.({ target: { value: "   " } });
+    await settle();
+    expect(setDeviceName).not.toHaveBeenCalled();
+  });
+
+  it("asks for a cloud folder before listing devices", () => {
+    const html = wrap(<SettingsSync onChangeFolder={() => {}} />, {
+      providerDir: null,
+    });
+    expect(html).toContain("Choose a cloud folder to see your devices.");
+    expect(html).toMatch(/id="device-name"[^>]*\sdisabled=""/);
+    expect(html).not.toContain("Office iMac");
   });
 });
 

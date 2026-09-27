@@ -910,6 +910,71 @@ pub async fn set_default_ignore(
     notify(&app, &state)
 }
 
+/// One device from the cloud folder, for the Settings device list.
+#[derive(Serialize, Clone, Debug)]
+pub struct DeviceRow {
+    pub id: String,
+    pub name: String,
+    pub projects: usize,
+    pub last_seen: Option<u64>,
+    pub is_me: bool,
+}
+
+#[tauri::command]
+pub async fn device_name(state: State<'_, AppState>) -> Result<String, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .device_name()
+    })
+    .await
+    .map_err(front_msg)
+}
+
+#[tauri::command]
+pub async fn set_device_name(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<String, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    let stored = tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_device_name(&name)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)?;
+    Ok(stored)
+}
+
+#[tauri::command]
+pub async fn list_devices(state: State<'_, AppState>) -> Result<Vec<DeviceRow>, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut e = engine.lock().unwrap_or_else(PoisonError::into_inner);
+        let me = e.device_id();
+        Ok(e.devices()
+            .map_err(front_err)?
+            .into_iter()
+            .map(|d| DeviceRow {
+                is_me: d.id == me,
+                id: d.id,
+                name: d.name,
+                projects: d.projects,
+                last_seen: d.last_seen,
+            })
+            .collect())
+    })
+    .await
+    .map_err(front_msg)?
+}
+
 #[tauri::command]
 pub async fn max_file_mb(state: State<'_, AppState>) -> Result<u64, String> {
     let engine = state.shared_engine().map_err(front_msg)?;

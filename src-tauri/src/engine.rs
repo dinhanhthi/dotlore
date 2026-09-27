@@ -22,7 +22,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 
-use crate::cloud::{Cloud, Manifest};
+use crate::cloud::{self, Cloud, Manifest};
 use crate::config::{self, Config, HomeLock, Root};
 use crate::conflict;
 use crate::git::{self, Git};
@@ -190,7 +190,7 @@ impl AddSeed {
             display_name: self.display_name.clone(),
             is_agent: self.is_agent,
         })?;
-        cloud.write_device_name_once(&self.slug, &self.device_id, &self.device_name)?;
+        cloud.write_device_name(&self.slug, &self.device_id, &self.device_name)?;
         let (_, report) = repo.commit_local(true, &self.home_dir)?;
         repo.publish(&cloud)?;
         Ok(AddRootReport {
@@ -1030,6 +1030,43 @@ impl Engine {
         self.save(&g)
     }
 
+    pub fn device_name(&self) -> String {
+        self.cfg.device_name.clone()
+    }
+
+    pub fn device_id(&self) -> String {
+        self.cfg.device_id.clone()
+    }
+
+    /// Saves this Mac's name and records it under every linked slug. A slug
+    /// the cloud cannot take right now gets it on its next sync. Returns the
+    /// name as stored, after trimming and `clean_name`.
+    pub fn set_device_name(&mut self, name: &str) -> Result<String> {
+        let name = cloud::clean_name(name.trim()).trim().to_string();
+        if name.is_empty() {
+            bail!("the device name cannot be empty");
+        }
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        self.cfg.device_name = name.clone();
+        self.save(&g)?;
+        let cloud = self.cloud();
+        for root in &self.cfg.roots {
+            let _ = cloud.write_device_name(&root.slug, &self.cfg.device_id, &self.cfg.device_name);
+        }
+        Ok(name)
+    }
+
+    /// Every device the cloud folder knows of, this one included once it has
+    /// a linked project.
+    pub fn devices(&mut self) -> Result<Vec<cloud::DeviceInfo>> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let out = self.cloud().devices();
+        drop(g);
+        Ok(out)
+    }
+
     /// The bytes of one exact `(live, sibling)` pair, as committed.
     pub fn conflict_sides(
         &mut self,
@@ -1173,7 +1210,7 @@ impl Engine {
             &self.cfg.device_name,
             &self.cfg.device_id,
         )?;
-        cloud.write_device_name_once(slug, &self.cfg.device_id, &self.cfg.device_name)?;
+        cloud.write_device_name(slug, &self.cfg.device_id, &self.cfg.device_name)?;
         let root = Root {
             slug: slug.to_string(),
             path,
@@ -1303,6 +1340,7 @@ impl Engine {
         if !provider.is_dir() {
             bail!("provider folder {} is missing", provider.display());
         }
+        cloud.write_device_name(&root.slug, &self.cfg.device_id, &self.cfg.device_name)?;
         // The cloud lost this slug under us: list it again so other devices
         // can link it; `publish` then sends the whole history.
         if repo.has_main() && !cloud.has_bundles(&root.slug, &self.cfg.device_id)? {
@@ -1315,7 +1353,7 @@ impl Engine {
                     .unwrap_or_else(|| root.slug.clone()),
                 is_agent: root.is_agent(&self.home_dir),
             })?;
-            cloud.write_device_name_once(&root.slug, &self.cfg.device_id, &self.cfg.device_name)?;
+            cloud.write_device_name(&root.slug, &self.cfg.device_id, &self.cfg.device_name)?;
         }
 
         let key = provider_key(cloud);
@@ -1653,7 +1691,7 @@ pub fn configure_provider(
                 .unwrap_or_else(|| root.slug.clone()),
             is_agent: root.is_agent(home_dir),
         })?;
-        dest_cloud.write_device_name_once(&root.slug, &e.cfg.device_id, &e.cfg.device_name)?;
+        dest_cloud.write_device_name(&root.slug, &e.cfg.device_id, &e.cfg.device_name)?;
         let status = e.sync_root_locked(&g, &dest_cloud, &root.slug)?;
         out.push((root.slug, status));
     }
@@ -3263,6 +3301,51 @@ mod tests {
         assert!(!a.home.path().join("repos/as-a-file").exists());
     }
 
+    #[test]
+    fn a_rename_reaches_the_other_device_and_every_device_is_listed() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"x\n");
+        add(&mut a);
+        let mut b = device(provider.path(), 'b');
+        let b_root = b.root.path().to_path_buf();
+        b.engine.link_root("proj-claude", &b_root).unwrap();
+
+        assert_eq!(
+            a.engine.set_device_name("  Work\u{202e} Mac \n").unwrap(),
+            "Work Mac"
+        );
+        assert_eq!(a.engine.device_name(), "Work Mac");
+        assert_eq!(Config::load(a.home.path()).unwrap().device_name, "Work Mac");
+
+        let devices = b.engine.devices().unwrap();
+        assert_eq!(devices.len(), 2, "{devices:?}");
+        let da = devices.iter().find(|d| d.id == "a".repeat(32)).unwrap();
+        assert_eq!(da.name, "Work Mac");
+        assert_eq!(da.projects, 1);
+        assert!(a.engine.set_device_name(" \u{1b} ").is_err());
+    }
+
+    #[test]
+    fn a_sync_publishes_a_name_changed_while_offline() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"x\n");
+        add(&mut a);
+        let mut cfg = Config::load(a.home.path()).unwrap();
+        cfg.device_name = "Renamed".into();
+        cfg.save(a.home.path()).unwrap();
+
+        a.engine.sync_all().unwrap();
+
+        assert_eq!(
+            cloud_of(&a)
+                .device_name("proj-claude", &"a".repeat(32))
+                .as_deref(),
+            Some("Renamed")
+        );
+    }
+
     /// The resolver contract end to end, with a sibling planted directly in
     /// staging (a real one needs two devices; task 4 covers that).
     #[test]
@@ -3274,7 +3357,7 @@ mod tests {
 
         let cloud = cloud_of(&a);
         cloud
-            .write_device_name_once("proj-claude", &"b".repeat(32), "Mac b Pro")
+            .write_device_name("proj-claude", &"b".repeat(32), "Mac b Pro")
             .unwrap();
         let root = a.engine.root_cfg("proj-claude").unwrap();
         let repo = a.engine.repo_for(&root).unwrap();
@@ -3362,7 +3445,7 @@ mod tests {
 
         let cloud = cloud_of(&a);
         cloud
-            .write_device_name_once("proj-claude", &"b".repeat(32), "Mac b Pro")
+            .write_device_name("proj-claude", &"b".repeat(32), "Mac b Pro")
             .unwrap();
         let root = a.engine.root_cfg("proj-claude").unwrap();
         let repo = a.engine.repo_for(&root).unwrap();

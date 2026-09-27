@@ -39,6 +39,8 @@ import { serviceLabel } from "@/lib/cloud-mounts";
 import {
   appHome,
   defaultIgnore,
+  deviceName,
+  listDevices,
   loginItemEnabled,
   maxFileMb,
   maxSeedFolderMb,
@@ -46,6 +48,7 @@ import {
   patternCatalogs,
   sensitivePatterns,
   setDefaultIgnore,
+  setDeviceName,
   setLoginItem,
   setMaxFileMb,
   setMaxSeedFolderMb,
@@ -56,6 +59,7 @@ import {
 } from "@/lib/ipc";
 import { useRoots, useTaskLabel } from "@/lib/roots";
 import { useTheme } from "@/lib/theme";
+import type { DeviceRow } from "@/lib/types";
 
 const SETTINGS_TABS = [
   { id: "general", label: "General" },
@@ -177,6 +181,120 @@ function SettingsLimits() {
           </p>
         </div>
       </div>
+    </section>
+  );
+}
+
+function lastSeenLabel(secs: number | null): string {
+  if (secs === null) return "Never synced";
+  const mins = Math.floor((Date.now() / 1000 - secs) / 60);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return new Date(secs * 1000).toLocaleDateString();
+}
+
+/** This Mac's name and every device the cloud folder has seen. */
+function SettingsDevices() {
+  const { providerDir, locked } = useRoots();
+  const [name, setName] = useState("");
+  const [saved, setSaved] = useState("");
+  const [devices, setDevices] = useState<DeviceRow[]>([]);
+
+  function loadDevices() {
+    void listDevices()
+      .then(setDevices)
+      .catch(() => {
+        // listing failed; keep the previous rows
+      });
+  }
+
+  useEffect(() => {
+    void deviceName()
+      .then((loaded) => {
+        setName(loaded);
+        setSaved(loaded);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (providerDir !== null) loadDevices();
+  }, [providerDir]);
+
+  async function commit(raw: string) {
+    const next = raw.trim();
+    if (locked || providerDir === null || next === "" || next === saved) {
+      setName(saved);
+      return;
+    }
+    try {
+      const stored = await setDeviceName(next);
+      setName(stored);
+      setSaved(stored);
+      loadDevices();
+    } catch {
+      setName(saved);
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <label htmlFor="device-name" className="text-sm">
+          Device name
+        </label>
+        <Input
+          id="device-name"
+          className="w-56"
+          maxLength={64}
+          value={name}
+          disabled={locked || providerDir === null}
+          onChange={(event) => setName(event.target.value)}
+          onBlur={(event) => {
+            void commit(event.target.value);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+          }}
+        />
+      </div>
+      <h3 className="text-label text-muted-foreground">Connected devices</h3>
+      {providerDir === null ? (
+        <p className="text-xs text-muted-foreground">
+          Choose a cloud folder to see your devices.
+        </p>
+      ) : devices.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No device has synced a project yet.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1.5">
+          {[...devices]
+            .sort((a, b) => Number(b.is_me) - Number(a.is_me))
+            .map((device) => (
+              <li
+                key={device.id}
+                className="flex items-center justify-between gap-3 rounded-2xl bg-muted/40 px-3 py-2 ring-1 ring-foreground/5"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-sm">{device.name}</span>
+                  {device.is_me && (
+                    <Badge variant="secondary" className="font-normal">
+                      This Mac
+                    </Badge>
+                  )}
+                </div>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {device.projects}{" "}
+                  {device.projects === 1 ? "project" : "projects"} ·{" "}
+                  {lastSeenLabel(device.last_seen)}
+                </span>
+              </li>
+            ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -460,6 +578,7 @@ export function SettingsSync({
         </div>
         <WipeCloudDataAlert open={wipeOpen} onOpenChange={setWipeOpen} />
       </section>
+      <SettingsDevices />
       <SettingsLimits />
     </div>
   );

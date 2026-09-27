@@ -1,7 +1,8 @@
 //! Reading and writing immutable per-device bundles in the provider folder.
 //!
 //! Layout: `<base>/<slug>/manifest.json` and
-//! `<base>/<slug>/devices/<device-id>/<seq:06>.bundle`, where `base` is
+//! `<base>/<slug>/devices/<device-id>/<seq:06>.bundle`, beside that device's
+//! `device.json` and one `name-<unix ms>.json` per rename, where `base` is
 //! `<provider_dir>/dotlore`. Nothing here is ever rewritten or deleted.
 
 use std::collections::HashMap;
@@ -34,6 +35,27 @@ pub struct SlugInfo {
     pub slug: String,
     pub display_name: String,
     pub is_agent: bool,
+}
+
+/// One device seen anywhere in the provider folder.
+///
+/// `projects` counts the slugs holding a directory for it; `last_seen` is the
+/// newest bundle mtime (Unix seconds), `None` before its first publish.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub projects: usize,
+    pub last_seen: Option<u64>,
+}
+
+/// What a device directory says about its name. `newest` is the newest
+/// `name-*.json` stamp and whether it is still an iCloud stub, so a writer
+/// can tell "not downloaded yet" from "unreadable for good". `readable` is
+/// the newest name that parses, `device.json` counting as stamp 0.
+struct NameScan {
+    newest: Option<(u64, bool)>,
+    readable: Option<(u64, String)>,
 }
 
 /// One published bundle file.
@@ -309,24 +331,108 @@ impl Cloud {
         res
     }
 
-    /// No-op when `devices/<device_id>/device.json` already exists.
-    pub fn write_device_name_once(&self, slug: &str, device_id: &str, name: &str) -> Result<()> {
-        let path = checked(&self.slug_dir(slug)?.join("devices"), device_id)?.join("device.json");
+    /// Records `name` for `device_id` under `slug`. The first name goes to
+    /// `device.json`; a rename adds `name-<unix ms>.json` beside it, since no
+    /// cloud file is ever rewritten. A no-op when the newest name already
+    /// matches, or while that newest file is not readable yet.
+    pub fn write_device_name(&self, slug: &str, device_id: &str, name: &str) -> Result<()> {
+        let dir = checked(&self.slug_dir(slug)?.join("devices"), device_id)?;
         let body = serde_json::to_vec(&DeviceFile {
             name: name.to_string(),
         })?;
-        write_once(&path, &body)
+        let first = dir.join("device.json");
+        if !first.exists() {
+            if !dir.join(".device.json.icloud").exists() {
+                return write_once(&first, &body);
+            }
+            download_stub(&first);
+            return Ok(());
+        }
+        let scan = scan_names(&dir);
+        // A stub is on its way down; write after it lands, not before.
+        // A plain file that does not parse never will, so it is skipped.
+        if scan.newest.is_some_and(|(_, stub)| stub) {
+            return Ok(());
+        }
+        let newest = scan.newest.map_or(0, |(s, _)| s);
+        if let Some((stamp, current)) = &scan.readable {
+            if *stamp == newest && *current == clean_name(name) {
+                return Ok(());
+            }
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let next = now.max(newest.saturating_add(1));
+        write_once(&dir.join(format!("name-{next}.json")), &body)
     }
 
     pub fn device_name(&self, slug: &str, device_id: &str) -> Option<String> {
-        let path = checked(&self.slug_dir(slug).ok()?.join("devices"), device_id)
-            .ok()?
-            .join("device.json");
-        read_json_retry::<DeviceFile>(&path).map(|d| clean_name(&d.name))
+        let dir = checked(&self.slug_dir(slug).ok()?.join("devices"), device_id).ok()?;
+        match scan_names(&dir).readable {
+            Some((_, name)) => Some(name),
+            None => {
+                read_json_retry::<DeviceFile>(&dir.join("device.json")).map(|d| clean_name(&d.name))
+            }
+        }
     }
 
-    /// Device id → human name, for every device dir with a readable
-    /// `device.json`.
+    /// Every device with a directory under any listed slug, sorted by id.
+    /// The name is the newest one across all slugs, the first 8 id chars
+    /// when none is readable. Reads directories only, never downloads a
+    /// bundle stub.
+    pub fn devices(&self) -> Vec<DeviceInfo> {
+        let mut by_id: HashMap<String, (DeviceInfo, Option<u64>)> = HashMap::new();
+        for info in self.list_slugs() {
+            let Ok(slug_dir) = self.slug_dir(&info.slug) else {
+                continue;
+            };
+            let Ok(entries) = fs::read_dir(slug_dir.join("devices")) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                if !e.file_type().is_ok_and(|t| t.is_dir()) {
+                    continue;
+                }
+                let Ok(id) = e.file_name().into_string() else {
+                    continue;
+                };
+                // `Config` only ever mints 32 hex chars. Anything else is not
+                // a device, and its name would reach the UI unfiltered.
+                if id.len() != 32 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    continue;
+                }
+                let dir = e.path();
+                let named = scan_names(&dir).readable;
+                let seen = newest_bundle_secs(&dir);
+                let (row, stamp) = by_id.entry(id.clone()).or_insert_with(|| {
+                    (
+                        DeviceInfo {
+                            name: id.get(..8).unwrap_or(&id).to_string(),
+                            id,
+                            projects: 0,
+                            last_seen: None,
+                        },
+                        None,
+                    )
+                });
+                row.projects += 1;
+                row.last_seen = row.last_seen.max(seen);
+                if let Some((s, name)) = named {
+                    if stamp.is_none_or(|old| s > old) {
+                        *stamp = Some(s);
+                        row.name = name;
+                    }
+                }
+            }
+        }
+        let mut out: Vec<DeviceInfo> = by_id.into_values().map(|(d, _)| d).collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
+    }
+
+    /// Device id → newest readable name, for every device dir.
     pub fn device_names(&self, slug: &str) -> HashMap<String, String> {
         let mut out = HashMap::new();
         let devices = match self.slug_dir(slug) {
@@ -339,12 +445,8 @@ impl Cloud {
                     Ok(i) => i,
                     Err(_) => continue,
                 };
-                let bytes = match fs::read(e.path().join("device.json")) {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                };
-                if let Ok(d) = serde_json::from_slice::<DeviceFile>(&bytes) {
-                    out.insert(id, clean_name(&d.name));
+                if let Some((_, name)) = scan_names(&e.path()).readable {
+                    out.insert(id, name);
                 }
             }
         }
@@ -415,7 +517,7 @@ impl Cloud {
 /// it is as untrusted as any other cloud byte, and every renderer prints it
 /// as one field of one line. Filtering here rather than in each renderer is
 /// why a control character cannot forge or hide a `conflicts` row.
-fn clean_name(s: &str) -> String {
+pub fn clean_name(s: &str) -> String {
     s.chars()
         .filter(|c| !c.is_control() && !is_bidi_control(*c))
         .take(64)
@@ -445,6 +547,72 @@ pub fn download_stub(path: &Path) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+/// The stamp in `name-<digits>.json`, also inside an iCloud stub name.
+fn name_stamp(file: &str) -> Option<(u64, bool)> {
+    let (inner, stub) = match file
+        .strip_prefix('.')
+        .and_then(|n| n.strip_suffix(".icloud"))
+    {
+        Some(inner) => (inner, true),
+        None => (file, false),
+    };
+    let digits = inner.strip_prefix("name-")?.strip_suffix(".json")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((digits.parse().ok()?, stub))
+}
+
+/// Newest name file in a device dir, falling back to `device.json` (stamp 0).
+/// A newest file that is still a stub is asked to download.
+fn scan_names(dir: &Path) -> NameScan {
+    let mut stamps: Vec<(u64, bool)> = fs::read_dir(dir)
+        .map(|es| {
+            es.flatten()
+                .filter_map(|e| name_stamp(e.file_name().to_str()?))
+                .collect()
+        })
+        .unwrap_or_default();
+    stamps.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    if let Some(&(s, true)) = stamps.first() {
+        download_stub(&dir.join(format!("name-{s}.json")));
+    }
+    let newest = stamps.first().copied();
+    let readable = stamps
+        .iter()
+        .filter(|&&(_, stub)| !stub)
+        .find_map(|&(s, _)| {
+            read_json_once::<DeviceFile>(&dir.join(format!("name-{s}.json")))
+                .map(|d| (s, clean_name(&d.name)))
+        })
+        .or_else(|| {
+            read_json_once::<DeviceFile>(&dir.join("device.json")).map(|d| (0, clean_name(&d.name)))
+        });
+    NameScan { newest, readable }
+}
+
+/// Newest mtime, in Unix seconds, of a bundle (or its iCloud stub) in `dir`.
+fn newest_bundle_secs(dir: &Path) -> Option<u64> {
+    fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            let Ok(name) = e.file_name().into_string() else {
+                return false;
+            };
+            let name = name
+                .strip_prefix('.')
+                .and_then(|n| n.strip_suffix(".icloud"))
+                .unwrap_or(&name);
+            name.strip_suffix(".bundle")
+                .is_some_and(|s| s.len() == 6 && s.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .filter_map(|e| e.metadata().ok()?.modified().ok())
+        .filter_map(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .max()
 }
 
 /// Unique, plain (non-dot) temporary name in the destination directory.
@@ -623,7 +791,7 @@ mod tests {
         assert!(c.slug_dir("").is_err());
         assert!(c.slug_dir("/etc").is_err());
         assert!(c.publish_bundle("s", "../dev", 1, &a).is_err());
-        assert!(c.write_device_name_once("s", "..", "x").is_err());
+        assert!(c.write_device_name("s", "..", "x").is_err());
 
         // A manifest that lies about its own slug is not trusted.
         c.write_manifest_once(&Manifest {
@@ -790,8 +958,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let c = cloud(&td);
         let id = "0123456789abcdef0123456789abcdef";
-        c.write_device_name_once("s", id, "Thi's MacBook Pro")
-            .unwrap();
+        c.write_device_name("s", id, "Thi's MacBook Pro").unwrap();
 
         assert_eq!(c.device_name("s", id).as_deref(), Some("Thi's MacBook Pro"));
         assert_eq!(
@@ -799,6 +966,176 @@ mod tests {
             Some("Thi's MacBook Pro")
         );
         assert!(c.list_bundles("s").is_empty());
+    }
+
+    #[test]
+    fn a_rename_adds_a_name_file_and_the_newest_one_wins() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "0123456789abcdef0123456789abcdef";
+        c.write_device_name("s", id, "Old Mac").unwrap();
+        let dev_dir = c.slug_dir("s").unwrap().join("devices").join(id);
+        let original = fs::read(dev_dir.join("device.json")).unwrap();
+
+        c.write_device_name("s", id, "New Mac").unwrap();
+        c.write_device_name("s", id, "Newer Mac").unwrap();
+
+        assert_eq!(c.device_name("s", id).as_deref(), Some("Newer Mac"));
+        assert_eq!(
+            c.device_names("s").get(id).map(String::as_str),
+            Some("Newer Mac")
+        );
+        assert_eq!(fs::read(dev_dir.join("device.json")).unwrap(), original);
+        assert_eq!(dir_names(&dev_dir).len(), 3, "{:?}", dir_names(&dev_dir));
+        assert!(c.list_bundles("s").is_empty());
+        assert!(!c.has_bundles("s", id).unwrap());
+    }
+
+    #[test]
+    fn writing_the_current_name_again_adds_no_file() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "0123456789abcdef0123456789abcdef";
+        c.write_device_name("s", id, "Mac").unwrap();
+        c.write_device_name("s", id, "Other").unwrap();
+        c.write_device_name("s", id, "Other").unwrap();
+
+        let dev_dir = c.slug_dir("s").unwrap().join("devices").join(id);
+        assert_eq!(dir_names(&dev_dir).len(), 2, "{:?}", dir_names(&dev_dir));
+    }
+
+    fn device_dir(c: &Cloud, slug: &str, id: &str) -> PathBuf {
+        let dir = c.slug_dir(slug).unwrap().join("devices").join(id);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn devices_skips_a_directory_that_is_not_a_device_id() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        c.write_manifest_once(&Manifest {
+            slug: "s".into(),
+            display_name: "s".into(),
+            is_agent: false,
+        })
+        .unwrap();
+        let good = "c".repeat(32);
+        c.write_device_name("s", &good, "Mac C").unwrap();
+        device_dir(&c, "s", "\u{202e}gnp.exe");
+        device_dir(&c, "s", "short");
+        device_dir(&c, "s", &"G".repeat(32));
+
+        let got = c.devices();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].id, good);
+    }
+
+    #[test]
+    fn a_stubbed_device_json_is_neither_replaced_nor_renamed_over() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "0123456789abcdef0123456789abcdef";
+        let dir = device_dir(&c, "s", id);
+        fs::write(dir.join(".device.json.icloud"), b"").unwrap();
+
+        c.write_device_name("s", id, "Mac").unwrap();
+
+        assert_eq!(dir_names(&dir), vec![".device.json.icloud"]);
+    }
+
+    #[test]
+    fn a_rename_waits_while_the_newest_name_file_is_a_stub() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "0123456789abcdef0123456789abcdef";
+        c.write_device_name("s", id, "Old").unwrap();
+        let dir = device_dir(&c, "s", id);
+        fs::write(dir.join(".name-5.json.icloud"), b"").unwrap();
+
+        c.write_device_name("s", id, "New").unwrap();
+
+        assert_eq!(dir_names(&dir), vec![".name-5.json.icloud", "device.json"]);
+        assert_eq!(c.device_name("s", id).as_deref(), Some("Old"));
+    }
+
+    #[test]
+    fn a_newest_name_file_that_never_parses_does_not_block_a_rename() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "0123456789abcdef0123456789abcdef";
+        c.write_device_name("s", id, "Old").unwrap();
+        let dir = device_dir(&c, "s", id);
+        fs::write(dir.join("name-5.json"), b"{").unwrap();
+
+        c.write_device_name("s", id, "New").unwrap();
+
+        assert_eq!(c.device_name("s", id).as_deref(), Some("New"));
+        assert_eq!(dir_names(&dir).len(), 3, "{:?}", dir_names(&dir));
+    }
+
+    #[test]
+    fn name_stamp_reads_plain_and_stub_names_only() {
+        assert_eq!(name_stamp("name-42.json"), Some((42, false)));
+        assert_eq!(name_stamp(".name-42.json.icloud"), Some((42, true)));
+        for bad in [
+            "name-.json",
+            "name-1a.json",
+            "name-42.json.part",
+            "device.json",
+            "name-42",
+        ] {
+            assert_eq!(name_stamp(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_planted_maximum_stamp_does_not_overflow() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "0123456789abcdef0123456789abcdef";
+        c.write_device_name("s", id, "Old").unwrap();
+        let dir = device_dir(&c, "s", id);
+        fs::write(
+            dir.join(format!("name-{}.json", u64::MAX)),
+            br#"{"name":"Planted"}"#,
+        )
+        .unwrap();
+
+        assert!(c.write_device_name("s", id, "Mine").is_ok());
+    }
+
+    #[test]
+    fn devices_merges_every_slug_and_takes_the_newest_name() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let a = "a".repeat(32);
+        let b = "b".repeat(32);
+        for slug in ["s1", "s2"] {
+            c.write_manifest_once(&Manifest {
+                slug: slug.into(),
+                display_name: slug.into(),
+                is_agent: false,
+            })
+            .unwrap();
+        }
+        let bundle = src_file(&td, "x.bundle", "x");
+        c.write_device_name("s1", &a, "Mac A").unwrap();
+        c.publish_bundle("s1", &a, 1, &bundle).unwrap();
+        c.write_device_name("s2", &a, "Mac A").unwrap();
+        c.write_device_name("s2", &a, "Mac A renamed").unwrap();
+        c.write_device_name("s2", &b, "Mac B").unwrap();
+
+        let got = c.devices();
+        assert_eq!(got.len(), 2, "{got:?}");
+        let da = got.iter().find(|d| d.id == a).unwrap();
+        assert_eq!(da.name, "Mac A renamed");
+        assert_eq!(da.projects, 2);
+        assert!(da.last_seen.is_some());
+        let db = got.iter().find(|d| d.id == b).unwrap();
+        assert_eq!(db.name, "Mac B");
+        assert_eq!(db.projects, 1);
+        assert_eq!(db.last_seen, None);
     }
 
     /// The name is printed by `conflicts`, by `show` and (Phase 5) by the UI.
@@ -810,7 +1147,7 @@ mod tests {
         let c = cloud(&td);
         let id = "0123456789abcdef0123456789abcdef";
         let evil = format!("\u{1b}[31mEvil\u{202e}\r\n{}", "x".repeat(100));
-        c.write_device_name_once("s", id, &evil).unwrap();
+        c.write_device_name("s", id, &evil).unwrap();
 
         let got = c.device_name("s", id).unwrap();
         assert!(

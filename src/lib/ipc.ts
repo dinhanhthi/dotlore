@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { errorMessage } from "./errors";
 import type {
   ConflictView,
+  DeviceRow,
   EntryView,
   FileContent,
   ImportAgentsDto,
@@ -571,6 +572,19 @@ export function sensitivePatterns(): Promise<string[]> {
 
 export function setSensitivePatterns(patterns: string[]): Promise<void> {
   return run(() => invoke("set_sensitive_patterns", { patterns }));
+}
+
+export function deviceName(): Promise<string> {
+  return invoke("device_name");
+}
+
+/** Resolves to the name as stored, after the backend's own cleaning. */
+export function setDeviceName(name: string): Promise<string> {
+  return run(() => invoke("set_device_name", { name }));
+}
+
+export function listDevices(): Promise<DeviceRow[]> {
+  return invoke("list_devices");
 }
 
 export function maxFileMb(): Promise<number> {
