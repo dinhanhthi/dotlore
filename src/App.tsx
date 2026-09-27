@@ -169,6 +169,14 @@ export function App() {
     getWorkSnapshot,
   );
 
+  const trackedGen = useRef(0);
+  const refreshTrackedCounts = useCallback(async () => {
+    const generation = ++trackedGen.current;
+    const trackedBySlug = await loadTrackedCounts(rootsRef.current);
+    if (generation !== trackedGen.current) return;
+    setState((current) => ({ ...current, trackedBySlug }));
+  }, []);
+
   const refreshCombined = useCallback(async () => {
     const generation = ++discoveryGen.current;
     const [local, cloud] = await Promise.all([
@@ -266,6 +274,8 @@ export function App() {
 
     const unlistenCycle = listenCycle((cycling) => {
       setState((current) => ({ ...current, cycling }));
+      // A cycle can untrack, add or resize files; the footer and cards show these totals.
+      if (!cycling) void refreshTrackedCounts();
     });
 
     return () => {
@@ -273,7 +283,7 @@ export function App() {
       void unlisten.then((stop) => stop());
       void unlistenCycle.then((stop) => stop());
     };
-  }, [refreshCombined]);
+  }, [refreshCombined, refreshTrackedCounts]);
 
   const setResolverDirty = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
