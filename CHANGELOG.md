@@ -1,3 +1,19 @@
+## v0.5.2 (2026-09-27)
+
+### Sidebar & tree
+
+- Roots with no tracked files are dimmed in the sidebar, so an empty project reads at a glance. [#3c6d16aa](https://github.com/dinhanhthi/dotlore/commit/3c6d16aa)
+- File sizes in the tree are colored on a ramp starting at 1 MB, making large files stand out. [#2afd1377](https://github.com/dinhanhthi/dotlore/commit/2afd1377)
+- The tree header shows the project's total size. [#3967631d](https://github.com/dinhanhthi/dotlore/commit/3967631d)
+
+### Settings
+
+- The never-list is now applied retroactively to a project's current roots, not only to new ones added afterward. [#3967631d](https://github.com/dinhanhthi/dotlore/commit/3967631d)
+
+### Footer
+
+- Fixed tracked file totals in the footer going stale after a sync cycle; they now refresh each time. [#2a53470c](https://github.com/dinhanhthi/dotlore/commit/2a53470c)
+
 ## v0.5.1 (2026-09-27)
 
 ### Sync
