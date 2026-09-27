@@ -55,6 +55,8 @@ type SidebarItemProps = {
   onReveal?: () => void;
   onRecover?: () => void;
   writeDisabled?: boolean;
+  /** Nothing is tracked in this root; the label is shown at lower opacity. */
+  dimmed?: boolean;
 };
 
 export function SidebarItem({
@@ -77,6 +79,7 @@ export function SidebarItem({
   onReveal,
   onRecover,
   writeDisabled = false,
+  dimmed = false,
 }: SidebarItemProps) {
   const row = (
     <div
@@ -92,7 +95,10 @@ export function SidebarItem({
         type="button"
         title={title}
         onClick={onClick}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left text-sidebar-foreground"
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-2 text-left text-sidebar-foreground",
+          dimmed && "opacity-50",
+        )}
       >
         {statusKind ? (
           <span

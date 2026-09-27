@@ -134,6 +134,7 @@ export function Sidebar() {
     seeding,
     loadingRoots,
     commandErrors,
+    trackedBySlug,
   } = useRoots();
   const { query, setQuery } = useSidebarQuery();
   const conflicts = conflictTotal(roots);
@@ -290,6 +291,7 @@ export function Sidebar() {
         starred={starred.has(row.slug)}
         linked={row.linked}
         linking={linkingSlug === row.slug}
+        dimmed={trackedBySlug[row.slug]?.files === 0}
         onClick={() => selectRoot(row.slug)}
         onConflictClick={() => {
           openFirstConflict(row.slug);
