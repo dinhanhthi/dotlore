@@ -3,8 +3,8 @@
 //! A command that takes the home lock or the engine mutex runs in
 //! `tauri::async_runtime::spawn_blocking` and never holds `config::lock`
 //! across an `.await`. The home lock is the easy one to miss: `load_cfg`
-//! alone touches no engine, but a daemon cycle holds that lock for the whole
-//! of `Engine::sync_all`, and a blocking command waits for it on the main
+//! alone touches no engine, but a daemon cycle holds that lock for each
+//! `Engine::sync_root`, and a blocking command waits for it on the main
 //! thread, which freezes the window. Write commands emit a fresh
 //! `dotlore://status` payload and send [`Cmd::Reload`]; they do not return
 //! state alongside the result.
@@ -194,8 +194,8 @@ fn resolve_in_root(root: &config::Root, rel: &str) -> Result<PathBuf> {
 
 /// Off the main thread, like every command that takes the home lock or the
 /// engine mutex: `load_cfg` blocks on the home lock, a daemon cycle holds that
-/// lock for the whole of [`Engine::sync_all`], and a `flock` on the main
-/// thread freezes the window.
+/// lock for each [`Engine::sync_root`], and a `flock` on the main thread
+/// freezes the window.
 #[tauri::command]
 pub async fn list_roots(state: State<'_, AppState>) -> Result<Vec<RootRow>, String> {
     let home = state.home.clone();

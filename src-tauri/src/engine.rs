@@ -546,6 +546,14 @@ impl Engine {
         self.sync_root_locked(&g, &cloud, slug)
     }
 
+    /// Reload config under the home lock and list the registered roots, so a
+    /// caller can sync them one [`Engine::sync_root`] at a time.
+    pub fn root_slugs(&mut self) -> Result<Vec<String>> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        Ok(self.cfg.roots.iter().map(|r| r.slug.clone()).collect())
+    }
+
     /// One cycle for every currently registered root, under one lock.
     pub fn sync_all(&mut self) -> Result<Vec<(String, RootStatus)>> {
         let g = config::lock(&self.home)?;

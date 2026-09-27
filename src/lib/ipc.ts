@@ -627,6 +627,15 @@ export function listenStatus(
   });
 }
 
+/** `dotlore://cycle`: true while a daemon cycle runs, false once it reported. */
+export function listenCycle(
+  handler: (running: boolean) => void,
+): Promise<UnlistenFn> {
+  return listen<boolean>("dotlore://cycle", (event) => {
+    handler(event.payload);
+  });
+}
+
 /** `dotlore://update-progress`, from `updater.rs`. */
 export type UpdateProgress =
   | { phase: "downloading"; percent: number | null }

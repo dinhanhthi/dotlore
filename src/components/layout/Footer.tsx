@@ -81,6 +81,7 @@ export function aggregateStatus(
   commandErrors: number,
   error: string | null,
   upload: UploadState = UNKNOWN_UPLOAD,
+  cycling = false,
 ): Aggregate {
   if (roots.some((r) => r.status.kind === "GitMissing")) {
     return { glyph: "error", color: "bg-status-error", text: "git not found" };
@@ -126,6 +127,10 @@ export function aggregateStatus(
   if (roots.some((r) => r.status.kind === "Pending")) {
     return { glyph: "dot", color: "bg-status-pending", text: "Waiting for cloud files" };
   }
+  // The last "Synced" is stale while a daemon cycle runs, and clicks wait on it.
+  if (cycling) {
+    return { glyph: "spin", color: "", text: "Syncing…" };
+  }
   // "Synced" is local; the provider may still be uploading.
   if (upload.kind === "Uploading") {
     return { glyph: "dot", color: "bg-status-pending", text: "Uploading to cloud…" };
@@ -145,6 +150,7 @@ export function Footer() {
     busy,
     seeding,
     loadingRoots,
+    cycling,
     selectedSlug,
     resolvingRel,
     openResolver,
@@ -160,9 +166,14 @@ export function Footer() {
   const [upload, setUpload] = useState<UploadState>(UNKNOWN_UPLOAD);
   const localStatus = aggregateStatus(providerDir, roots, commandErrors.length, footerError);
   const shouldPollUpload = providerDir !== null && localStatus.text === "Synced";
-  const status = shouldPollUpload
-    ? aggregateStatus(providerDir, roots, commandErrors.length, footerError, upload)
-    : localStatus;
+  const status = aggregateStatus(
+    providerDir,
+    roots,
+    commandErrors.length,
+    footerError,
+    shouldPollUpload ? upload : UNKNOWN_UPLOAD,
+    cycling,
+  );
   const tracked = Object.values(trackedBySlug);
   const filesTracked = tracked.reduce((n, stats) => n + stats.files, 0);
   const bytesTracked = tracked.reduce((n, stats) => n + stats.bytes, 0);
@@ -196,10 +207,12 @@ export function Footer() {
       setUpload(UNKNOWN_UPLOAD);
       return;
     }
+    // The probe takes the home lock a cycle holds, so it waits the cycle out.
+    if (cycling) return;
     // `allRoots` gets a new identity on every daemon status push, so a cycle
     // that published a new bundle asks the provider again.
     return pollUpload(cloudUpload, setUpload);
-  }, [shouldPollUpload, allRoots]);
+  }, [shouldPollUpload, cycling, allRoots]);
 
   const navRels =
     !resolvingRel

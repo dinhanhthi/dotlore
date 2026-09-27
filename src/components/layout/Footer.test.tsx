@@ -260,6 +260,32 @@ describe("cloud upload status", () => {
   });
 });
 
+describe("daemon cycle status", () => {
+  const synced = [row("a", { kind: "Synced" })];
+
+  it("says Syncing over a synced or uploading state while a cycle runs", () => {
+    const spin = { glyph: "spin", color: "", text: "Syncing…" };
+    expect(aggregateStatus("/cloud", synced, 0, null, { kind: "Unknown" }, true)).toEqual(spin);
+    expect(aggregateStatus("/cloud", synced, 0, null, { kind: "Uploaded" }, true)).toEqual(spin);
+    expect(
+      aggregateStatus("/cloud", synced, 0, null, { kind: "Uploading", detail: 1 }, true),
+    ).toEqual(spin);
+  });
+
+  it("keeps conflicts and errors ahead of a running cycle", () => {
+    const conflicted = [row("a", { kind: "Conflicts", detail: 1 })];
+    expect(aggregateStatus("/cloud", conflicted, 0, null, undefined, true).text).toBe("1 conflict");
+    expect(aggregateStatus("/cloud", synced, 1, null, undefined, true).text).toBe("1 error");
+  });
+
+  it("renders a spinner with Syncing while a cycle runs", () => {
+    const html = wrap(<Footer />, { roots: synced, cycling: true });
+    expect(html).toContain("Syncing…");
+    expect(html).toContain("animate-spin");
+    expect(html).not.toContain(">Synced<");
+  });
+});
+
 describe("upload poll", () => {
   beforeEach(() => {
     vi.useFakeTimers();

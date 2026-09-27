@@ -39,6 +39,7 @@ import {
   importInstalledAgents,
   listLinkable,
   listRoots,
+  listenCycle,
   listenStatus,
   providerDir as fetchProviderDir,
   reportError,
@@ -263,9 +264,14 @@ export function App() {
       }));
     });
 
+    const unlistenCycle = listenCycle((cycling) => {
+      setState((current) => ({ ...current, cycling }));
+    });
+
     return () => {
       cancelled = true;
       void unlisten.then((stop) => stop());
+      void unlistenCycle.then((stop) => stop());
     };
   }, [refreshCombined]);
 

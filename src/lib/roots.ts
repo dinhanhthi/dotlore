@@ -48,6 +48,8 @@ export type RootsState = {
   seeding: SeedingRoot[];
   /** Startup or a new cloud folder: agent import plus the first root listing. */
   loadingRoots: boolean;
+  /** A daemon cycle is in flight; IPC commands may wait on it. */
+  cycling: boolean;
 };
 
 export type RootsContextValue = RootsState & {
@@ -96,6 +98,7 @@ export const emptyRootsState: RootsState = {
   focusRequest: null,
   seeding: [],
   loadingRoots: false,
+  cycling: false,
 };
 
 /** Unresolved conflicts in one root. */

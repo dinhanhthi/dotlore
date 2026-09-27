@@ -29,9 +29,10 @@
 //! inner root that tracks it is not, the vote comes out ignored. It lasts
 //! until the inner root has a staging repo, and [`POLL`] bounds it to 30 s.
 //!
-//! The engine lock is never held across a wait. [`Engine::sync_all`] takes the
-//! one home lock itself and reloads `config.json` (and with it the provider)
-//! under that lock, so a cycle *is* the reload: config changed behind the
+//! The engine lock is never held across a wait, nor across a whole cycle: it
+//! is taken once per root. [`Engine::sync_root`] takes the one home lock
+//! itself and reloads `config.json` (and with it the provider) under that
+//! lock, so a cycle *is* the reload: config changed behind the
 //! daemon's back, and a provider transition another process committed, are
 //! both picked up by the next cycle. That is why `Reload` and `SyncNow` run
 //! the same code — after every cycle the watch set is re-derived from the
@@ -58,6 +59,10 @@ pub const POLL: Duration = Duration::from_secs(30);
 pub const QUIET: Duration = Duration::from_secs(2);
 /// Hard cap since the first pending watch event.
 pub const CAP: Duration = Duration::from_secs(5);
+/// Pause after each root's guard is dropped. `std::sync::Mutex` is not fair
+/// on macOS: relocking straight away wins over a woken IPC command, which
+/// would then wait out the whole cycle anyway.
+const HANDOFF: Duration = Duration::from_millis(1);
 
 /// An engine shared between the daemon thread and a UI.
 pub type SharedEngine = Arc<Mutex<Engine>>;
@@ -108,14 +113,17 @@ pub enum Event {
 ///
 /// `tx` must be the sender half of `rx`; the daemon clones it into every
 /// watcher callback, and the caller keeps it to send commands. `on_status` is
-/// called once per cycle with what [`Engine::sync_all`] returned — including
-/// its `Err`, so a config that stopped parsing or a provider that vanished is
-/// reported rather than swallowed. A cycle always runs before the first wait.
+/// called once per cycle with the per-root statuses — including the first
+/// `Err`, so a config that stopped parsing or a provider that vanished is
+/// reported rather than swallowed. `on_cycle` is called with `true` right
+/// before each cycle and `false` right after its `on_status`, so a UI can say
+/// a cycle is in flight. A cycle always runs before the first wait.
 pub fn run(
     engine: SharedEngine,
     tx: Sender<Event>,
     rx: Receiver<Event>,
     mut on_status: impl FnMut(Result<Vec<(String, RootStatus)>>),
+    mut on_cycle: impl FnMut(bool),
 ) {
     let mut watcher: Option<RecommendedWatcher> = None;
     let mut watching: Vec<PathBuf> = Vec::new();
@@ -125,10 +133,12 @@ pub fn run(
 
     // The `Config` the caller built the engine from may already be stale, so
     // the watch set comes from the cycle rather than the other way round.
+    on_cycle(true);
     let (status, wanted, filters) = cycle(&engine);
     rebuild(&tx, &wanted, &filters, &mut watcher, &mut watching);
     let mut filtering = filters;
     on_status(status);
+    on_cycle(false);
     let mut next_poll = Instant::now() + POLL;
 
     loop {
@@ -159,12 +169,14 @@ pub fn run(
             }
         }
 
+        on_cycle(true);
         let (status, wanted, filters) = cycle(&engine);
         if wanted != watching || filters != filtering {
             rebuild(&tx, &wanted, &filters, &mut watcher, &mut watching);
             filtering = filters;
         }
         on_status(status);
+        on_cycle(false);
         first = None;
         last = None;
         next_poll = Instant::now() + POLL;
@@ -174,14 +186,34 @@ pub fn run(
 /// One cycle plus the watch set and event filters the refreshed config asks
 /// for.
 ///
-/// The guard is dropped with the returned tuple, before the caller does
-/// anything else — the daemon must never wait holding the engine.
+/// The guard is taken per root and dropped between them, so an IPC command
+/// waits for at most one root rather than the whole cycle — and the daemon
+/// never waits holding the engine. The first `Err` ends the cycle and is the
+/// status, as it is for [`Engine::sync_all`].
 fn cycle(engine: &SharedEngine) -> Cycle {
     // A panic elsewhere cannot leave the engine half-written: every entry
     // point reloads config from disk under the home lock, so there is no
     // in-memory invariant a poisoned lock would be protecting.
-    let mut e = engine.lock().unwrap_or_else(PoisonError::into_inner);
-    let status = e.sync_all();
+    let lock = || engine.lock().unwrap_or_else(PoisonError::into_inner);
+    // Bound first: a guard temporary would live to the end of the statement
+    // and deadlock the per-root `lock()` below.
+    let slugs = lock().root_slugs();
+    let status = slugs.and_then(|slugs| {
+        let mut out = Vec::new();
+        for slug in slugs {
+            let mut e = lock();
+            // A UI command may have removed the root between two guards.
+            if !e.cfg.roots.iter().any(|r| r.slug == slug) {
+                continue;
+            }
+            let status = e.sync_root(&slug)?;
+            drop(e);
+            out.push((slug, status));
+            std::thread::sleep(HANDOFF);
+        }
+        Ok(out)
+    });
+    let e = lock();
     let wanted = wanted_paths(&e);
     let filters = watch_filters(&e);
     (status, wanted, filters)
@@ -425,9 +457,15 @@ mod tests {
         let e = Arc::clone(engine);
         let t = tx.clone();
         let h = thread::spawn(move || {
-            run(e, t, rx, move |s| {
-                let _ = stx.send(s);
-            })
+            run(
+                e,
+                t,
+                rx,
+                move |s| {
+                    let _ = stx.send(s);
+                },
+                |_| {},
+            )
         });
         srx.recv_timeout(Duration::from_secs(30))
             .expect("initial cycle")

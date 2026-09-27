@@ -135,10 +135,19 @@ impl AppState {
         let daemon_engine = engine.clone();
         let daemon_tx = tx.clone();
         let handle = app.clone();
+        let cycle_handle = app.clone();
         std::thread::spawn(move || {
-            daemon::run(daemon_engine.clone(), daemon_tx, rx, move |status| {
-                let _ = handle.emit("dotlore://status", payload_from(&daemon_engine, status));
-            });
+            daemon::run(
+                daemon_engine.clone(),
+                daemon_tx,
+                rx,
+                move |status| {
+                    let _ = handle.emit("dotlore://status", payload_from(&daemon_engine, status));
+                },
+                move |running| {
+                    let _ = cycle_handle.emit("dotlore://cycle", running);
+                },
+            );
         });
         *engine_slot = Some(engine);
         *self.cmd_tx.lock().unwrap_or_else(PoisonError::into_inner) = Some(tx);
