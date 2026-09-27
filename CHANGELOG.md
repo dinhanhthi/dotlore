@@ -1,3 +1,14 @@
+## v0.3.1 (2026-09-27)
+
+### Desktop app
+
+- Closing the window hides the Dock icon and leaves only the menu-bar item; opening the window brings the Dock icon back. [#ad6521c7](https://github.com/dinhanhthi/dotlore/commit/ad6521c7)
+- The menu-bar icon shows an amber dot while a project has conflicts, and a red dot when sync has stopped or git is missing. A quiet or merely busy state stays unmarked. [#b3017d74](https://github.com/dinhanhthi/dotlore/commit/b3017d74)
+
+### Sensitive data
+
+- Sensitive files are marked with a key icon, leaving the warning triangle for conflicts. [#edbca586](https://github.com/dinhanhthi/dotlore/commit/edbca586)
+
 ## v0.3.0 (2026-09-26)
 
 ### Sensitive data
