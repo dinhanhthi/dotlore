@@ -1,3 +1,13 @@
+## v0.4.0 (2026-09-27)
+
+### Sync
+
+- Settings → Sync now shows this Mac's name, editable in place, and lists every device that has synced a project — with its project count and last-sync time. [#1389ec8e](https://github.com/dinhanhthi/dotlore/commit/1389ec8e)
+
+### Sidebar & picker
+
+- The link button shows a spinner while linking a project to a local folder. [#b14aeee3](https://github.com/dinhanhthi/dotlore/commit/b14aeee3)
+
 ## v0.3.1 (2026-09-27)
 
 ### Desktop app
