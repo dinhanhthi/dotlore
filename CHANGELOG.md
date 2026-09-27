@@ -1,3 +1,9 @@
+## v0.5.0 (2026-09-27)
+
+### Desktop app
+
+- The menu-bar status item now includes Settings, Check for Updates, and About rows, each with an app-icon alert badge to highlight them. [#8ca89b60](https://github.com/dinhanhthi/dotlore/commit/8ca89b60)
+
 ## v0.4.0 (2026-09-27)
 
 ### Sync
