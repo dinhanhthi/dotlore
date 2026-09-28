@@ -2140,3 +2140,46 @@ fn merge_to_target(dev: &Device) -> (Repo, Transaction) {
     tx.set_target(&repo).unwrap();
     (repo, tx)
 }
+
+/// Global settings edited on one device reach the other through the cloud,
+/// a reset back to builtin travels the same way, and neither import rewrites
+/// an existing root's include-list.
+#[test]
+fn settings_sync_between_two_devices() {
+    let (mut a, mut b) = standard_start();
+    let b_project = fs::read(b.staging(SLUG).join(PROJECT_FILE)).unwrap();
+    let custom: Vec<String> = vec!["custom-a.md".into(), "custom-dir/".into()];
+
+    a.engine
+        .set_pattern_catalog("projects", custom.clone())
+        .unwrap();
+    a.engine.set_max_file_mb(7).unwrap();
+    sync_cloud(&[&a, &b]);
+    assert!(b.engine.sync_settings().unwrap(), "B imported nothing");
+
+    assert_eq!(b.engine.default_patterns(), custom);
+    let projects = b.engine.pattern_catalogs();
+    let projects = projects.iter().find(|c| c.id == "projects").unwrap();
+    assert_eq!(projects.lines, custom);
+    assert_eq!(b.engine.max_file_mb(), 7);
+
+    let builtin: Vec<String> = project::builtin_lines("projects")
+        .unwrap()
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    b.engine
+        .set_pattern_catalog("projects", builtin.clone())
+        .unwrap();
+    b.engine.sync_all().unwrap();
+    sync_cloud(&[&a, &b]);
+    a.engine.sync_all().unwrap();
+
+    assert_eq!(a.engine.default_patterns(), builtin);
+    assert_eq!(a.engine.max_file_mb(), 7);
+    assert_eq!(
+        fs::read(b.staging(SLUG).join(PROJECT_FILE)).unwrap(),
+        b_project,
+        "settings import rewrote B's existing include-list"
+    );
+}

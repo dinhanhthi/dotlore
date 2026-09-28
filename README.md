@@ -37,6 +37,14 @@ Each project gets a private staging git repo under `~/Library/Application Suppor
 
 Other devices fetch and merge those bundles with the system `git`. On overlapping edits the newer commit wins everywhere, and the other version is saved as `<stem>.conflict-<device>-<blob>.<ext>`. Nothing is lost and all devices converge.
 
+Each folder's include-list and ignore list travel inside its bundles. Settings (seed patterns, ignore defaults, sensitive patterns, size limits) are published as small write-once snapshots, so a new Mac picks them up without re-entering them:
+
+```
+<cloud>/dotlore/_settings/<device-id>/000001.json
+```
+
+Received seed patterns and ignore defaults only shape folders you add next; they are never applied to folders already synced. Size limits and sensitive patterns apply to every folder, just as when you change them locally.
+
 ### ☁️ Cloud folders
 
 Dotlore only needs a folder that a cloud app syncs to every Mac; it never talks to the cloud service itself.

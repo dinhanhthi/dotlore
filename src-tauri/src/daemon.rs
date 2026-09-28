@@ -200,6 +200,11 @@ fn cycle(engine: &SharedEngine, on_root: &mut impl FnMut(&[(String, RootStatus)]
     // point reloads config from disk under the home lock, so there is no
     // in-memory invariant a poisoned lock would be protecting.
     let lock = || engine.lock().unwrap_or_else(PoisonError::into_inner);
+    // Its own statement, so the guard is dropped before the roots loop.
+    // Settings are best-effort: a failure here must not stop root sync.
+    if let Err(e) = lock().sync_settings() {
+        eprintln!("dotlore: settings sync: {e:#}");
+    }
     // Bound first: a guard temporary would live to the end of the statement
     // and deadlock the per-root `lock()` below.
     let slugs = lock().root_slugs();
@@ -656,6 +661,52 @@ mod tests {
             ]
         );
         assert_eq!(later, vec![("status", vec![synced("a"), synced("b")])]);
+    }
+
+    #[test]
+    fn a_cycle_imports_peer_settings() {
+        let home = TempDir::new().unwrap();
+        let provider = TempDir::new().unwrap();
+        let engine = engine_at(home.path(), provider.path());
+        let peer = Config {
+            max_file_mb: Some(7),
+            ..Default::default()
+        };
+        let cloud = crate::cloud::Cloud {
+            base: provider.path().join("dotlore"),
+        };
+        cloud
+            .publish_settings(
+                &"b".repeat(32),
+                1,
+                &crate::settings::local(&peer).to_bytes(),
+            )
+            .unwrap();
+
+        cycle(&engine, &mut |_| {}).0.unwrap();
+        assert_eq!(Config::load(home.path()).unwrap().max_file_mb, Some(7));
+    }
+
+    #[test]
+    fn a_settings_failure_does_not_stop_root_sync() {
+        let home = TempDir::new().unwrap();
+        let provider = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("CLAUDE.md"), b"a\n").unwrap();
+        let engine = engine_at(home.path(), provider.path());
+        {
+            let mut e = engine.lock().unwrap();
+            e.add_root(root.path(), Some("a")).unwrap();
+            e.set_max_file_mb(7).unwrap();
+        }
+        let settings = provider.path().join("dotlore/_settings");
+        fs::remove_dir_all(&settings).unwrap();
+        fs::write(&settings, b"").unwrap();
+        // The failure is real: the republish cannot create its dir.
+        assert!(engine.lock().unwrap().sync_settings().is_err());
+
+        let status = cycle(&engine, &mut |_| {}).0.unwrap();
+        assert_eq!(status, vec![("a".to_string(), RootStatus::Synced)]);
     }
 
     #[test]

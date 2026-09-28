@@ -9,6 +9,7 @@ pub mod git;
 pub mod mirror;
 pub mod project;
 pub mod repo;
+pub mod settings;
 
 mod about;
 mod alert;

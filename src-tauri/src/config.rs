@@ -78,6 +78,10 @@ pub struct Config {
     /// Sensitive-path patterns. `None` means use `project::SECRET_PATTERNS`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensitive_patterns: Option<Vec<String>>,
+    /// Per-key merge generations of the synced settings. A missing key means
+    /// gen 1 when that field holds an override, else 0 (see `settings.rs`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings_gens: BTreeMap<String, u64>,
 }
 
 impl Config {
@@ -333,6 +337,38 @@ mod tests {
         assert!(cfg.max_file_mb.is_none());
         assert!(cfg.max_seed_folder_mb.is_none());
         assert!(cfg.sensitive_patterns.is_none());
+    }
+
+    #[test]
+    fn a_config_without_settings_gens_still_loads() {
+        let td = TempDir::new().unwrap();
+        let home = td.path();
+        Config::load(home).unwrap();
+        fs::write(
+            home.join("config.json"),
+            br#"{"device_id":"ab","device_name":"m","provider_dir":null,"roots":[]}"#,
+        )
+        .unwrap();
+
+        let cfg = Config::load(home).unwrap();
+        assert!(cfg.settings_gens.is_empty());
+    }
+
+    #[test]
+    fn settings_gens_roundtrip() {
+        let td = TempDir::new().unwrap();
+        let home = td.path();
+
+        let mut cfg = Config::load(home).unwrap();
+        let body = fs::read_to_string(home.join("config.json")).unwrap();
+        assert!(!body.contains("settings_gens"), "{body}");
+
+        cfg.settings_gens.insert("default_patterns".into(), 3);
+        cfg.settings_gens.insert("max_file_mb".into(), 1);
+        cfg.save(home).unwrap();
+
+        let again = Config::load(home).unwrap();
+        assert_eq!(again.settings_gens, cfg.settings_gens);
     }
 
     #[test]

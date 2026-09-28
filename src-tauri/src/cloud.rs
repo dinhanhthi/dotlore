@@ -3,11 +3,14 @@
 //! Layout: `<base>/<slug>/manifest.json` and
 //! `<base>/<slug>/devices/<device-id>/<seq:06>.bundle`, beside that device's
 //! `device.json` and one `name-<unix ms>.json` per rename, where `base` is
-//! `<provider_dir>/dotlore`. Nothing here is ever rewritten or deleted.
+//! `<provider_dir>/dotlore`. Settings snapshots live at
+//! `<base>/_settings/<device-id>/<seq:06>.json`; `_settings` is never a slug,
+//! since an underscore cannot appear in one, and follows the same write-once
+//! rule. Nothing here is ever rewritten or deleted.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -16,6 +19,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+/// Per-device settings snapshots live here, beside the slug directories.
+const SETTINGS_DIR: &str = "_settings";
 
 /// Per-slug metadata, written once by the device that creates the slug.
 ///
@@ -82,6 +88,13 @@ pub enum UploadState {
 #[derive(Serialize, Deserialize)]
 struct DeviceFile {
     name: String,
+}
+
+/// The newest settings snapshot of one device, see [`Cloud::newest_settings`].
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct SettingsRead {
+    pub newest_is_stub: bool,
+    pub readable: Option<Vec<u8>>,
 }
 
 /// The provider folder, rooted at `<provider_dir>/dotlore`.
@@ -331,6 +344,77 @@ impl Cloud {
         res
     }
 
+    fn settings_device_dir(&self, device_id: &str) -> Result<PathBuf> {
+        checked(&self.base.join(SETTINGS_DIR), device_id)
+    }
+
+    /// Highest settings seq for `device_id`, iCloud stubs included; 0 when
+    /// none.
+    pub fn settings_max_seq(&self, device_id: &str) -> u64 {
+        self.settings_device_dir(device_id)
+            .map(|dir| settings_seqs(&dir))
+            .unwrap_or_default()
+            .iter()
+            .map(|&(seq, _)| seq)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Writes `bytes` as `_settings/<device_id>/<seq:06>.json` once; an
+    /// existing file of that name is kept as it is.
+    pub fn publish_settings(&self, device_id: &str, seq: u64, bytes: &[u8]) -> Result<()> {
+        // Past six digits the name no longer matches what `settings_seqs`
+        // accepts: the snapshot would be published but invisible everywhere.
+        if seq >= 1_000_000 {
+            bail!("settings seq {seq} exceeds the six-digit name format");
+        }
+        let dir = self.settings_device_dir(device_id)?;
+        write_once(&dir.join(format!("{seq:06}.json")), bytes)
+    }
+
+    /// The newest snapshot of `device_id` that `settings::parse` accepts,
+    /// falling back past unparseable or oversized files. `newest_is_stub`
+    /// says the highest seq is only an iCloud stub; it is asked to download.
+    pub fn newest_settings(&self, device_id: &str) -> SettingsRead {
+        let mut read = SettingsRead {
+            newest_is_stub: false,
+            readable: None,
+        };
+        let Ok(dir) = self.settings_device_dir(device_id) else {
+            return read;
+        };
+        let mut seqs = settings_seqs(&dir);
+        // Descending seq, a plain file before a stub of the same seq.
+        seqs.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        if let Some(&(seq, true)) = seqs.first() {
+            read.newest_is_stub = true;
+            download_stub(&dir.join(format!("{seq:06}.json")));
+        }
+        read.readable = seqs
+            .iter()
+            .filter(|&&(_, stub)| !stub)
+            .find_map(|&(seq, _)| read_snapshot(&dir.join(format!("{seq:06}.json"))));
+        read
+    }
+
+    /// Sorted device ids with a directory under `_settings`: exactly 32
+    /// lowercase hex chars, as `Config` mints them.
+    pub fn settings_devices(&self) -> Vec<String> {
+        let mut out: Vec<String> = fs::read_dir(self.base.join(SETTINGS_DIR))
+            .map(|es| {
+                es.flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .filter(|id| {
+                        id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.sort();
+        out
+    }
+
     /// Records `name` for `device_id` under `slug`. The first name goes to
     /// `device.json`; a rename adds `name-<unix ms>.json` beside it, since no
     /// cloud file is ever rewritten. A no-op when the newest name already
@@ -563,6 +647,44 @@ fn name_stamp(file: &str) -> Option<(u64, bool)> {
         return None;
     }
     Some((digits.parse().ok()?, stub))
+}
+
+/// Every `NNNNNN.json` seq in a settings dir, with whether it is an iCloud
+/// stub (`.NNNNNN.json.icloud`).
+fn settings_seqs(dir: &Path) -> Vec<(u64, bool)> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().into_string().ok()?;
+            let (inner, stub) = match file
+                .strip_prefix('.')
+                .and_then(|n| n.strip_suffix(".icloud"))
+            {
+                Some(inner) => (inner, true),
+                None => (file.as_str(), false),
+            };
+            let digits = inner.strip_suffix(".json")?;
+            if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some((digits.parse().ok()?, stub))
+        })
+        .collect()
+}
+
+/// The bytes of a snapshot file `settings::parse` accepts. Reads at most one
+/// byte past the cap, so a huge planted file is never read in full.
+fn read_snapshot(path: &Path) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    File::open(path)
+        .ok()?
+        .take(crate::settings::MAX_SNAPSHOT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    crate::settings::parse(&bytes).map(|_| bytes)
 }
 
 /// Newest name file in a device dir, falling back to `device.json` (stamp 0).
@@ -1328,5 +1450,134 @@ mod tests {
         let td = TempDir::new().unwrap();
         let f = src_file(&td, "plain", "x");
         assert_eq!(crate::upload_mac::is_uploaded(&f), None);
+    }
+
+    fn settings_dir(c: &Cloud, id: &str) -> PathBuf {
+        let dir = c.base.join(SETTINGS_DIR).join(id);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn snapshot_bytes(gen: u64) -> Vec<u8> {
+        format!(r#"{{"fields":{{"max_file_mb":{{"gen":{gen},"value":5}}}}}}"#).into_bytes()
+    }
+
+    #[test]
+    fn settings_live_under_an_underscore_dir_that_is_never_a_slug() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "a".repeat(32);
+        c.publish_settings(&id, 1, &snapshot_bytes(1)).unwrap();
+
+        assert!(c
+            .base
+            .join("_settings")
+            .join(&id)
+            .join("000001.json")
+            .is_file());
+        assert_eq!(c.list_slugs(), vec![]);
+        assert_eq!(c.devices(), vec![]);
+        assert!(c.list_bundles("_settings").is_empty());
+        assert!(c.device_names("_settings").is_empty());
+    }
+
+    #[test]
+    fn publish_settings_is_write_once_and_sequenced() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "a".repeat(32);
+        c.publish_settings(&id, 1, &snapshot_bytes(1)).unwrap();
+        c.publish_settings(&id, 1, &snapshot_bytes(9)).unwrap();
+        c.publish_settings(&id, 2, &snapshot_bytes(2)).unwrap();
+
+        let dir = c.base.join(SETTINGS_DIR).join(&id);
+        assert_eq!(dir_names(&dir), vec!["000001.json", "000002.json"]);
+        assert_eq!(
+            fs::read(dir.join("000001.json")).unwrap(),
+            snapshot_bytes(1)
+        );
+        assert_eq!(c.settings_max_seq(&id), 2);
+        let read = c.newest_settings(&id);
+        assert!(!read.newest_is_stub);
+        assert_eq!(read.readable, Some(snapshot_bytes(2)));
+        assert!(c.publish_settings("../x", 1, b"{}").is_err());
+    }
+
+    #[test]
+    fn newest_settings_skips_a_stub_and_reports_it() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "a".repeat(32);
+        c.publish_settings(&id, 1, &snapshot_bytes(1)).unwrap();
+        fs::write(settings_dir(&c, &id).join(".000002.json.icloud"), "").unwrap();
+
+        let read = c.newest_settings(&id);
+        assert!(read.newest_is_stub);
+        assert_eq!(read.readable, Some(snapshot_bytes(1)));
+    }
+
+    #[test]
+    fn newest_settings_falls_back_past_an_unparseable_file() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "a".repeat(32);
+        c.publish_settings(&id, 1, &snapshot_bytes(1)).unwrap();
+        c.publish_settings(&id, 2, b"not json").unwrap();
+        let huge = vec![b' '; crate::settings::MAX_SNAPSHOT_BYTES + 1];
+        c.publish_settings(&id, 3, &huge).unwrap();
+
+        let read = c.newest_settings(&id);
+        assert!(!read.newest_is_stub);
+        assert_eq!(read.readable, Some(snapshot_bytes(1)));
+        assert_eq!(c.newest_settings(&"b".repeat(32)).readable, None);
+    }
+
+    #[test]
+    fn settings_max_seq_counts_stubs() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "a".repeat(32);
+        assert_eq!(c.settings_max_seq(&id), 0);
+        let dir = settings_dir(&c, &id);
+        fs::write(dir.join("000003.json"), snapshot_bytes(1)).unwrap();
+        fs::write(dir.join(".000007.json.icloud"), "").unwrap();
+        fs::write(dir.join("0000009.json"), "").unwrap();
+        fs::write(dir.join("000011.bundle"), "").unwrap();
+        fs::write(dir.join("000012.json.1.2.part"), "").unwrap();
+
+        assert_eq!(c.settings_max_seq(&id), 7);
+    }
+
+    #[test]
+    fn settings_devices_skips_non_device_dirs() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        assert_eq!(c.settings_devices(), Vec::<String>::new());
+        let a = "a".repeat(32);
+        let b = "0123456789abcdef0123456789abcdef".to_string();
+        settings_dir(&c, &a);
+        settings_dir(&c, &b);
+        settings_dir(&c, &"A".repeat(32));
+        settings_dir(&c, "short");
+        settings_dir(&c, &"g".repeat(32));
+        fs::write(c.base.join(SETTINGS_DIR).join("c".repeat(32)), "").unwrap();
+
+        assert_eq!(c.settings_devices(), vec![b, a]);
+    }
+
+    #[test]
+    fn a_settings_seq_past_six_digits_is_refused() {
+        let td = TempDir::new().unwrap();
+        let c = cloud(&td);
+        let id = "a".repeat(32);
+        c.publish_settings(&id, 999_999, &snapshot_bytes(1))
+            .unwrap();
+        assert!(c
+            .publish_settings(&id, 1_000_000, &snapshot_bytes(2))
+            .is_err());
+
+        let dir = c.base.join(SETTINGS_DIR).join(&id);
+        assert_eq!(dir_names(&dir), vec!["999999.json"]);
+        assert_eq!(c.settings_max_seq(&id), 999_999);
     }
 }

@@ -31,6 +31,7 @@ use crate::project::{self, Limits, SensitiveMatcher, Sensitivity, State};
 use crate::repo::{
     provider_key, remote_ref, unique_id, FetchMode, Repo, ResumeOutcome, Transaction,
 };
+use crate::settings;
 
 /// Where one tracked root stands after a cycle.
 ///
@@ -559,6 +560,10 @@ impl Engine {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
         let cloud = self.cloud();
+        // Settings are best-effort: a failure here must not stop root sync.
+        if let Err(e) = self.sync_settings_locked(&g, &cloud) {
+            eprintln!("dotlore: settings sync: {e:#}");
+        }
         let slugs: Vec<String> = self.cfg.roots.iter().map(|r| r.slug.clone()).collect();
         let mut out = Vec::new();
         for slug in slugs {
@@ -566,6 +571,68 @@ impl Engine {
             out.push((slug, status));
         }
         Ok(out)
+    }
+
+    /// Import the global settings every other device published, then make
+    /// sure this device's own snapshot in the cloud matches its local ones.
+    /// Returns whether local config changed. Existing roots are never touched:
+    /// imported patterns and never-list only apply to roots added later.
+    pub fn sync_settings(&mut self) -> Result<bool> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let cloud = self.cloud();
+        self.sync_settings_locked(&g, &cloud)
+    }
+
+    fn sync_settings_locked(&mut self, g: &HomeLock, cloud: &Cloud) -> Result<bool> {
+        let mut changed = false;
+        for dev in cloud.settings_devices() {
+            if dev == self.cfg.device_id {
+                continue;
+            }
+            // `newest_settings` falls back past a stub or unparseable newest file.
+            let Some(snap) = cloud
+                .newest_settings(&dev)
+                .readable
+                .as_deref()
+                .and_then(settings::parse)
+            else {
+                continue;
+            };
+            changed |= settings::apply(&mut self.cfg, &snap);
+        }
+        if changed {
+            self.save(g)?;
+        }
+        self.republish_settings(cloud)?;
+        Ok(changed)
+    }
+
+    /// Publish this device's settings snapshot under the next seq unless its
+    /// newest readable one already equals it. Nothing while the newest file
+    /// is still an iCloud stub, and nothing for an all-builtin device: a key
+    /// never goes back to gen 0, so an empty local set has nothing to say.
+    fn republish_settings(&self, cloud: &Cloud) -> Result<()> {
+        let local = settings::local(&self.cfg);
+        if local.fields.is_empty() {
+            return Ok(());
+        }
+        let own = &self.cfg.device_id;
+        let newest = cloud.newest_settings(own);
+        if newest.newest_is_stub {
+            return Ok(());
+        }
+        if newest
+            .readable
+            .as_deref()
+            .and_then(settings::parse)
+            .as_ref()
+            == Some(&local)
+        {
+            return Ok(());
+        }
+        let seq = cloud.settings_max_seq(own) + 1;
+        cloud.publish_settings(own, seq, &local.to_bytes())
     }
 
     /// Stop tracking a root. The staging repo is kept, so re-linking is cheap
@@ -932,23 +999,30 @@ impl Engine {
     pub fn set_pattern_catalog(&mut self, catalog: &str, patterns: Vec<String>) -> Result<()> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
-        let Some(builtin) = project::builtin_lines(catalog) else {
+        if project::builtin_lines(catalog).is_none() {
             bail!("unknown pattern catalog {catalog}");
+        }
+        let key = format!("patterns.{catalog}");
+        let before = settings::gen_of(&self.cfg, &key);
+        let stored = settings::catalog_override(catalog, patterns);
+        let old = if catalog == "projects" {
+            self.cfg.default_patterns.clone()
+        } else {
+            self.cfg.agent_patterns.get(catalog).cloned()
         };
-        if patterns == lines_owned(builtin) {
-            if catalog == "projects" {
-                self.cfg.default_patterns = None;
-            } else {
+        if stored == old {
+            return Ok(());
+        }
+        match (catalog, stored) {
+            ("projects", stored) => self.cfg.default_patterns = stored,
+            (_, Some(lines)) => {
+                self.cfg.agent_patterns.insert(catalog.to_string(), lines);
+            }
+            (_, None) => {
                 self.cfg.agent_patterns.remove(catalog);
             }
-        } else if catalog == "projects" {
-            self.cfg.default_patterns = Some(patterns);
-        } else {
-            self.cfg
-                .agent_patterns
-                .insert(catalog.to_string(), patterns);
         }
-        self.save(&g)
+        self.save_setting(&g, &key, before)
     }
 
     /// Track every path `slug`'s catalog patterns now match and the list does
@@ -1001,21 +1075,14 @@ impl Engine {
     pub fn set_sensitive_patterns(&mut self, patterns: Vec<String>) -> Result<()> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
-        let mut seen = BTreeSet::new();
-        let patterns: Vec<String> = patterns
-            .iter()
-            .map(|p| p.trim())
-            .filter(|p| !p.is_empty())
-            .filter(|p| seen.insert(p.to_string()))
-            .map(str::to_string)
-            .collect();
-        SensitiveMatcher::new(&patterns)?;
-        self.cfg.sensitive_patterns = if patterns == lines_owned(project::SECRET_PATTERNS) {
-            None
-        } else {
-            Some(patterns)
-        };
-        self.save(&g)
+        let key = "sensitive_patterns";
+        let before = settings::gen_of(&self.cfg, key);
+        let stored = settings::sensitive_override(&patterns)?;
+        if stored == self.cfg.sensitive_patterns {
+            return Ok(());
+        }
+        self.cfg.sensitive_patterns = stored;
+        self.save_setting(&g, key, before)
     }
 
     /// Matcher for the effective sensitive list. A stored list that no longer
@@ -1040,12 +1107,14 @@ impl Engine {
     pub fn set_default_ignore(&mut self, ignore: String) -> Result<()> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
-        self.cfg.default_ignore = if ignore == project::DEFAULT_NEVER_IGNORE {
-            None
-        } else {
-            Some(ignore)
-        };
-        self.save(&g)
+        let key = "default_ignore";
+        let before = settings::gen_of(&self.cfg, key);
+        let stored = settings::ignore_override(ignore);
+        if stored == self.cfg.default_ignore {
+            return Ok(());
+        }
+        self.cfg.default_ignore = stored;
+        self.save_setting(&g, key, before)
     }
 
     /// Write the global never-list into `slug`'s `.dotloreignore` and untrack
@@ -1097,10 +1166,19 @@ impl Engine {
     }
 
     pub fn set_max_file_mb(&mut self, mb: u64) -> Result<()> {
+        // Peers drop a 0 limit on import, so it must never be stored.
+        if mb == 0 {
+            bail!("max file size must be at least 1 MB");
+        }
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
+        let key = "max_file_mb";
+        let before = settings::gen_of(&self.cfg, key);
+        if self.cfg.max_file_mb == Some(mb) {
+            return Ok(());
+        }
         self.cfg.max_file_mb = Some(mb);
-        self.save(&g)
+        self.save_setting(&g, key, before)
     }
 
     /// Effective seed/add folder ceiling in MiB (`None` in config → 200).
@@ -1111,10 +1189,19 @@ impl Engine {
     }
 
     pub fn set_max_seed_folder_mb(&mut self, mb: u64) -> Result<()> {
+        // Peers drop a 0 limit on import, so it must never be stored.
+        if mb == 0 {
+            bail!("max folder size must be at least 1 MB");
+        }
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
+        let key = "max_seed_folder_mb";
+        let before = settings::gen_of(&self.cfg, key);
+        if self.cfg.max_seed_folder_mb == Some(mb) {
+            return Ok(());
+        }
         self.cfg.max_seed_folder_mb = Some(mb);
-        self.save(&g)
+        self.save_setting(&g, key, before)
     }
 
     pub fn device_name(&self) -> String {
@@ -1532,6 +1619,18 @@ impl Engine {
         self.cfg.save(&self.home)
     }
 
+    /// Save a setter's change to synced `key`: bump its gen past `before`
+    /// (its gen ahead of the write), save, republish. A publish failure is
+    /// logged, never returned; the next settings sync publishes again.
+    fn save_setting(&mut self, g: &HomeLock, key: &str, before: u64) -> Result<()> {
+        settings::bump(&mut self.cfg, key, before);
+        self.save(g)?;
+        if let Err(e) = self.republish_settings(&self.cloud()) {
+            eprintln!("dotlore: settings publish: {e:#}");
+        }
+        Ok(())
+    }
+
     fn root_cfg(&self, slug: &str) -> Result<Root> {
         self.cfg
             .roots
@@ -1767,6 +1866,10 @@ pub fn configure_provider(
         pending_adds: Vec::new(),
     };
     let dest_cloud = e.cloud();
+    // The provider switch is already committed; settings are best-effort.
+    if let Err(err) = e.sync_settings_locked(&g, &dest_cloud) {
+        eprintln!("dotlore: settings sync: {err:#}");
+    }
     let mut out = Vec::new();
     for root in e.cfg.roots.clone() {
         dest_cloud.write_manifest_once(&Manifest {
@@ -4399,5 +4502,366 @@ mod tests {
         assert!(a.engine.wipe_cloud_data().is_err());
         assert!(cloud_of(&a).read_manifest("proj-claude").is_some());
         assert!(staging(&a).join(".git").is_dir());
+    }
+
+    // --- settings sync ------------------------------------------------------
+
+    /// Edit a synced setting the way a setter will: change the field, bump
+    /// its gen, save.
+    fn customize(dev: &mut Dev, key: &str, edit: impl FnOnce(&mut Config)) {
+        let cfg = &mut dev.engine.cfg;
+        let before = settings::gen_of(cfg, key);
+        edit(cfg);
+        settings::bump(cfg, key, before);
+        cfg.save(dev.home.path()).unwrap();
+    }
+
+    fn cfg_of(dev: &Dev) -> Config {
+        Config::load(dev.home.path()).unwrap()
+    }
+
+    #[test]
+    fn a_changed_setting_reaches_the_other_device() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        customize(&mut a, "max_file_mb", |c| c.max_file_mb = Some(7));
+
+        assert!(!a.engine.sync_settings().unwrap());
+        assert!(b.engine.sync_settings().unwrap());
+        assert_eq!(cfg_of(&b).max_file_mb, Some(7));
+        assert_eq!(b.engine.cfg.max_file_mb, Some(7));
+    }
+
+    #[test]
+    fn a_fresh_device_does_not_override_peer_settings() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        customize(&mut a, "max_file_mb", |c| c.max_file_mb = Some(7));
+        a.engine.sync_settings().unwrap();
+
+        let mut b = device(provider.path(), 'b');
+        b.engine.sync_settings().unwrap();
+        assert!(!a.engine.sync_settings().unwrap());
+
+        assert_eq!(cfg_of(&a).max_file_mb, Some(7));
+        assert_eq!(cfg_of(&b).max_file_mb, Some(7));
+    }
+
+    #[test]
+    fn resetting_to_builtin_syncs_as_a_clear() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        customize(&mut a, "max_file_mb", |c| c.max_file_mb = Some(7));
+        a.engine.sync_settings().unwrap();
+        b.engine.sync_settings().unwrap();
+        assert_eq!(cfg_of(&b).max_file_mb, Some(7));
+
+        customize(&mut a, "max_file_mb", |c| c.max_file_mb = None);
+        a.engine.sync_settings().unwrap();
+        assert!(b.engine.sync_settings().unwrap());
+        assert_eq!(cfg_of(&b).max_file_mb, None);
+        assert_eq!(cfg_of(&a).max_file_mb, None);
+    }
+
+    #[test]
+    fn edits_to_different_catalogs_both_survive() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        let projects = vec!["from-a/**".to_string()];
+        let claude = vec!["from-b.json".to_string()];
+        let p = projects.clone();
+        customize(&mut a, "patterns.projects", |c| {
+            c.default_patterns = Some(p)
+        });
+        let cl = claude.clone();
+        customize(&mut b, "patterns.claude", |c| {
+            c.agent_patterns.insert("claude".into(), cl);
+        });
+
+        for _ in 0..2 {
+            a.engine.sync_settings().unwrap();
+            b.engine.sync_settings().unwrap();
+        }
+        for dev in [&a, &b] {
+            let cfg = cfg_of(dev);
+            assert_eq!(cfg.default_patterns.as_ref(), Some(&projects));
+            assert_eq!(cfg.agent_patterns.get("claude"), Some(&claude));
+        }
+    }
+
+    #[test]
+    fn concurrent_edits_to_the_same_key_converge() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        customize(&mut a, "max_file_mb", |c| c.max_file_mb = Some(7));
+        customize(&mut b, "max_file_mb", |c| c.max_file_mb = Some(9));
+
+        for _ in 0..2 {
+            a.engine.sync_settings().unwrap();
+            b.engine.sync_settings().unwrap();
+        }
+        let (ca, cb) = (cfg_of(&a), cfg_of(&b));
+        assert_eq!(ca.max_file_mb, cb.max_file_mb);
+        assert_eq!(ca.settings_gens, cb.settings_gens);
+        assert!(ca.max_file_mb.is_some());
+    }
+
+    #[test]
+    fn an_import_never_touches_existing_roots() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        write(&b, "CLAUDE.md", b"one\n");
+        add(&mut b);
+        let project_file = staging(&b).join(project::PROJECT_FILE);
+        let ignore_file = staging(&b).join(project::IGNORE_FILE);
+        let project_before = fs::read(&project_file).unwrap();
+        let ignore_before = fs::read(&ignore_file).unwrap();
+        let roots_before = cfg_of(&b).roots;
+
+        customize(&mut a, "patterns.projects", |c| {
+            c.default_patterns = Some(vec!["other/**".into()])
+        });
+        customize(&mut a, "default_ignore", |c| {
+            c.default_ignore = Some("*.never\n".into())
+        });
+        a.engine.sync_settings().unwrap();
+        assert!(b.engine.sync_settings().unwrap());
+
+        let cfg = cfg_of(&b);
+        assert_eq!(cfg.default_ignore.as_deref(), Some("*.never\n"));
+        assert_eq!(cfg.roots, roots_before);
+        assert_eq!(fs::read(&project_file).unwrap(), project_before);
+        assert_eq!(fs::read(&ignore_file).unwrap(), ignore_before);
+        assert!(!b.root.path().join(project::IGNORE_FILE).exists());
+    }
+
+    #[test]
+    fn an_unchanged_state_publishes_nothing() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        let a_id = a.engine.cfg.device_id.clone();
+        let b_id = b.engine.cfg.device_id.clone();
+
+        // An all-builtin device has nothing to publish.
+        b.engine.sync_settings().unwrap();
+        assert_eq!(cloud_of(&b).settings_max_seq(&b_id), 0);
+
+        customize(&mut a, "max_file_mb", |c| c.max_file_mb = Some(7));
+        a.engine.sync_settings().unwrap();
+        assert_eq!(cloud_of(&a).settings_max_seq(&a_id), 1);
+        a.engine.sync_settings().unwrap();
+        assert_eq!(cloud_of(&a).settings_max_seq(&a_id), 1);
+    }
+
+    #[test]
+    fn sync_settings_republishes_after_a_wipe() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let a_id = a.engine.cfg.device_id.clone();
+        customize(&mut a, "max_file_mb", |c| c.max_file_mb = Some(7));
+        a.engine.sync_settings().unwrap();
+
+        fs::remove_dir_all(provider.path().join("dotlore/_settings")).unwrap();
+        a.engine.sync_settings().unwrap();
+
+        let cloud = cloud_of(&a);
+        assert_eq!(cloud.settings_max_seq(&a_id), 1);
+        let bytes = cloud.newest_settings(&a_id).readable.unwrap();
+        let snap = settings::parse(&bytes).unwrap();
+        assert_eq!(snap, settings::local(&cfg_of(&a)));
+    }
+
+    #[test]
+    fn setting_the_same_value_does_not_bump_the_gen() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let a_id = a.engine.cfg.device_id.clone();
+        let claude = lines_owned(project::builtin_lines("claude").unwrap());
+        a.engine.set_pattern_catalog("claude", claude).unwrap();
+        a.engine
+            .set_default_ignore(project::DEFAULT_NEVER_IGNORE.to_string())
+            .unwrap();
+        a.engine
+            .set_sensitive_patterns(lines_owned(project::SECRET_PATTERNS))
+            .unwrap();
+        assert!(cfg_of(&a).settings_gens.is_empty());
+
+        a.engine.set_max_file_mb(7).unwrap();
+        a.engine
+            .set_sensitive_patterns(vec![" *.pem ".into(), "*.pem".into()])
+            .unwrap();
+        let gens = cfg_of(&a).settings_gens;
+        assert_eq!(gens.len(), 2);
+        assert_eq!(cloud_of(&a).settings_max_seq(&a_id), 2);
+
+        a.engine.set_max_file_mb(7).unwrap();
+        a.engine
+            .set_sensitive_patterns(vec!["*.pem".into()])
+            .unwrap();
+        assert_eq!(cfg_of(&a).settings_gens, gens);
+        assert_eq!(cloud_of(&a).settings_max_seq(&a_id), 2);
+    }
+
+    #[test]
+    fn each_setter_bumps_only_its_own_key() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut prev = BTreeMap::new();
+        let mut check = |a: &Dev, key: &str| {
+            let now = cfg_of(a).settings_gens;
+            assert!(now[key] > prev.get(key).copied().unwrap_or(0), "{key}");
+            prev.insert(key.to_string(), now[key]);
+            assert_eq!(now, prev, "after {key}");
+        };
+        a.engine
+            .set_pattern_catalog("projects", vec!["x/**".into()])
+            .unwrap();
+        check(&a, "patterns.projects");
+        a.engine.set_default_patterns(vec!["y/**".into()]).unwrap();
+        check(&a, "patterns.projects");
+        a.engine
+            .set_pattern_catalog("claude", vec!["c.json".into()])
+            .unwrap();
+        check(&a, "patterns.claude");
+        a.engine
+            .set_sensitive_patterns(vec!["*.pem".into()])
+            .unwrap();
+        check(&a, "sensitive_patterns");
+        a.engine.set_default_ignore("*.never\n".into()).unwrap();
+        check(&a, "default_ignore");
+        a.engine.set_max_file_mb(3).unwrap();
+        check(&a, "max_file_mb");
+        a.engine.set_max_seed_folder_mb(4).unwrap();
+        check(&a, "max_seed_folder_mb");
+    }
+
+    #[test]
+    fn a_setter_publishes_a_new_snapshot() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let a_id = a.engine.cfg.device_id.clone();
+        let newest = |a: &Dev| {
+            let bytes = cloud_of(a).newest_settings(&a_id).readable.unwrap();
+            settings::parse(&bytes).unwrap()
+        };
+
+        a.engine.set_max_file_mb(7).unwrap();
+        assert_eq!(cloud_of(&a).settings_max_seq(&a_id), 1);
+        assert_eq!(newest(&a), settings::local(&cfg_of(&a)));
+
+        a.engine.set_default_ignore("*.never\n".into()).unwrap();
+        assert_eq!(cloud_of(&a).settings_max_seq(&a_id), 2);
+        let snap = newest(&a);
+        assert_eq!(snap, settings::local(&cfg_of(&a)));
+        assert_eq!(snap.fields.len(), 2);
+    }
+
+    #[test]
+    fn a_setter_edit_beats_an_older_peer_value() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        a.engine.set_max_file_mb(7).unwrap();
+        assert!(b.engine.sync_settings().unwrap());
+        assert_eq!(cfg_of(&b).max_file_mb, Some(7));
+
+        b.engine.set_max_file_mb(9).unwrap();
+        assert!(a.engine.sync_settings().unwrap());
+        assert_eq!(cfg_of(&a).max_file_mb, Some(9));
+        assert_eq!(cfg_of(&a).settings_gens, cfg_of(&b).settings_gens);
+    }
+
+    #[test]
+    fn sync_all_imports_peer_settings() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        customize(&mut a, "max_file_mb", |c| c.max_file_mb = Some(7));
+        a.engine.sync_settings().unwrap();
+
+        b.engine.sync_all().unwrap();
+        assert_eq!(cfg_of(&b).max_file_mb, Some(7));
+    }
+
+    #[test]
+    fn configure_provider_imports_settings_from_the_new_folder() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let a = device(first.path(), 'a');
+        let mut b = device(second.path(), 'b');
+        customize(&mut b, "max_file_mb", |c| c.max_file_mb = Some(7));
+        b.engine.sync_settings().unwrap();
+
+        configure_provider(a.home.path(), a.home.path(), second.path()).unwrap();
+        assert_eq!(cfg_of(&a).max_file_mb, Some(7));
+    }
+
+    #[test]
+    fn configure_provider_publishes_local_settings_to_a_fresh_folder() {
+        let first = TempDir::new().unwrap();
+        let second = TempDir::new().unwrap();
+        let mut a = device(first.path(), 'a');
+        let a_id = a.engine.cfg.device_id.clone();
+        customize(&mut a, "max_file_mb", |c| c.max_file_mb = Some(7));
+
+        configure_provider(a.home.path(), a.home.path(), second.path()).unwrap();
+        let dest = Cloud {
+            base: second.path().join("dotlore"),
+        };
+        let bytes = dest.newest_settings(&a_id).readable.unwrap();
+        let snap = settings::parse(&bytes).unwrap();
+        assert_eq!(snap, settings::local(&cfg_of(&a)));
+    }
+
+    #[test]
+    fn a_zero_limit_setter_is_rejected() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        assert!(a.engine.set_max_file_mb(0).is_err());
+        assert!(a.engine.set_max_seed_folder_mb(0).is_err());
+        let cfg = cfg_of(&a);
+        assert_eq!(cfg.max_file_mb, None);
+        assert_eq!(cfg.max_seed_folder_mb, None);
+        assert!(cfg.settings_gens.is_empty());
+    }
+
+    #[test]
+    fn a_reset_to_builtin_via_setter_reaches_the_peer() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        // A customization from before settings synced: no stored gen.
+        a.engine
+            .cfg
+            .agent_patterns
+            .insert("claude".into(), vec!["c.json".into()]);
+        a.engine.cfg.save(a.home.path()).unwrap();
+        a.engine.sync_settings().unwrap();
+        assert!(b.engine.sync_settings().unwrap());
+        assert!(cfg_of(&b).agent_patterns.contains_key("claude"));
+
+        let builtin = lines_owned(project::builtin_lines("claude").unwrap());
+        a.engine.set_pattern_catalog("claude", builtin).unwrap();
+        assert!(b.engine.sync_settings().unwrap());
+        assert!(!cfg_of(&b).agent_patterns.contains_key("claude"));
+    }
+
+    #[test]
+    fn a_publish_failure_does_not_fail_the_setter() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        fs::create_dir_all(provider.path().join("dotlore")).unwrap();
+        fs::write(provider.path().join("dotlore/_settings"), b"not a dir").unwrap();
+
+        a.engine.set_max_file_mb(7).unwrap();
+        let cfg = cfg_of(&a);
+        assert_eq!(cfg.max_file_mb, Some(7));
+        assert!(cfg.settings_gens["max_file_mb"] > 0);
     }
 }
