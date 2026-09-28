@@ -136,6 +136,8 @@ impl AppState {
         let daemon_tx = tx.clone();
         let handle = app.clone();
         let cycle_handle = app.clone();
+        let root_handle = app.clone();
+        let root_engine = engine.clone();
         std::thread::spawn(move || {
             daemon::run(
                 daemon_engine.clone(),
@@ -146,6 +148,15 @@ impl AppState {
                 },
                 move |running| {
                     let _ = cycle_handle.emit("dotlore://cycle", running);
+                },
+                // First cycle only: a partial payload. The UI overlays
+                // statuses by slug, so the roots not reached yet keep
+                // `Checking`.
+                move |so_far| {
+                    let _ = root_handle.emit(
+                        "dotlore://status",
+                        payload_from(&root_engine, Ok(so_far.to_vec())),
+                    );
                 },
             );
         });

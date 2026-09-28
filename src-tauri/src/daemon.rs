@@ -117,13 +117,18 @@ pub enum Event {
 /// `Err`, so a config that stopped parsing or a provider that vanished is
 /// reported rather than swallowed. `on_cycle` is called with `true` right
 /// before each cycle and `false` right after its `on_status`, so a UI can say
-/// a cycle is in flight. A cycle always runs before the first wait.
+/// a cycle is in flight. During the first cycle only, `on_root` is called
+/// after each root with the statuses so far, so a cold start shows roots as
+/// they finish rather than after all of them; later cycles report whole,
+/// because a UI keeps the last full report as the roots' known statuses. A
+/// cycle always runs before the first wait.
 pub fn run(
     engine: SharedEngine,
     tx: Sender<Event>,
     rx: Receiver<Event>,
     mut on_status: impl FnMut(Result<Vec<(String, RootStatus)>>),
     mut on_cycle: impl FnMut(bool),
+    mut on_root: impl FnMut(&[(String, RootStatus)]),
 ) {
     let mut watcher: Option<RecommendedWatcher> = None;
     let mut watching: Vec<PathBuf> = Vec::new();
@@ -134,7 +139,7 @@ pub fn run(
     // The `Config` the caller built the engine from may already be stale, so
     // the watch set comes from the cycle rather than the other way round.
     on_cycle(true);
-    let (status, wanted, filters) = cycle(&engine);
+    let (status, wanted, filters) = cycle(&engine, &mut on_root);
     rebuild(&tx, &wanted, &filters, &mut watcher, &mut watching);
     let mut filtering = filters;
     on_status(status);
@@ -170,7 +175,7 @@ pub fn run(
         }
 
         on_cycle(true);
-        let (status, wanted, filters) = cycle(&engine);
+        let (status, wanted, filters) = cycle(&engine, &mut |_| {});
         if wanted != watching || filters != filtering {
             rebuild(&tx, &wanted, &filters, &mut watcher, &mut watching);
             filtering = filters;
@@ -190,7 +195,7 @@ pub fn run(
 /// waits for at most one root rather than the whole cycle — and the daemon
 /// never waits holding the engine. The first `Err` ends the cycle and is the
 /// status, as it is for [`Engine::sync_all`].
-fn cycle(engine: &SharedEngine) -> Cycle {
+fn cycle(engine: &SharedEngine, on_root: &mut impl FnMut(&[(String, RootStatus)])) -> Cycle {
     // A panic elsewhere cannot leave the engine half-written: every entry
     // point reloads config from disk under the home lock, so there is no
     // in-memory invariant a poisoned lock would be protecting.
@@ -209,6 +214,7 @@ fn cycle(engine: &SharedEngine) -> Cycle {
             let status = e.sync_root(&slug)?;
             drop(e);
             out.push((slug, status));
+            on_root(&out);
             std::thread::sleep(HANDOFF);
         }
         Ok(out)
@@ -465,6 +471,7 @@ mod tests {
                     let _ = stx.send(s);
                 },
                 |_| {},
+                |_| {},
             )
         });
         srx.recv_timeout(Duration::from_secs(30))
@@ -578,6 +585,77 @@ mod tests {
 
         quit(&tx, h);
         feeder.join().unwrap();
+    }
+
+    /// A cold start syncs every root before the one `on_status`; each root's
+    /// status is reported as it lands, so the UI is not stuck on `Checking`
+    /// for roots that finished long ago.
+    #[test]
+    fn each_root_is_reported_as_soon_as_it_is_synced() {
+        let home = TempDir::new().unwrap();
+        let provider = TempDir::new().unwrap();
+        let a = TempDir::new().unwrap();
+        let b = TempDir::new().unwrap();
+        fs::write(a.path().join("CLAUDE.md"), b"a\n").unwrap();
+        fs::write(b.path().join("CLAUDE.md"), b"b\n").unwrap();
+        let engine = engine_at(home.path(), provider.path());
+        {
+            let mut e = engine.lock().unwrap();
+            e.add_root(a.path(), Some("a")).unwrap();
+            e.add_root(b.path(), Some("b")).unwrap();
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let (ptx, prx) = mpsc::channel();
+        let ptx_status = ptx.clone();
+        let e = Arc::clone(&engine);
+        let t = tx.clone();
+        let h = thread::spawn(move || {
+            run(
+                e,
+                t,
+                rx,
+                move |s| {
+                    let _ = ptx_status.send(("status", s.unwrap()));
+                },
+                |_| {},
+                move |so_far| {
+                    let _ = ptx.send(("root", so_far.to_vec()));
+                },
+            )
+        });
+
+        let next_status = || {
+            let mut seen = Vec::new();
+            loop {
+                let got = prx
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("no report");
+                let done = got.0 == "status";
+                seen.push(got);
+                if done {
+                    return seen;
+                }
+            }
+        };
+        let first = next_status();
+        // Later cycles report whole: the UI keeps the last full payload as
+        // its known statuses, and a partial one would reset the rest to
+        // `Checking` mid-cycle.
+        tx.send(Event::Control(Cmd::SyncNow)).unwrap();
+        let later = next_status();
+        quit(&tx, h);
+
+        let synced = |s: &str| (s.to_string(), RootStatus::Synced);
+        assert_eq!(
+            first,
+            vec![
+                ("root", vec![synced("a")]),
+                ("root", vec![synced("a"), synced("b")]),
+                ("status", vec![synced("a"), synced("b")]),
+            ]
+        );
+        assert_eq!(later, vec![("status", vec![synced("a"), synced("b")])]);
     }
 
     #[test]

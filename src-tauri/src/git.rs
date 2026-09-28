@@ -1,8 +1,10 @@
 //! Running the system `git` binary with a hermetic environment.
 
 use anyhow::{bail, Context, Result};
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 /// A git runner bound to one repository and one device identity.
 pub struct Git {
@@ -23,9 +25,19 @@ impl Git {
     /// Run `git -C <repo> <args>`. A non-zero exit status is *not* an error;
     /// only a failure to spawn the process is.
     pub fn run(&self, args: &[&str]) -> Result<Output> {
-        self.command(args)
-            .output()
-            .with_context(|| format!("failed to spawn git {args:?}"))
+        self.run_via(binary(), args)
+    }
+
+    /// A `program` that is gone (a `brew upgrade` removes the old Cellar path
+    /// under a running app) falls back to `git` on `PATH` for this call.
+    fn run_via(&self, program: &Path, args: &[&str]) -> Result<Output> {
+        let out = match self.command(program, args).output() {
+            Err(e) if e.kind() == ErrorKind::NotFound && program != Path::new("git") => {
+                self.command(Path::new("git"), args).output()
+            }
+            r => r,
+        };
+        out.with_context(|| format!("failed to spawn git {args:?}"))
     }
 
     /// The child git process, with an allowlisted environment.
@@ -44,8 +56,8 @@ impl Git {
     /// 2.50.1 that `init`, `add`, `commit`, `rev-parse`, `merge-base`,
     /// `update-ref`, `bundle create/verify`, `fetch` and `merge` all succeed
     /// under `env -i` with nothing but `PATH` and the set below.
-    fn command(&self, args: &[&str]) -> Command {
-        let mut c = Command::new("git");
+    fn command(&self, program: &Path, args: &[&str]) -> Command {
+        let mut c = Command::new(program);
         c.arg("-C")
             .arg(&self.repo)
             .args(args)
@@ -104,10 +116,50 @@ fn ancestor_args<'a>(a: &'a str, b: &'a str) -> [&'a str; 5] {
     ["merge-base", "--is-ancestor", "--end-of-options", a, b]
 }
 
+/// The binary every [`Git`] spawns: the one behind `git` on `PATH`, resolved
+/// once, or `git` itself while that fails.
+///
+/// On macOS `/usr/bin/git` is an `xcrun` shim that costs ~8 ms per spawn on
+/// top of git itself, and a cycle spawns git a dozen times per root. Only a
+/// successful resolution is cached, so a git installed later is still found.
+fn binary() -> &'static Path {
+    resolved().unwrap_or(Path::new("git"))
+}
+
+fn resolved() -> Option<&'static Path> {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    if let Some(p) = BIN.get() {
+        return Some(p);
+    }
+    let p = resolve_binary()?;
+    Some(BIN.get_or_init(|| p))
+}
+
+/// `<git --exec-path>/git`, the real binary for Xcode, the Command Line Tools
+/// and Homebrew alike. Asked under the same cleared environment as every other
+/// call, so a `GIT_EXEC_PATH` in ours cannot redirect it.
+fn resolve_binary() -> Option<PathBuf> {
+    let mut c = Command::new("git");
+    c.arg("--exec-path").env_clear();
+    if let Some(p) = std::env::var_os("PATH") {
+        c.env("PATH", p);
+    }
+    let out = c.output().ok().filter(|o| o.status.success())?;
+    let dir = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let bin = dir.join("git");
+    (dir.is_absolute() && bin.is_file()).then_some(bin)
+}
+
 /// `Some(path)` if a usable `git` is on `PATH`, `None` otherwise.
 // ponytail: returns the PATH-relative name; every caller only needs the
-// presence check.
+// presence check. A resolved binary that is still there answers with a stat
+// rather than a spawn (the daemon asks once per root per cycle); one that is
+// gone — git uninstalled under a running app — falls through to the probe, so
+// `GitMissing` is still reported.
 pub fn which_git() -> Option<PathBuf> {
+    if resolved().is_some_and(Path::is_file) {
+        return Some(PathBuf::from("git"));
+    }
     Command::new("git")
         .arg("--version")
         .output()
@@ -211,6 +263,12 @@ mod tests {
             "GIT_CONFIG_PARAMETERS",
             format!("'core.hooksPath={}'", hooks.display()),
         );
+        std::env::set_var("GIT_EXEC_PATH", dir.path());
+        let bin = resolve_binary().expect("no git behind PATH");
+        assert!(
+            !bin.starts_with(dir.path()),
+            "GIT_EXEC_PATH redirected the resolved binary"
+        );
 
         let repo = dir.path().join("repo");
         std::fs::create_dir_all(&repo)?;
@@ -229,6 +287,28 @@ mod tests {
             !g.run(&["config", "core.hooksPath"])?.status.success(),
             "GIT_CONFIG_PARAMETERS reached the child"
         );
+        Ok(())
+    }
+
+    /// The shim at `/usr/bin/git` spends most of a spawn in `xcrun`; the
+    /// binary behind it must be found and must actually be git.
+    #[test]
+    fn the_real_binary_is_resolved() {
+        let bin = resolve_binary().expect("no git behind PATH");
+        assert!(bin.is_absolute(), "{}", bin.display());
+        let out = Command::new(&bin).arg("--version").output().unwrap();
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).starts_with("git version"));
+    }
+
+    /// `brew upgrade` deletes the old Cellar path under a running app: a
+    /// binary that is gone must fall back to `git` on `PATH`, not fail.
+    #[test]
+    fn a_vanished_binary_falls_back_to_path_git() -> Result<()> {
+        let dir = TempDir::new()?;
+        let g = git_at(&dir);
+        let out = g.run_via(&dir.path().join("gone/git"), &["--version"])?;
+        assert!(out.status.success());
         Ok(())
     }
 
