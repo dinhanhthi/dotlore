@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { KeyRound, Loader2, Plus, RefreshCw } from "lucide-react";
+import { Check, ChevronDown, KeyRound, Loader2, Plus, RefreshCw } from "lucide-react";
 
 import { TreeSkeleton } from "@/components/layout/AppSkeleton";
 import { RootOverflowMenu, StarRootButton } from "@/components/layout/RootActions";
@@ -17,6 +17,12 @@ import {
 import { TreeNode } from "@/components/tree/TreeNode";
 import { Button } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -30,7 +36,13 @@ import {
   trackedFiles,
 } from "@/lib/ipc";
 import { useRoots, useSyncing, useTaskLabel } from "@/lib/roots";
-import { buildTree, filterTree } from "@/lib/tree";
+import {
+  buildTree,
+  filterTree,
+  filterTreeBySize,
+  SIZE_BANDS,
+  type SizeBand,
+} from "@/lib/tree";
 import type { ConflictView, EntryView, RootRow, Sensitivity, TrackedFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -113,8 +125,65 @@ export function totalBytes(files: TrackedFile[]): number {
   return files.reduce((sum, file) => sum + file.bytes, 0);
 }
 
+/** Empty-tree copy. A size filter has its own line; mixed filters share "No matches". */
+export function treeEmptyMessage(
+  querying: boolean,
+  sensitiveOnly: boolean,
+  sizeFiltered: boolean,
+): string {
+  if (sizeFiltered && !querying && !sensitiveOnly) return "No files in this size";
+  if (!querying && sensitiveOnly && !sizeFiltered) return "No sensitive files";
+  return "No matches";
+}
+
 export function fileSensitivityMap(files: TrackedFile[]): Map<string, Sensitivity | null> {
   return new Map(files.map((file) => [file.rel, file.sensitivity]));
+}
+
+function SizeBandMenu({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: SizeBand | null;
+  disabled: boolean;
+  onChange: (next: SizeBand | null) => void;
+}) {
+  const current = SIZE_BANDS.find((band) => band.id === value);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            disabled={disabled}
+            aria-label="Filter by size"
+            className={cn(
+              "shrink-0 px-1.5 font-normal tabular-nums",
+              current ? "text-foreground" : "text-muted-foreground",
+            )}
+          />
+        }
+      >
+        {current ? current.label : "Size"}
+        <ChevronDown aria-hidden />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" side="top" sideOffset={6} className="min-w-36">
+        {SIZE_BANDS.map((band) => (
+          <DropdownMenuItem
+            key={band.id}
+            className="py-1.5 text-xs"
+            onClick={() => onChange(value === band.id ? null : band.id)}
+          >
+            <span className="flex-1">{band.label}</span>
+            {value === band.id ? <Check aria-hidden className="size-3.5" /> : null}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
 function TreeSeeding({ name }: { name: string }) {
@@ -164,6 +233,7 @@ export function FileTree() {
   const [quickTarget, setQuickTarget] = useState<QuickResolveTarget | null>(null);
   const [query, setQuery] = useState("");
   const [sensitiveOnly, setSensitiveOnly] = useState(false);
+  const [sizeBand, setSizeBand] = useState<SizeBand | null>(null);
   const loadId = useRef({ slug: selectedSlug, linked: !!root?.linked });
 
   const statusKey = root ? JSON.stringify(root.status) : "";
@@ -233,6 +303,7 @@ export function FileTree() {
     setQuickTarget(null);
     setQuery("");
     setSensitiveOnly(false);
+    setSizeBand(null);
   }, [selectedSlug, root?.linked]);
 
   useEffect(() => {
@@ -265,18 +336,15 @@ export function FileTree() {
   );
   const showSensitiveOnly = sensitiveOnly && hasSecret;
   const querying = query.trim().length > 0;
-  const filtering = querying || showSensitiveOnly;
-  const visibleTree = useMemo(
-    () =>
-      filterTree(
-        tree,
-        query,
-        showSensitiveOnly
-          ? (rel) => sensitivityByRel.get(rel) === "secret"
-          : undefined,
-      ),
-    [tree, query, showSensitiveOnly, sensitivityByRel],
-  );
+  const filtering = querying || showSensitiveOnly || sizeBand !== null;
+  const visibleTree = useMemo(() => {
+    const matched = filterTree(
+      tree,
+      query,
+      showSensitiveOnly ? (rel) => sensitivityByRel.get(rel) === "secret" : undefined,
+    );
+    return sizeBand ? filterTreeBySize(matched, sizeBand) : matched;
+  }, [tree, query, showSensitiveOnly, sensitivityByRel, sizeBand]);
 
   useEffect(() => {
     if (!hasSecret) setSensitiveOnly(false);
@@ -432,7 +500,7 @@ export function FileTree() {
         <div className="flex flex-col gap-0.5 px-1.5 py-1">
         {filtering && visibleTree.length === 0 ? (
           <p className="px-2 py-1.5 text-sm text-muted-foreground">
-            {querying ? "No matches" : "No sensitive files"}
+            {treeEmptyMessage(querying, showSensitiveOnly, sizeBand !== null)}
           </p>
         ) : null}
         {!root.linked ? (
@@ -475,8 +543,9 @@ export function FileTree() {
         ))}
         </div>
       </div>
-      <footer className="flex h-8 shrink-0 items-center border-t border-border px-3 text-xs tabular-nums text-muted-foreground">
-        {projectSizeLabel(files, root.linked)}
+      <footer className="flex h-8 min-w-0 shrink-0 items-center gap-2 border-t border-border px-3 text-xs tabular-nums text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate">{projectSizeLabel(files, root.linked)}</span>
+        <SizeBandMenu value={sizeBand} disabled={!root.linked} onChange={setSizeBand} />
       </footer>
       {root.linked ? (
         <>

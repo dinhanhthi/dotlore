@@ -39,6 +39,38 @@ function renderNode(path: string, sensitivity: Sensitivity | null = null): strin
   );
 }
 
+describe("TreeNode folder", () => {
+  it("does not offer expand when a size filter left the folder with no children", () => {
+    const html = renderToStaticMarkup(
+      <TreeNode
+        node={{
+          name: "cache",
+          path: "cache",
+          kind: "folder",
+          children: [],
+          bytes: 6 * 1024 * 1024,
+          state: "Synced",
+        }}
+        depth={0}
+        selectedRel={null}
+        conflictSet={new Set()}
+        isOpen={() => true}
+        onToggle={() => {}}
+        onSelect={() => {}}
+        entries={entries}
+        onUntrack={() => {}}
+        rootPath="/Users/demo/git/dotlore"
+        maxFileBytes={50 * 1024 * 1024}
+        sensitivityByRel={new Map()}
+      />,
+    );
+    expect(html).not.toContain("Expand cache");
+    expect(html).not.toContain("Collapse cache");
+    expect(html).toContain("cache");
+    expect(html).toContain("6.0 MB");
+  });
+});
+
 describe("TreeNode untrack", () => {
   it("does not show an inline Untrack button", () => {
     expect(renderNode("CLAUDE.md")).not.toContain('aria-label="Untrack"');

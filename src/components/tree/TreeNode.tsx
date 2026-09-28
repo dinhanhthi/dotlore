@@ -122,7 +122,7 @@ export function TreeNode({
             />
           }
         >
-          {node.kind === "folder" ? (
+          {node.kind === "folder" && node.children.length > 0 ? (
             <button
               type="button"
               aria-expanded={open}
@@ -137,6 +137,11 @@ export function TreeNode({
               )}
               <span className="min-w-0 truncate text-sm">{node.name}</span>
             </button>
+          ) : node.kind === "folder" ? (
+            <span className="flex min-w-0 flex-1 items-center gap-1.5 text-foreground">
+              <span aria-hidden className="size-4 shrink-0" />
+              <span className="min-w-0 truncate text-sm">{node.name}</span>
+            </span>
           ) : (
             <button
               type="button"

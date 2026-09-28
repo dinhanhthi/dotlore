@@ -12,6 +12,7 @@ import {
   fileSensitivityMap,
   projectSizeLabel,
   showAgentEmptyHint,
+  treeEmptyMessage,
   treeAwaitingLoad,
   treeDialogsAfterRootChange,
   treeLoadMatches,
@@ -194,6 +195,23 @@ describe("FileTree header", () => {
     expect(isDisabled(buttonWithLabel(renderTree(unlinked), "Add to track"))).toBe(
       true,
     );
+  });
+
+  it("puts a size filter at the end of the footer", () => {
+    const html = renderTree(unlinked);
+    expect(html).toContain("Not linked");
+    expect(html.indexOf("Not linked")).toBeLessThan(html.indexOf('aria-label="Filter by size"'));
+    expect(isDisabled(buttonWithLabel(html, "Filter by size"))).toBe(true);
+    expect(html).toContain("Size");
+  });
+});
+
+describe("treeEmptyMessage", () => {
+  it("uses the size line only when size is the only filter", () => {
+    expect(treeEmptyMessage(false, false, true)).toBe("No files in this size");
+    expect(treeEmptyMessage(false, true, false)).toBe("No sensitive files");
+    expect(treeEmptyMessage(true, false, true)).toBe("No matches");
+    expect(treeEmptyMessage(false, true, true)).toBe("No matches");
   });
 });
 

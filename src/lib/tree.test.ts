@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import type { TrackedFile } from "./types";
-import { buildTree, filterTree, nodeWeight, type TreeNode } from "./tree";
+import {
+  buildTree,
+  filterTree,
+  filterTreeBySize,
+  inSizeBand,
+  nodeWeight,
+  SIZE_BANDS,
+  type TreeNode,
+} from "./tree";
 
 function tracked(
   rel: string,
@@ -202,5 +210,62 @@ describe("filterTree", () => {
       "a/b/c/secret.pem",
     ]);
     expect(filterTree(tree, "")).toBe(tree);
+  });
+});
+
+const MB = 1024 * 1024;
+
+describe("size bands", () => {
+  it("offers the three footer ranges", () => {
+    expect(SIZE_BANDS.map((band) => band.label)).toEqual([
+      "1MB - 5MB",
+      "5MB - 20MB",
+      ">20MB",
+    ]);
+  });
+
+  it("meets at 5MB and 20MB without overlap", () => {
+    expect(inSizeBand(MB - 1, "1-5")).toBe(false);
+    expect(inSizeBand(MB, "1-5")).toBe(true);
+    expect(inSizeBand(5 * MB - 1, "1-5")).toBe(true);
+    expect(inSizeBand(5 * MB, "1-5")).toBe(false);
+
+    expect(inSizeBand(5 * MB, "5-20")).toBe(true);
+    expect(inSizeBand(20 * MB, "5-20")).toBe(true);
+    expect(inSizeBand(20 * MB + 1, "5-20")).toBe(false);
+
+    expect(inSizeBand(20 * MB, "over-20")).toBe(false);
+    expect(inSizeBand(20 * MB + 1, "over-20")).toBe(true);
+  });
+});
+
+describe("filterTreeBySize", () => {
+  it("keeps a matching file and the folders that lead to it", () => {
+    const tree = buildTree([
+      tracked("docs/big.bin", 3 * MB),
+      tracked("docs/small.txt", 100 * 1024),
+      tracked("notes.md", 2 * MB),
+      tracked("video/movie.mp4", 25 * MB),
+    ]);
+    const visible = filterTreeBySize(tree, "1-5");
+    expect(paths(visible)).toEqual(["docs", "docs/big.bin", "notes.md"]);
+    expect(visible.find((node) => node.path === "docs")?.bytes).toBe(3 * MB + 100 * 1024);
+  });
+
+  it("drops a folder whose total is in range when none of its files are", () => {
+    const tree = buildTree([
+      tracked("cache/a.bin", 3 * MB),
+      tracked("cache/b.bin", 3 * MB),
+    ]);
+    expect(filterTreeBySize(tree, "5-20")).toEqual([]);
+  });
+
+  it("keeps an out-of-range ancestor only to reach a matching file", () => {
+    const tree = buildTree([
+      tracked("proj/huge.bin", 98 * MB),
+      tracked("proj/notes.md", 2 * MB),
+    ]);
+    expect(paths(filterTreeBySize(tree, "1-5"))).toEqual(["proj", "proj/notes.md"]);
+    expect(paths(filterTreeBySize(tree, "over-20"))).toEqual(["proj", "proj/huge.bin"]);
   });
 });

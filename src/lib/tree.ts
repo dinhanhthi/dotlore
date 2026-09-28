@@ -104,6 +104,51 @@ export function filterTree(
   return filtered;
 }
 
+/** Inclusive lower bound, exclusive upper bound, except `5-20` which includes 20MB. */
+export type SizeBand = "1-5" | "5-20" | "over-20";
+
+export const SIZE_BANDS: readonly { id: SizeBand; label: string }[] = [
+  { id: "1-5", label: "1MB - 5MB" },
+  { id: "5-20", label: "5MB - 20MB" },
+  { id: "over-20", label: ">20MB" },
+];
+
+export function inSizeBand(bytes: number, band: SizeBand): boolean {
+  switch (band) {
+    case "1-5":
+      return bytes >= MB && bytes < 5 * MB;
+    case "5-20":
+      return bytes >= 5 * MB && bytes <= 20 * MB;
+    case "over-20":
+      return bytes > 20 * MB;
+  }
+}
+
+/**
+ * Keep files whose size is in `band`. Ancestor folders stay so a match is
+ * still reachable. A folder is never kept for its own rolled-up size, and
+ * the byte count on a kept folder is left as-is.
+ */
+export function filterTreeBySize(nodes: TreeNode[], band: SizeBand): TreeNode[] {
+  const filtered: TreeNode[] = [];
+  for (const node of nodes) {
+    const next = filterSizeNode(node, band);
+    if (next) filtered.push(next);
+  }
+  return filtered;
+}
+
+function filterSizeNode(node: TreeNode, band: SizeBand): TreeNode | null {
+  if (node.kind === "file") return inSizeBand(node.bytes, band) ? node : null;
+  const children: TreeNode[] = [];
+  for (const child of node.children) {
+    const next = filterSizeNode(child, band);
+    if (next) children.push(next);
+  }
+  if (children.length === 0) return null;
+  return children.length === node.children.length ? node : { ...node, children };
+}
+
 function filterNode(
   node: TreeNode,
   needle: string,
