@@ -1,3 +1,21 @@
+## v0.6.0 (2026-09-28)
+
+### Settings
+
+- Global settings — patterns, ignore defaults, size limits — now sync between your Macs through the cloud, the same way projects do. [#17ee9cc5](https://github.com/dinhanhthi/dotlore/commit/17ee9cc5)
+- Editing a pattern catalog now applies it to your current projects and agents immediately, not only to roots added afterward. [#bc431579](https://github.com/dinhanhthi/dotlore/commit/bc431579)
+- The pattern catalog dropdown no longer grows past the window; it now scrolls. [#1151a116](https://github.com/dinhanhthi/dotlore/commit/1151a116)
+- Dropped the scrollbar track in Settings, keeping only the thumb. [#385a9172](https://github.com/dinhanhthi/dotlore/commit/385a9172)
+
+### Sidebar & tree
+
+- The file tree can now be filtered by file size. [#396cb9ee](https://github.com/dinhanhthi/dotlore/commit/396cb9ee)
+- Fixed a duplicate size shown in the file tree header. [#dc30cdc5](https://github.com/dinhanhthi/dotlore/commit/dc30cdc5)
+
+### Sync
+
+- Cold start is faster, and each root now reports as it finishes instead of waiting for the whole cycle. [#33630119](https://github.com/dinhanhthi/dotlore/commit/33630119)
+
 ## v0.5.2 (2026-09-27)
 
 ### Sidebar & tree
