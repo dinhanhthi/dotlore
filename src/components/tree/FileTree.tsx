@@ -348,11 +348,6 @@ export function FileTree() {
           {root.name}
         </span>
         <div className="flex shrink-0 items-center gap-0.5">
-          {root.linked && (
-            <span className="mr-1 text-xs text-muted-foreground tabular-nums">
-              {formatBytes(totalBytes(files))}
-            </span>
-          )}
           <StarRootButton />
           <Tooltip>
             <TooltipTrigger
