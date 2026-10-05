@@ -29,7 +29,7 @@ const TREE_INSET = "10px";
  */
 const TREE_LEVEL = "calc(1rem + 0.375rem)";
 
-function weightClass(weight: NodeWeight): string {
+export function weightClass(weight: NodeWeight): string {
   switch (weight) {
     case "ok":
       return "text-muted-foreground";

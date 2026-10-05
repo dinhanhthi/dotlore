@@ -200,7 +200,10 @@ describe("FileTree header", () => {
   it("puts a size filter at the end of the footer", () => {
     const html = renderTree(unlinked);
     expect(html).toContain("Not linked");
-    expect(html.indexOf("Not linked")).toBeLessThan(html.indexOf('aria-label="Filter by size"'));
+    const sensitive = html.indexOf('aria-label="Show only sensitive files"');
+    const size = html.indexOf('aria-label="Filter by size"');
+    expect(html.indexOf("Not linked")).toBeLessThan(sensitive);
+    expect(sensitive).toBeLessThan(size);
     expect(isDisabled(buttonWithLabel(html, "Filter by size"))).toBe(true);
     expect(html).toContain("Size");
   });

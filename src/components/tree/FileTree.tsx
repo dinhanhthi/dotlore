@@ -14,7 +14,7 @@ import {
   QuickResolveDialog,
   type QuickResolveTarget,
 } from "@/components/tree/QuickResolveDialog";
-import { TreeNode } from "@/components/tree/TreeNode";
+import { TreeNode, weightClass } from "@/components/tree/TreeNode";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -38,6 +38,7 @@ import {
 import { useRoots, useSyncing, useTaskLabel } from "@/lib/roots";
 import {
   buildTree,
+  bytesWeight,
   filterTree,
   filterTreeBySize,
   SIZE_BANDS,
@@ -115,10 +116,13 @@ function conflictViewMap(views: ConflictView[]): Map<string, ConflictView[]> {
  * files would read as "this project is empty" rather than "nothing is being
  * tracked here yet".
  */
+export function projectFileCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "file" : "files"}`;
+}
+
 export function projectSizeLabel(files: TrackedFile[], linked: boolean): string {
   if (!linked) return "Not linked";
-  const fileLabel = `${files.length} ${files.length === 1 ? "file" : "files"}`;
-  return `${fileLabel} · ${formatBytes(totalBytes(files))}`;
+  return `${projectFileCountLabel(files.length)} · ${formatBytes(totalBytes(files))}`;
 }
 
 export function totalBytes(files: TrackedFile[]): number {
@@ -322,6 +326,7 @@ export function FileTree() {
     snapshot.linked === currentTree.linked;
   const awaiting = !seedingItem && treeAwaitingLoad(currentTree, snapshot);
   const files = treeReady && snapshot ? snapshot.files : [];
+  const trackedBytes = totalBytes(files);
   const entries = treeReady && snapshot ? snapshot.listed : [];
   const conflictSet = treeReady && snapshot ? snapshot.conflicts : EMPTY_CONFLICTS;
   const conflictViewsByRel =
@@ -352,6 +357,7 @@ export function FileTree() {
 
   const isOpen = useCallback(
     (path: string, depth: number): boolean => {
+      // Search, size, and the sensitive toggle keep every remaining folder open.
       if (filtering) return true;
       if (!selectedSlug) return false;
       const explicit = openBySlug[selectedSlug]?.[path];
@@ -475,26 +481,6 @@ export function FileTree() {
             }
           }}
         />
-        <Tooltip>
-          <TooltipTrigger render={<span className="inline-flex" />}>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              className={cn(
-                showSensitiveOnly
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground",
-              )}
-              disabled={!hasSecret}
-              aria-label="Show only sensitive files"
-              aria-pressed={showSensitiveOnly}
-              onClick={() => setSensitiveOnly((current) => !current)}
-            >
-              <KeyRound aria-hidden />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Show only sensitive files</TooltipContent>
-        </Tooltip>
       </div>
       <div className="panel-scroll min-h-0 min-w-0 flex-1 overflow-auto">
         <div className="flex flex-col gap-0.5 px-1.5 py-1">
@@ -544,7 +530,39 @@ export function FileTree() {
         </div>
       </div>
       <footer className="flex h-8 min-w-0 shrink-0 items-center gap-2 border-t border-border px-3 text-xs tabular-nums text-muted-foreground">
-        <span className="min-w-0 flex-1 truncate">{projectSizeLabel(files, root.linked)}</span>
+        <span className="min-w-0 flex-1 truncate">
+          {root.linked ? (
+            <>
+              {projectFileCountLabel(files.length)}
+              {" · "}
+              <span className={weightClass(bytesWeight(trackedBytes, maxFileBytes))}>
+                {formatBytes(trackedBytes)}
+              </span>
+            </>
+          ) : (
+            projectSizeLabel(files, false)
+          )}
+        </span>
+        <Tooltip>
+          <TooltipTrigger render={<span className="inline-flex" />}>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className={cn(
+                showSensitiveOnly
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground",
+              )}
+              disabled={!hasSecret}
+              aria-label="Show only sensitive files"
+              aria-pressed={showSensitiveOnly}
+              onClick={() => setSensitiveOnly((current) => !current)}
+            >
+              <KeyRound aria-hidden />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Show only sensitive files</TooltipContent>
+        </Tooltip>
         <SizeBandMenu value={sizeBand} disabled={!root.linked} onChange={setSizeBand} />
       </footer>
       {root.linked ? (

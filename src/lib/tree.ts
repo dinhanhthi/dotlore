@@ -48,13 +48,19 @@ export function nodeStatus(node: TreeNode, conflicts: Set<string>): FileStatus {
   return worst;
 }
 
+/** Bands a tree row uses for its byte count. */
+export function bytesWeight(bytes: number, maxFileBytes: number): NodeWeight {
+  if (bytes > maxFileBytes) return "danger";
+  if (bytes >= maxFileBytes / 2) return "warning";
+  if (bytes >= 4 * MB) return "heavy";
+  if (bytes >= MB) return "notice";
+  return "ok";
+}
+
 export function nodeWeight(node: TreeNode, maxFileBytes: number): NodeWeight {
   if (node.kind === "file") {
-    if (node.state === "TooLarge" || node.bytes > maxFileBytes) return "danger";
-    if (node.bytes >= maxFileBytes / 2) return "warning";
-    if (node.bytes >= 4 * MB) return "heavy";
-    if (node.bytes >= MB) return "notice";
-    return "ok";
+    if (node.state === "TooLarge") return "danger";
+    return bytesWeight(node.bytes, maxFileBytes);
   }
   let worst: NodeWeight = "ok";
   for (const child of node.children) {
