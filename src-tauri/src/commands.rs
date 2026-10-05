@@ -1468,6 +1468,7 @@ fn list_linkable_sync(engine: &Engine) -> Result<Vec<LinkableRow>, String> {
         .list_slugs()
         .into_iter()
         .filter(|info| !tracked.contains(&info.slug.as_str()))
+        .filter(|info| !engine.cfg.dismissed_slugs.contains(&info.slug))
         .map(|info| LinkableRow {
             slug: info.slug,
             display_name: info.display_name,
@@ -2248,6 +2249,23 @@ mod tests {
     fn list_linkable_without_a_runtime_keeps_the_error_when_a_provider_is_set() {
         let err = list_linkable_unstarted(true, "runtime down".into()).unwrap_err();
         assert_eq!(err, "runtime down");
+    }
+
+    #[test]
+    fn list_linkable_skips_a_dismissed_slug() {
+        let mut fx = fixture();
+        fx.engine
+            .cloud
+            .write_manifest_once(&Manifest {
+                slug: "old-notes".into(),
+                display_name: "Notes".into(),
+                is_agent: false,
+            })
+            .unwrap();
+        fx.engine.remove_root("old-notes").unwrap();
+
+        let rows = list_linkable_sync(&fx.engine).expect("list_linkable");
+        assert!(!rows.iter().any(|r| r.slug == "old-notes"), "{rows:?}");
     }
 
     #[test]

@@ -640,11 +640,21 @@ impl Engine {
     ///
     /// A removed catalog agent home is appended to `dismissed_agents` so a
     /// later import leaves it out. Other roots are not.
+    ///
+    /// An untracked slug that still has a cloud manifest is an unlinked row:
+    /// it is appended to `dismissed_slugs` so the listing hides it on this
+    /// device. The cloud itself is never touched.
     pub fn remove_root(&mut self, slug: &str) -> Result<()> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
         let Some(removed) = self.cfg.roots.iter().find(|r| r.slug == slug).cloned() else {
-            bail!("no tracked root with slug {slug}");
+            if !self.cloud().slug_dir(slug)?.join("manifest.json").is_file() {
+                bail!("no tracked root with slug {slug}");
+            }
+            if !self.cfg.dismissed_slugs.iter().any(|s| s == slug) {
+                self.cfg.dismissed_slugs.push(slug.to_string());
+            }
+            return self.save(&g);
         };
         self.cfg.roots.retain(|r| r.slug != slug);
         if is_catalog_agent(&self.home_dir, &removed.path)
@@ -1663,6 +1673,7 @@ impl Engine {
         self.cfg
             .dismissed_agents
             .retain(|p| !same_agent_path(p, &root.path));
+        self.cfg.dismissed_slugs.retain(|s| *s != root.slug);
         self.cfg.roots.push(root);
         self.save(g)
     }
@@ -3510,7 +3521,12 @@ mod tests {
         a.engine.remove_root("proj-claude").unwrap();
         assert!(Config::load(a.home.path()).unwrap().roots.is_empty());
         assert!(staging(&a).join(".git").is_dir());
-        assert!(a.engine.remove_root("proj-claude").is_err());
+        // Removed, it is an unlinked cloud slug; a second remove dismisses it.
+        a.engine.remove_root("proj-claude").unwrap();
+        assert_eq!(
+            Config::load(a.home.path()).unwrap().dismissed_slugs,
+            vec!["proj-claude".to_string()]
+        );
     }
 
     /// `remove_root` keeps the staging repo, so a later Link to the same slug
@@ -4279,6 +4295,31 @@ mod tests {
         let cfg = Config::load(state.path()).unwrap();
         assert!(cfg.roots.is_empty());
         assert_eq!(cfg.dismissed_agents, vec![stored]);
+    }
+
+    #[test]
+    fn remove_root_dismisses_an_unlinked_cloud_slug_until_it_is_linked() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let mut b = device(provider.path(), 'b');
+
+        b.engine.remove_root("proj-claude").unwrap();
+        b.engine.remove_root("proj-claude").unwrap();
+        let cfg = Config::load(b.home.path()).unwrap();
+        assert!(cfg.roots.is_empty());
+        assert_eq!(cfg.dismissed_slugs, vec!["proj-claude".to_string()]);
+        assert!(cloud_of(&b).read_manifest("proj-claude").is_some());
+
+        let err = b.engine.remove_root("nowhere").unwrap_err().to_string();
+        assert!(err.contains("no tracked root with slug nowhere"), "{err}");
+
+        let b_root = b.root.path().to_path_buf();
+        b.engine.link_root("proj-claude", &b_root).unwrap();
+        let cfg = Config::load(b.home.path()).unwrap();
+        assert!(cfg.dismissed_slugs.is_empty());
+        assert_eq!(cfg.roots.len(), 1);
     }
 
     #[test]

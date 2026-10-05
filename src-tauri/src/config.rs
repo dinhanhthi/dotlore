@@ -58,6 +58,10 @@ pub struct Config {
     /// path is added again. Empty on configs written before this field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dismissed_agents: Vec<PathBuf>,
+    /// Cloud slugs the user removed from the unlinked list on this device.
+    /// Listing skips these until that slug is added or linked again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dismissed_slugs: Vec<String>,
     /// Project seed patterns. `None` means use `project::DEFAULT_PATTERNS`.
     /// Never applied to agent folders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
