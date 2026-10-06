@@ -5,6 +5,8 @@ import type { ConflictView, ResolutionDto, SiblingDto } from "@/lib/types";
 
 import {
   applyKeepAll,
+  keepAllDialogAction,
+  keepAllRemainder,
   pickSiblingPath,
   quickResolveCopy,
   quickResolveItems,
@@ -697,6 +699,69 @@ describe("applyKeepAll", () => {
     expect(ops.openResolution).toHaveBeenCalledTimes(1);
     release();
     await expect(first).resolves.toEqual({ status: "done", applied: ["a.md"] });
+  });
+});
+
+describe("keepAllRemainder", () => {
+  const files = [
+    { rel: "a.md", keep: "live" as const, views: [] },
+    { rel: "b.md", keep: "live" as const, views: [] },
+    { rel: "c.md", keep: "live" as const, views: [] },
+  ];
+
+  it("skips applied files and keeps the failed one", () => {
+    const applied = new Set(["a.md"]);
+    expect(keepAllRemainder(files, applied).map((file) => file.rel)).toEqual(["b.md", "c.md"]);
+  });
+
+  it("keeps every file of a new target with a fresh applied set", () => {
+    const applied = new Set(["a.md", "b.md"]);
+    expect(keepAllRemainder(files, applied).map((file) => file.rel)).toEqual(["c.md"]);
+    expect(keepAllRemainder(files, new Set()).map((file) => file.rel)).toEqual([
+      "a.md",
+      "b.md",
+      "c.md",
+    ]);
+  });
+});
+
+describe("keepAllDialogAction", () => {
+  it("refreshes, reports resolved, and closes on done", () => {
+    expect(keepAllDialogAction({ status: "done", applied: ["a.md"] })).toEqual({
+      message: null,
+      refresh: true,
+      resolved: true,
+      close: true,
+    });
+  });
+
+  it("refreshes and stays open with the message on stopped", () => {
+    expect(
+      keepAllDialogAction({
+        status: "stopped",
+        applied: ["a.md"],
+        failedRel: "b.md",
+        message: `${STALE} b.md`,
+      }),
+    ).toEqual({ message: `${STALE} b.md`, refresh: true, resolved: false, close: false });
+  });
+
+  it("refreshes and closes without resolving on blocked", () => {
+    expect(keepAllDialogAction({ status: "blocked", applied: [], failedRel: "a.md" })).toEqual({
+      message: null,
+      refresh: true,
+      resolved: false,
+      close: true,
+    });
+  });
+
+  it("stays open with the busy message and does not refresh on busy", () => {
+    expect(keepAllDialogAction({ status: "busy", applied: [] })).toEqual({
+      message: "Another keep-all is still running.",
+      refresh: false,
+      resolved: false,
+      close: false,
+    });
   });
 });
 

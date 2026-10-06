@@ -263,6 +263,40 @@ function stopped(
   return { status: "stopped", applied: [...applied], failedRel, message };
 }
 
+/** Files still to resolve. A second confirm retries only these. */
+export function keepAllRemainder<T extends { rel: string }>(
+  files: readonly T[],
+  applied: ReadonlySet<string>,
+): T[] {
+  return files.filter((file) => !applied.has(file.rel));
+}
+
+export type KeepAllDialogAction = {
+  message: string | null;
+  refresh: boolean;
+  resolved: boolean;
+  close: boolean;
+};
+
+/** What the dialog does after a batch: busy only shows its message. */
+export function keepAllDialogAction(result: KeepAllResult): KeepAllDialogAction {
+  if (result.status === "busy") {
+    return {
+      message: result.message ?? BUSY_MESSAGE,
+      refresh: false,
+      resolved: false,
+      close: false,
+    };
+  }
+  const done = result.status === "done";
+  return {
+    message: result.status === "stopped" ? (result.message ?? null) : null,
+    refresh: true,
+    resolved: done,
+    close: done || result.status === "blocked",
+  };
+}
+
 /**
  * Resolve each file on its own snapshot: open, resolve, close, then the next.
  * A second caller gets `busy` and does not open a snapshot.

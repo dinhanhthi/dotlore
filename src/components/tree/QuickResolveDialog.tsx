@@ -16,6 +16,8 @@ import { useRoots } from "@/lib/roots";
 
 import {
   applyKeepAll,
+  keepAllDialogAction,
+  keepAllRemainder,
   quickResolveTargetCopy,
   type QuickResolveTarget,
 } from "./quick-resolve";
@@ -51,7 +53,7 @@ export function QuickResolveDialog({
 
   async function confirm() {
     if (target === null || locked || running) return;
-    const remaining = target.files.filter((file) => !appliedRels.current.has(file.rel));
+    const remaining = keepAllRemainder(target.files, appliedRels.current);
     setRunning(true);
     setMessage(null);
     try {
@@ -61,16 +63,14 @@ export function QuickResolveDialog({
         closeResolution,
       });
       for (const rel of result.applied) appliedRels.current.add(rel);
-      if (result.status === "busy") {
-        setMessage(result.message ?? "Another keep-all is still running.");
-        return;
-      }
-      if (result.status === "stopped") setMessage(result.message ?? null);
+      const action = keepAllDialogAction(result);
+      setMessage(action.message);
+      if (!action.refresh) return;
       await refreshRoots().catch(() => {
         // Tree/status still refresh from the status event.
       });
-      if (result.status === "done") onResolved();
-      if (result.status === "done" || result.status === "blocked") onOpenChange(false);
+      if (action.resolved) onResolved();
+      if (action.close) onOpenChange(false);
     } catch (cause) {
       setMessage(errorMessage(cause, "Could not resolve the conflict"));
     } finally {
