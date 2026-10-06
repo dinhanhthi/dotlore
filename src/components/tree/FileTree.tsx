@@ -14,7 +14,7 @@ import {
   QuickResolveDialog,
   type QuickResolveTarget,
 } from "@/components/tree/QuickResolveDialog";
-import { TreeNode, weightClass } from "@/components/tree/TreeNode";
+import { TreeNode, weightClass, type TreeKeepScope } from "@/components/tree/TreeNode";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,7 +27,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { conflictLiveRel } from "@/lib/conflicts";
+import {
+  conflictLiveRel,
+  keepAllFiles,
+  uniqueConflictRels,
+  viewsInScope,
+  type KeepAllChoice,
+} from "@/lib/conflicts";
 import {
   conflicts as fetchConflicts,
   listEntries,
@@ -210,6 +216,66 @@ function TreeSeeding({ name }: { name: string }) {
   );
 }
 
+function allConflictViews(byRel: ReadonlyMap<string, ConflictView[]>): ConflictView[] {
+  const all: ConflictView[] = [];
+  for (const group of byRel.values()) all.push(...group);
+  return all;
+}
+
+/** Conflict views for one tree path, from the full map rather than visible children. */
+export function scopedViews(
+  byRel: ReadonlyMap<string, ConflictView[]>,
+  path: string,
+  kind: "file" | "folder",
+): ConflictView[] {
+  return viewsInScope(allConflictViews(byRel), { kind, path });
+}
+
+/** One array per path, so a recursive tree does not filter the map again. */
+export function memoizedScopedViews(
+  byRel: ReadonlyMap<string, ConflictView[]>,
+): (path: string, kind: "file" | "folder") => ConflictView[] {
+  const all = allConflictViews(byRel);
+  const cache = new Map<string, ConflictView[]>();
+  return (path, kind) => {
+    const key = `${kind}\0${path}`;
+    const hit = cache.get(key);
+    if (hit) return hit;
+    const views = viewsInScope(all, { kind, path });
+    cache.set(key, views);
+    return views;
+  };
+}
+
+/** Confirm target for a file or a folder. `device` is the menu item's word. */
+export function quickTargetForScope(
+  byRel: ReadonlyMap<string, ConflictView[]>,
+  scope: TreeKeepScope,
+  choice: KeepAllChoice,
+  device?: string,
+): QuickResolveTarget | null {
+  const scoped = scopedViews(byRel, scope.path, scope.kind);
+  const kept = keepAllFiles(scoped, scope, choice);
+  if (kept.length === 0) return null;
+  return {
+    choice,
+    ...(device ? { device } : {}),
+    scopeCount: uniqueConflictRels(scoped).length,
+    files: kept.map((file) => ({
+      ...file,
+      views: scoped.filter((view) => conflictLiveRel(view) === file.rel),
+    })),
+  };
+}
+
+export function quickResolveIsDisabled(
+  locked: boolean,
+  resolvingRel: string | null,
+  hasQuickTarget: boolean,
+): boolean {
+  return locked || resolvingRel !== null || hasQuickTarget;
+}
+
 export function FileTree() {
   const {
     roots,
@@ -379,26 +445,23 @@ export function FileTree() {
     [filtering, isOpen, selectedSlug],
   );
 
-  const conflictViews = useCallback(
-    (rel: string) => conflictViewsByRel.get(rel),
+  const scopedViewsForNode = useMemo(
+    () => memoizedScopedViews(conflictViewsByRel),
     [conflictViewsByRel],
   );
 
-  const quickResolveDisabled = useCallback(
-    // The backend holds one resolution snapshot; quick-resolving any file
-    // would replace the open resolver's snapshot, so block it while one is open.
-    (_rel: string) => locked || resolvingRel !== null,
-    [locked, resolvingRel],
+  // The backend holds one resolution snapshot. A keep-all would replace the
+  // open resolver's snapshot, and a second confirm must wait for the first.
+  const quickResolveDisabled = quickResolveIsDisabled(
+    locked,
+    resolvingRel,
+    quickTarget !== null,
   );
 
   const onQuickResolve = useCallback(
-    (rel: string, keep: "live" | "other", siblingRel?: string) => {
-      const views = conflictViewsByRel.get(rel);
-      if (!views) return;
-      const device = views.find(
-        (view) => view.sibling.replace(/\\/g, "/") === siblingRel,
-      )?.loserName;
-      setQuickTarget({ rel, keep, siblingRel, device, views });
+    (scope: TreeKeepScope, choice: KeepAllChoice, device?: string) => {
+      const target = quickTargetForScope(conflictViewsByRel, scope, choice, device);
+      if (target) setQuickTarget(target);
     },
     [conflictViewsByRel],
   );
@@ -522,7 +585,7 @@ export function FileTree() {
             rootPath={root.path}
             maxFileBytes={maxFileBytes}
             sensitivityByRel={sensitivityByRel}
-            conflictViews={conflictViews}
+            scopedViews={scopedViewsForNode}
             onQuickResolve={onQuickResolve}
             quickResolveDisabled={quickResolveDisabled}
           />

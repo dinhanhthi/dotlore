@@ -6,11 +6,9 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
-  ContextMenuSub,
-  ContextMenuSubContent,
-  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import type { KeepAllChoice } from "@/lib/conflicts";
 import { composeLivePath } from "@/lib/path";
 import type { FileStatus, NodeWeight, TreeNode as TreeNodeData } from "@/lib/tree";
 import { nodeStatus, nodeWeight } from "@/lib/tree";
@@ -18,8 +16,14 @@ import type { ConflictView, EntryView, Sensitivity } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { coveringEntry, formatBytes, untrackTarget } from "./entries";
+import { KeepAllMenuItems } from "./KeepAllMenuItems";
 import { quickResolveItems } from "./quick-resolve";
 import { SensitivityMark, sensitiveNameClass } from "./SensitivityMark";
+
+export type TreeKeepScope = {
+  kind: "file" | "folder";
+  path: string;
+};
 
 /** Left inset shared by every row. */
 const TREE_INSET = "10px";
@@ -68,9 +72,13 @@ type TreeNodeProps = {
   rootPath: string;
   maxFileBytes: number;
   sensitivityByRel: ReadonlyMap<string, Sensitivity | null>;
-  conflictViews?: (rel: string) => ConflictView[] | undefined;
-  onQuickResolve?: (rel: string, keep: "live" | "other", siblingRel?: string) => void;
-  quickResolveDisabled?: (rel: string) => boolean;
+  scopedViews?: (path: string, kind: "file" | "folder") => ConflictView[];
+  onQuickResolve?: (
+    scope: TreeKeepScope,
+    choice: KeepAllChoice,
+    device?: string,
+  ) => void;
+  quickResolveDisabled?: boolean;
 };
 
 export function TreeNode({
@@ -86,7 +94,7 @@ export function TreeNode({
   rootPath,
   maxFileBytes,
   sensitivityByRel,
-  conflictViews,
+  scopedViews,
   onQuickResolve,
   quickResolveDisabled,
 }: TreeNodeProps) {
@@ -100,9 +108,13 @@ export function TreeNode({
     node.kind === "file" && weight === "danger"
       ? "Exceeds the size limit and is not being synced"
       : undefined;
-  const views = node.kind === "file" ? conflictViews?.(node.path) : undefined;
-  const quick = views && views.length > 0 ? quickResolveItems(views) : null;
-  const quickDisabled = quickResolveDisabled?.(node.path) ?? false;
+  const views = scopedViews?.(node.path, node.kind) ?? [];
+  const menu = onQuickResolve && views.length > 0 ? quickResolveItems(views) : null;
+
+  function choose(choice: KeepAllChoice, device?: string) {
+    onQuickResolve?.({ kind: node.kind, path: node.path }, choice, device);
+  }
+
   const sensitivity = node.kind === "file" ? sensitivityByRel.get(node.path) : null;
 
   return (
@@ -188,44 +200,14 @@ export function TreeNode({
               </ContextMenuItem>
             </>
           ) : null}
-          {quick && onQuickResolve ? (
+          {menu ? (
             <>
               <ContextMenuSeparator />
-              <ContextMenuItem
-                disabled={quickDisabled}
-                onClick={() => onQuickResolve(node.path, "live")}
-              >
-                {quick.live.label}
-              </ContextMenuItem>
-              {quick.cloud.length === 1 ? (
-                <ContextMenuItem
-                  disabled={quickDisabled}
-                  onClick={() =>
-                    onQuickResolve(node.path, "other", quick.cloud[0].siblingRel)
-                  }
-                >
-                  {quick.cloud[0].label}
-                </ContextMenuItem>
-              ) : (
-                <ContextMenuSub>
-                  <ContextMenuSubTrigger disabled={quickDisabled}>
-                    Keep cloud
-                  </ContextMenuSubTrigger>
-                  <ContextMenuSubContent className="min-w-40">
-                    {quick.cloud.map((item) => (
-                      <ContextMenuItem
-                        key={item.siblingRel}
-                        disabled={quickDisabled}
-                        onClick={() =>
-                          onQuickResolve(node.path, "other", item.siblingRel)
-                        }
-                      >
-                        {item.label}
-                      </ContextMenuItem>
-                    ))}
-                  </ContextMenuSubContent>
-                </ContextMenuSub>
-              )}
+              <KeepAllMenuItems
+                menu={menu}
+                disabled={quickResolveDisabled ?? false}
+                onChoose={choose}
+              />
             </>
           ) : null}
         </ContextMenuContent>
@@ -255,7 +237,7 @@ export function TreeNode({
               rootPath={rootPath}
               maxFileBytes={maxFileBytes}
               sensitivityByRel={sensitivityByRel}
-              conflictViews={conflictViews}
+              scopedViews={scopedViews}
               onQuickResolve={onQuickResolve}
               quickResolveDisabled={quickResolveDisabled}
             />

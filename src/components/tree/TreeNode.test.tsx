@@ -119,3 +119,43 @@ describe("TreeNode sensitivity", () => {
     expect(html).not.toContain('aria-label="May contain API tokens"');
   });
 });
+
+describe("TreeNode scopedViews", () => {
+  it("asks for the folder and each open child by path and kind", () => {
+    const seen: Array<[string, "file" | "folder"]> = [];
+    const html = renderToStaticMarkup(
+      <TreeNode
+        node={{
+          name: "notes",
+          path: "notes",
+          kind: "folder",
+          bytes: 0,
+          state: "Synced",
+          children: [file("notes/a.md")],
+        }}
+        depth={0}
+        selectedRel={null}
+        conflictSet={new Set()}
+        isOpen={() => true}
+        onToggle={() => {}}
+        onSelect={() => {}}
+        entries={entries}
+        onUntrack={() => {}}
+        rootPath="/Users/demo/git/dotlore"
+        maxFileBytes={50 * 1024 * 1024}
+        sensitivityByRel={new Map()}
+        scopedViews={(path, kind) => {
+          seen.push([path, kind]);
+          return [];
+        }}
+        onQuickResolve={() => {}}
+        quickResolveDisabled={false}
+      />,
+    );
+    expect(seen).toEqual([
+      ["notes", "folder"],
+      ["notes/a.md", "file"],
+    ]);
+    expect(html).toContain(">a.md<");
+  });
+});

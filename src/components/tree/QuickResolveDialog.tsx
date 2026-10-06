@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -11,19 +11,16 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { errorMessage } from "@/lib/errors";
-import { BLOCKED, closeResolution, openResolution, resolveBinary } from "@/lib/ipc";
+import { closeResolution, openResolution, resolveBinary } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
-import type { ConflictView } from "@/lib/types";
 
-import { pickSiblingPath, quickResolveCopy } from "./quick-resolve";
+import {
+  applyKeepAll,
+  quickResolveTargetCopy,
+  type QuickResolveTarget,
+} from "./quick-resolve";
 
-export type QuickResolveTarget = {
-  rel: string;
-  keep: "live" | "other";
-  siblingRel?: string;
-  device?: string;
-  views: ConflictView[];
-};
+export type { QuickResolveTarget };
 
 type QuickResolveDialogProps = {
   slug: string;
@@ -43,54 +40,37 @@ export function QuickResolveDialog({
   const { locked, refreshRoots } = useRoots();
   const [running, setRunning] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const appliedRels = useRef(new Set<string>());
 
   useEffect(() => {
     setMessage(null);
+    appliedRels.current = new Set();
   }, [target]);
 
-  const copy = target
-    ? quickResolveCopy(target.keep, target.rel, target.views, target.device)
-    : null;
+  const copy = target ? quickResolveTargetCopy(target) : null;
 
   async function confirm() {
     if (target === null || locked || running) return;
-    const { rel, keep, siblingRel } = target;
+    const remaining = target.files.filter((file) => !appliedRels.current.has(file.rel));
     setRunning(true);
     setMessage(null);
     try {
-      const dto = await openResolution(slug, rel);
-      try {
-        let path: string | null = null;
-        if (keep === "other") {
-          path = siblingRel ? pickSiblingPath(dto, siblingRel) : null;
-          if (path === null) {
-            setMessage("That version is no longer available. Refresh and try again.");
-            return;
-          }
-        }
-        const result = await resolveBinary(slug, rel, keep, path);
-        if (result === BLOCKED) {
-          onOpenChange(false);
-          return;
-        }
-        if (result.outcome === "applied") {
-          await refreshRoots().catch(() => {
-            // Tree/status still refresh from the status event.
-          });
-          onResolved();
-          onOpenChange(false);
-          return;
-        }
-        setMessage(
-          result.outcome === "stale"
-            ? "The file changed on another device. Review and try again."
-            : "Sync has not finished yet. Try again in a moment.",
-        );
-      } finally {
-        void closeResolution(slug, rel).catch(() => {
-          // Nothing to release.
-        });
+      const result = await applyKeepAll(slug, remaining, {
+        openResolution,
+        resolveBinary,
+        closeResolution,
+      });
+      for (const rel of result.applied) appliedRels.current.add(rel);
+      if (result.status === "busy") {
+        setMessage(result.message ?? "Another keep-all is still running.");
+        return;
       }
+      if (result.status === "stopped") setMessage(result.message ?? null);
+      await refreshRoots().catch(() => {
+        // Tree/status still refresh from the status event.
+      });
+      if (result.status === "done") onResolved();
+      if (result.status === "done" || result.status === "blocked") onOpenChange(false);
     } catch (cause) {
       setMessage(errorMessage(cause, "Could not resolve the conflict"));
     } finally {

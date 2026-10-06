@@ -1,11 +1,14 @@
-import { FolderOpen, Loader2, Star, Trash2, Unlink } from "lucide-react";
+import { Loader2, Star, Unlink } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { KeepAllMenuItems } from "@/components/tree/KeepAllMenuItems";
+import { quickResolveItems } from "@/components/tree/quick-resolve";
 import { Badge } from "@/components/ui/badge";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -13,7 +16,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { RootStatus } from "@/lib/types";
+import type { KeepAllChoice } from "@/lib/conflicts";
+import type { ConflictView, RootStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 function statusDotClass(kind: RootStatus["kind"]): string {
@@ -54,6 +58,12 @@ type SidebarItemProps = {
   onRemove?: () => void;
   onReveal?: () => void;
   onRecover?: () => void;
+  /** Conflict model for the keep section. `"loading"` is a disabled placeholder. */
+  keepAll?: { views: ConflictView[] } | "loading";
+  onKeepAll?: (choice: KeepAllChoice) => void;
+  keepAllDisabled?: boolean;
+  /** Fired when the row context menu opens or closes. */
+  onMenuOpenChange?: (open: boolean) => void;
   writeDisabled?: boolean;
   /** Nothing is tracked in this root; the label is shown at lower opacity. */
   dimmed?: boolean;
@@ -78,6 +88,10 @@ export function SidebarItem({
   onRemove,
   onReveal,
   onRecover,
+  keepAll,
+  onKeepAll,
+  keepAllDisabled = false,
+  onMenuOpenChange,
   writeDisabled = false,
   dimmed = false,
 }: SidebarItemProps) {
@@ -110,25 +124,6 @@ export function SidebarItem({
         )}
         <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
       </button>
-      {linked === false && onLink && (
-        <button
-          type="button"
-          aria-label="Link to a local folder"
-          aria-busy={linking || undefined}
-          disabled={writeDisabled || linking}
-          onClick={(event) => {
-            event.stopPropagation();
-            onLink();
-          }}
-          className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
-        >
-          {linking ? (
-            <Loader2 aria-hidden className="size-3.5 animate-spin" />
-          ) : (
-            <Unlink aria-hidden className="size-3.5" />
-          )}
-        </button>
-      )}
       {conflictCount > 0 && (
         <button
           type="button"
@@ -146,25 +141,6 @@ export function SidebarItem({
             {conflictCount}
           </Badge>
         </button>
-      )}
-      {onReveal && (
-        <HoverOnly>
-          <RowAction label="Go to location" onClick={onReveal}>
-            <FolderOpen aria-hidden className="size-3.5" />
-          </RowAction>
-        </HoverOnly>
-      )}
-      {onRemove && (
-        <HoverOnly>
-          <RowAction
-            label="Remove"
-            disabled={writeDisabled}
-            onClick={onRemove}
-            className="hover:text-destructive"
-          >
-            <Trash2 aria-hidden className="size-3.5" />
-          </RowAction>
-        </HoverOnly>
       )}
       {count > 0 && (
         <Badge variant="secondary" className="h-5 min-w-5 shrink-0 px-1.5 text-xs tabular-nums">
@@ -186,18 +162,70 @@ export function SidebarItem({
           </RowAction>
         </HoverOnly>
       )}
+      {linked === false && onLink && (
+        <button
+          type="button"
+          aria-label="Link to a local folder"
+          aria-busy={linking || undefined}
+          disabled={writeDisabled || linking}
+          onClick={(event) => {
+            event.stopPropagation();
+            onLink();
+          }}
+          className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:text-foreground"
+        >
+          {linking ? (
+            <Loader2 aria-hidden className="size-3.5 animate-spin" />
+          ) : (
+            <Unlink aria-hidden className="size-3.5" />
+          )}
+        </button>
+      )}
     </div>
   );
 
-  if (!onRecover) return row;
+  if (!onMenuOpenChange && keepAll === undefined && !onReveal && !onRemove && !onRecover) {
+    return row;
+  }
+
+  const keepMenu =
+    keepAll !== undefined && keepAll !== "loading" && keepAll.views.length > 0
+      ? quickResolveItems(keepAll.views)
+      : null;
+  const showKeep = keepAll === "loading" || keepMenu !== null;
+  const showOther = Boolean(onReveal || onRemove || onRecover);
 
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChange={onMenuOpenChange}>
       <ContextMenuTrigger render={<div className="w-full" />}>{row}</ContextMenuTrigger>
       <ContextMenuContent className="min-w-40">
-        <ContextMenuItem disabled={writeDisabled} onClick={onRecover}>
-          Recover
-        </ContextMenuItem>
+        {keepAll === "loading" ? (
+          <ContextMenuItem disabled>Keep all from this machine</ContextMenuItem>
+        ) : keepMenu ? (
+          <KeepAllMenuItems
+            menu={keepMenu}
+            disabled={keepAllDisabled}
+            onChoose={(choice) => onKeepAll?.(choice)}
+          />
+        ) : null}
+        {showKeep && showOther ? <ContextMenuSeparator /> : null}
+        {onReveal ? (
+          <ContextMenuItem onClick={onReveal}>Go to location</ContextMenuItem>
+        ) : null}
+        {onRemove ? (
+          <ContextMenuItem
+            variant="destructive"
+            disabled={writeDisabled}
+            onClick={onRemove}
+          >
+            Remove
+          </ContextMenuItem>
+        ) : null}
+        {onRecover ? (
+          <ContextMenuItem disabled={writeDisabled} onClick={onRecover}>
+            Recover
+          </ContextMenuItem>
+        ) : null}
       </ContextMenuContent>
     </ContextMenu>
   );

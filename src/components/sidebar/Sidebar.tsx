@@ -1,5 +1,5 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CircleAlert,
   Eye,
@@ -11,19 +11,36 @@ import {
   TriangleAlert,
 } from "lucide-react";
 
+import { QuickResolveDialog } from "@/components/tree/QuickResolveDialog";
+import type { QuickResolveTarget } from "@/components/tree/quick-resolve";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { BLOCKED, importInstalledAgents, linkRoot, recoverRoot, reportError } from "@/lib/ipc";
+import {
+  cloudDevices,
+  conflictLiveRel,
+  keepAllFiles,
+  uniqueConflictRels,
+  viewsInScope,
+  type KeepAllChoice,
+} from "@/lib/conflicts";
+import {
+  BLOCKED,
+  conflicts as fetchConflicts,
+  importInstalledAgents,
+  linkRoot,
+  recoverRoot,
+  reportError,
+} from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
 import { compareRoots } from "@/lib/order";
 import { conflictCount, conflictTotal, errorTotal, useRoots } from "@/lib/roots";
 import { matchesRootQuery, useSidebarQuery } from "@/lib/sidebar-query";
 import { defaultSlug } from "@/lib/slug";
-import type { RootRow } from "@/lib/types";
+import type { ConflictView, RootRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { AddRootDialog } from "./AddRootDialog";
@@ -34,6 +51,109 @@ import { SidebarSection } from "./SidebarSection";
 
 const COLLAPSED_KEY = "dotlore.sidebar.collapsed";
 const HIDE_UNLINKED_KEY = "dotlore.sidebar.hideUnlinked";
+
+/** Views fetched for the one root menu that is open. */
+export type RootMenuSession = {
+  slug: string;
+  token: number;
+  open: boolean;
+  views: ConflictView[] | "loading";
+};
+
+/**
+ * Start a conflicts fetch when a linked row with conflicts opens its menu.
+ * Any other open fetch is closed so its response is dropped.
+ */
+export function openRootMenu(
+  current: RootMenuSession | null,
+  row: { slug: string; linked: boolean; conflictCount: number },
+  token: number,
+): { session: RootMenuSession | null; fetch: boolean } {
+  if (!row.linked || row.conflictCount <= 0) {
+    if (!current?.open) return { session: current, fetch: false };
+    return { session: { ...current, open: false }, fetch: false };
+  }
+  return {
+    session: { slug: row.slug, token, open: true, views: "loading" },
+    fetch: true,
+  };
+}
+
+/** Mark this slug's menu closed. A later response for it is ignored. */
+export function closeRootMenu(
+  current: RootMenuSession | null,
+  slug: string,
+): RootMenuSession | null {
+  if (!current || current.slug !== slug || !current.open) return current;
+  return { ...current, open: false };
+}
+
+/**
+ * Store views only while this menu is still open and the token is the latest
+ * open for that slug.
+ */
+export function applyRootMenuViews(
+  current: RootMenuSession | null,
+  response: { slug: string; token: number; views: ConflictView[] },
+): RootMenuSession | null {
+  if (
+    !current ||
+    !current.open ||
+    current.slug !== response.slug ||
+    current.token !== response.token
+  ) {
+    return current;
+  }
+  return { ...current, views: response.views };
+}
+
+/** Keep-all model for one row. Root scope is every fetched view. */
+export function keepAllForRow(
+  session: RootMenuSession | null,
+  slug: string,
+  linked: boolean,
+): { views: ConflictView[] } | "loading" | undefined {
+  if (!linked || !session || session.slug !== slug || !session.open) return undefined;
+  if (session.views === "loading") return "loading";
+  const views = viewsInScope(session.views, { kind: "root" });
+  if (views.length === 0) return undefined;
+  return { views };
+}
+
+/** Confirm target for every conflict in a root. `device` comes from `cloudDevices`. */
+export function rootKeepTarget(
+  views: ConflictView[],
+  choice: KeepAllChoice,
+): QuickResolveTarget | null {
+  const scoped = viewsInScope(views, { kind: "root" });
+  const kept = keepAllFiles(scoped, { kind: "root" }, choice);
+  if (kept.length === 0) return null;
+  const device =
+    choice === "unnamed"
+      ? "cloud"
+      : typeof choice === "object"
+        ? cloudDevices(scoped).find((item) => item.id8 === choice.deviceId)?.name
+        : undefined;
+  return {
+    choice,
+    ...(device ? { device } : {}),
+    scopeCount: uniqueConflictRels(scoped).length,
+    files: kept.map((file) => ({
+      ...file,
+      views: scoped.filter((view) => conflictLiveRel(view) === file.rel),
+    })),
+  };
+}
+
+/** Keep items stay disabled while a snapshot is busy or this menu's fetch is in flight. */
+export function rootKeepDisabled(
+  locked: boolean,
+  resolvingRel: string | null,
+  dialogOpen: boolean,
+  pending: boolean,
+): boolean {
+  return locked || resolvingRel !== null || dialogOpen || pending;
+}
 
 function readIds(key: string): string[] {
   try {
@@ -131,6 +251,7 @@ export function Sidebar() {
     toggleStar,
     refreshRoots,
     locked,
+    resolvingRel,
     seeding,
     loadingRoots,
     commandErrors,
@@ -153,6 +274,40 @@ export function Sidebar() {
   } | null>(null);
   const [removeTarget, setRemoveTarget] = useState<RootRow | null>(null);
   const [linkingSlug, setLinkingSlug] = useState<string | null>(null);
+  const [menuSession, setMenuSession] = useState<RootMenuSession | null>(null);
+  const [keepSelection, setKeepSelection] = useState<{
+    slug: string;
+    target: QuickResolveTarget;
+  } | null>(null);
+  const menuToken = useRef(0);
+
+  function handleRootMenu(row: RootRow, open: boolean) {
+    if (!open) {
+      setMenuSession((current) => closeRootMenu(current, row.slug));
+      return;
+    }
+    const token = menuToken.current + 1;
+    menuToken.current = token;
+    const rowFetch = {
+      slug: row.slug,
+      linked: row.linked,
+      conflictCount: conflictCount(row),
+    };
+    const shouldFetch = openRootMenu(null, rowFetch, token).fetch;
+    setMenuSession((current) => openRootMenu(current, rowFetch, token).session);
+    if (!shouldFetch) return;
+    void fetchConflicts(row.slug)
+      .then((views) => {
+        setMenuSession((current) =>
+          applyRootMenuViews(current, { slug: row.slug, token, views }),
+        );
+      })
+      .catch(() => {
+        setMenuSession((current) =>
+          applyRootMenuViews(current, { slug: row.slug, token, views: [] }),
+        );
+      });
+  }
 
   const toggleCollapsed = useCallback((id: string) => {
     setCollapsed((current) => {
@@ -279,6 +434,7 @@ export function Sidebar() {
   }
 
   function renderRoot(row: RootRow, id?: string) {
+    const menuModel = keepAllForRow(menuSession, row.slug, row.linked);
     return (
       <SidebarItem
         key={id ?? row.slug}
@@ -312,6 +468,25 @@ export function Sidebar() {
         onRecover={
           row.status.kind === "Error" ? () => void handleRecover(row.slug) : undefined
         }
+        keepAll={menuModel}
+        keepAllDisabled={rootKeepDisabled(
+          locked,
+          resolvingRel,
+          keepSelection !== null,
+          menuModel === "loading",
+        )}
+        onKeepAll={(choice) => {
+          if (
+            !menuSession ||
+            menuSession.slug !== row.slug ||
+            menuSession.views === "loading"
+          ) {
+            return;
+          }
+          const target = rootKeepTarget(menuSession.views, choice);
+          if (target) setKeepSelection({ slug: row.slug, target });
+        }}
+        onMenuOpenChange={(open) => handleRootMenu(row, open)}
       />
     );
   }
@@ -449,6 +624,17 @@ export function Sidebar() {
         open={removeTarget !== null}
         onOpenChange={(open) => {
           if (!open) setRemoveTarget(null);
+        }}
+      />
+      <QuickResolveDialog
+        slug={keepSelection?.slug ?? ""}
+        target={keepSelection?.target ?? null}
+        open={keepSelection !== null}
+        onOpenChange={(open) => {
+          if (!open) setKeepSelection(null);
+        }}
+        onResolved={() => {
+          void refreshRoots();
         }}
       />
     </nav>
