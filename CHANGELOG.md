@@ -1,3 +1,15 @@
+## v0.7.0 (2026-10-06)
+
+### Conflicts
+
+- **Keep every conflicted copy from one side.** The context menu on a file, a folder, or a project offers "Keep all from this machine" and "Keep all from cloud" — one item per device when several have published. A confirmation names what will be discarded before anything is resolved. [#bfb6bf26](https://github.com/dinhanhthi/dotlore/commit/bfb6bf26) [#da353f49](https://github.com/dinhanhthi/dotlore/commit/da353f49)
+
+### Sidebar & tree
+
+- **The project's total size uses the same color ramp as individual files.** The footer total turns notice, heavy, warning, or danger as it grows. [#34e89351](https://github.com/dinhanhthi/dotlore/commit/34e89351)
+- **The sensitive-files toggle now sits in the tree footer, beside the size filter.** [#34e89351](https://github.com/dinhanhthi/dotlore/commit/34e89351)
+- **Removing an unlinked cloud project hides it on this Mac.** The cloud copy stays; linking the project again brings the row back. [#905681f0](https://github.com/dinhanhthi/dotlore/commit/905681f0)
+
 ## v0.6.0 (2026-09-28)
 
 ### Settings
