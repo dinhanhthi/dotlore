@@ -9,7 +9,13 @@ import {
   Maximize2,
   Minimize2,
 } from "lucide-react";
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -38,8 +44,9 @@ import {
   slotSummary,
   toggleSlot,
 } from "@/lib/merge-result";
+import { keepArgs, pairSibling, resolverSides } from "@/lib/resolver-sides";
 import { useRoots } from "@/lib/roots";
-import type { ResolutionDto, ResolveResultDto, SiblingDto } from "@/lib/types";
+import type { ResolutionDto, ResolveResultDto } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const RESULT_DEFAULT = 180;
@@ -166,18 +173,22 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
     });
   }, [dto]);
 
-  const sibling: SiblingDto | undefined = dto?.siblings[siblingIndex] ?? dto?.siblings[0];
+  // This machine's version is the live file only when it won the merge; when
+  // it lost, it is the `is_me` sibling and the live file came from the cloud.
+  const sides = useMemo(() => (dto ? resolverSides(dto) : null), [dto]);
+  const other = sides?.cloud[siblingIndex] ?? sides?.cloud[0];
+  const siblingPath = sides && other ? pairSibling(sides.mine, other) : null;
 
   useEffect(() => {
     const mergeParent = mergeParentRef.current;
     const resultParent = resultParentRef.current;
-    if (!mergeParent || !resultParent || !dto || dto.binary) return;
-    const live = dto.live_text ?? "";
-    const other = sibling?.text ?? "";
+    if (!mergeParent || !resultParent || !dto || dto.binary || !sides) return;
+    const mine = sides.mine.text ?? "";
+    const theirs = other?.text ?? "";
     // Both sides get the same `Text` as `assembleResult` (split on "\n" only),
     // so these chunks match `view.chunks` even for CRLF files.
-    const aDoc = Text.of(live.split("\n"));
-    const bDoc = Text.of(other.split("\n"));
+    const aDoc = Text.of(mine.split("\n"));
+    const bDoc = Text.of(theirs.split("\n"));
     const chunks = Chunk.build(aDoc, bDoc);
     const onToggle = (side: Side) => (index: number) => {
       const result = resultViewRef.current;
@@ -206,7 +217,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
     });
     mergeViewRef.current = view;
 
-    const { text, slots } = assembleResult(live, other, chunks, []);
+    const { text, slots } = assembleResult(mine, theirs, chunks, []);
     initialResultRef.current = text;
     let dirty = false;
     setResolverDirty(false);
@@ -328,7 +339,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
       mergeViewRef.current = null;
       setResolverDirty(false);
     };
-  }, [dto, rel, sibling, setResolverDirty]);
+  }, [dto, rel, sides, other, setResolverDirty]);
 
   useEffect(() => {
     currentRef.current = current;
@@ -393,17 +404,14 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
     }
   }
 
-  async function handleBinary(keep: "live" | "other") {
-    if (!dto || !dto.binary) return;
-    if (keep === "other" && !sibling) return;
+  async function handleBinary(which: "mine" | "cloud") {
+    if (!dto || !dto.binary || !sides) return;
+    const side = which === "mine" ? sides.mine : other;
+    if (!side) return;
+    const { keep, sibling } = keepArgs(side);
     setResolving(true);
     try {
-      const result = await resolveBinary(
-        slug,
-        rel,
-        keep,
-        keep === "other" ? (sibling?.path ?? null) : null,
-      );
+      const result = await resolveBinary(slug, rel, keep, sibling);
       if (result === BLOCKED) return;
       await applyOutcome(result);
     } catch {
@@ -415,8 +423,8 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
 
   const unresolved = summary.resolved.filter((done) => !done).length;
   const total = summary.total;
-  const checked = sibling ? discard[sibling.path] !== false : true;
-  const device = sibling?.device_name ?? "other device";
+  const checked = siblingPath ? discard[siblingPath] !== false : true;
+  const device = other?.label ?? "other device";
 
   return (
     <div
@@ -433,10 +441,10 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
         </span>
         <span className="shrink-0 text-muted-foreground">from {device}</span>
         <div className="ml-auto flex min-w-0 items-center gap-1">
-          {dto && dto.siblings.length > 1
-            ? dto.siblings.map((item, index) => (
+          {sides && sides.cloud.length > 1
+            ? sides.cloud.map((item, index) => (
                 <button
-                  key={item.path}
+                  key={item.source ?? ""}
                   type="button"
                   onClick={() => setSiblingIndex(index)}
                   className={cn(
@@ -446,7 +454,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {item.device_name}
+                  {item.label}
                 </button>
               ))
             : null}
@@ -484,21 +492,21 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
             <BinaryCard
               label="THIS MACHINE"
               device="this machine"
-              bytes={dto.live_bytes_len}
+              bytes={sides?.mine.bytesLen ?? 0}
               actionLabel="Keep this machine"
               disabled={locked}
               onKeep={() => {
-                void handleBinary("live");
+                void handleBinary("mine");
               }}
             />
             <BinaryCard
               label="FROM CLOUD"
               device={device}
-              bytes={sibling?.bytes_len ?? 0}
+              bytes={other?.bytesLen ?? 0}
               actionLabel="Keep from cloud"
-              disabled={locked || !sibling}
+              disabled={locked || !other}
               onKeep={() => {
-                void handleBinary("other");
+                void handleBinary("cloud");
               }}
             />
           </div>
@@ -567,14 +575,14 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
 
       <footer className="flex shrink-0 items-center gap-2 border-t border-border px-pad-x py-2">
         {!dto?.binary ? (
-          sibling ? (
+          siblingPath ? (
             <div className="flex items-center gap-1">
               <label className="flex items-center gap-2 text-xs text-foreground">
                 <input
                   type="checkbox"
                   checked={checked}
                   onChange={(event) => {
-                    const path = sibling.path;
+                    const path = siblingPath;
                     const next = event.target.checked;
                     setDiscard((current) => ({ ...current, [path]: next }));
                   }}
@@ -599,7 +607,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
                   <p>
                     Two devices changed {liveName(rel)}. The newer version stayed in{" "}
                     {liveName(rel)}; the other version was saved next to it as a sibling
-                    file, {liveName(sibling.path)}.
+                    file, {liveName(siblingPath)}.
                   </p>
                   <p>Checked: Resolve saves the Result and deletes the sibling file.</p>
                   <p>Unchecked: Resolve saves the Result and keeps the sibling file on disk.</p>
