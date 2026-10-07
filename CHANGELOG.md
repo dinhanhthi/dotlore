@@ -1,3 +1,9 @@
+## v0.7.1 (2026-10-08)
+
+### Conflicts
+
+- **A conflict now shows this machine's version on its own side.** [#3386f3ca](https://github.com/dinhanhthi/dotlore/commit/3386f3ca)
+
 ## v0.7.0 (2026-10-06)
 
 ### Conflicts
