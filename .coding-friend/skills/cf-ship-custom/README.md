@@ -173,9 +173,10 @@ The signing identity and every secret the workflow needs are documented in
   is compiled into every shipped build, so regenerating it strands every existing
   install. Never re-run `tauri signer generate`. See `.github/release-setup.md`.
 - **Release the website.** That is `.github/workflows/pages.yml`, triggered by
-  any push to `main` touching `website/**` (or a manual dispatch). It needs no
-  version: the download button points at the version-less
-  `Dotlore-universal.dmg` alias.
+  any push to `main` touching `website/**`, a manual dispatch, or a successful
+  `Release` run. It deploys only when the version badge names the latest
+  published release, so the release commit's badge bump waits for `release.yml`
+  to publish and goes live from that run's trigger — never before the app.
 - **Release for Windows or Linux.** macOS only today.
 - **Handle entitlements or a provisioning profile.** Dotlore declares none, so
   there is no embedded profile to check and nothing that expires.

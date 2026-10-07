@@ -62,7 +62,7 @@ Never `find -mtime … -delete` inside `target/`.
 - `src/` — React/TypeScript frontend.
 - `src-tauri/` — Tauri shell and engine (package and binary `dotlore`). `main.rs` is the only environment reader; `lib.rs` exports `pub fn run(home, home_dir)`.
 - `mockapp/` — browser-only UI preview with mocked IPC: `pnpm mockapp:dev` (http://localhost:38422). Fix `mockapp/mocks/`, never `src/`, to make it work. See [`mockapp/README.md`](mockapp/README.md).
-- `website/` — static landing page, deployed to GitHub Pages on push to `main`. Do not couple it to `src/`. See [`website/README.md`](website/README.md).
+- `website/` — static landing page, deployed to GitHub Pages on push to `main`, held until the version badge names a published release. Do not couple it to `src/`. See [`website/README.md`](website/README.md).
 
 `mockapp/` and `website/` never ship and never trigger a version bump.
 
