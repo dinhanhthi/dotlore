@@ -716,9 +716,9 @@ export function SettingsGeneral() {
           <TooltipTrigger
             render={
               <Button
-                variant="ghost"
-                size="icon-xs"
-                className="shrink-0 text-muted-foreground"
+                variant="secondary"
+                size="icon-sm"
+                className="shrink-0"
                 aria-label="Go to app data folder"
                 onClick={() => {
                   void openAppHome().catch(() => {
@@ -728,7 +728,7 @@ export function SettingsGeneral() {
               />
             }
           >
-            <FolderOpen className="size-3.5" aria-hidden />
+            <FolderOpen className="size-4" aria-hidden />
           </TooltipTrigger>
           <TooltipContent>Go to app data folder</TooltipContent>
         </Tooltip>
