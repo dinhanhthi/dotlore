@@ -170,7 +170,9 @@ async fn check(app: &AppHandle, interactive: bool) {
         Ok(None) => {
             record(app, None);
             if interactive {
-                alert::info(app, Style::Info, TITLE, "Dotlore is up to date.");
+                let version = &app.package_info().version;
+                let message = format!("Dotlore is up to date. You are running {version}.");
+                alert::info(app, Style::Info, TITLE, &message);
             }
         }
         Err(e) => failed(app, interactive, CHECK_FAILED, e.to_string()),
