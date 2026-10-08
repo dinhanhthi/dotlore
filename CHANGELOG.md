@@ -1,3 +1,13 @@
+## v0.7.3 (2026-10-08)
+
+### Conflicts
+
+- **Conflict versions are named by device, and the resolver closes when the conflict is resolved elsewhere.** The resolver labels each version with the device that produced it, and no longer stays open on a conflict another Mac already settled. [#33293a74](https://github.com/dinhanhthi/dotlore/commit/33293a74)
+
+### Sync
+
+- **A reconcile conflict no longer takes the published target offline.** The live published copy stays in place while the conflict is being resolved. [#d4985821](https://github.com/dinhanhthi/dotlore/commit/d4985821)
+
 ## v0.7.2 (2026-10-08)
 
 ### Desktop app
