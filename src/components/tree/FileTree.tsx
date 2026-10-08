@@ -14,6 +14,7 @@ import {
   QuickResolveDialog,
   type QuickResolveTarget,
 } from "@/components/tree/QuickResolveDialog";
+import { sensitivePatternFor, withSensitivePattern } from "@/components/tree/sensitive-pattern";
 import { TreeNode, weightClass, type TreeKeepScope } from "@/components/tree/TreeNode";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,6 +39,8 @@ import {
   conflicts as fetchConflicts,
   listEntries,
   maxFileMb,
+  sensitivePatterns,
+  setSensitivePatterns,
   syncNow,
   trackedFiles,
 } from "@/lib/ipc";
@@ -365,6 +368,21 @@ export function FileTree() {
     });
   }, [loadTree, commitTree, selectedSlug, root?.linked]);
 
+  const markSensitive = useCallback(
+    (rel: string) => {
+      void (async () => {
+        const current = await sensitivePatterns();
+        const next = withSensitivePattern(current, sensitivePatternFor(rel));
+        if (next === current) return;
+        await setSensitivePatterns(next);
+        refetch();
+      })().catch(() => {
+        // a setter failure is reported by setSensitivePatterns; a getter failure leaves the list unchanged
+      });
+    },
+    [refetch],
+  );
+
   useEffect(() => {
     loadId.current = { slug: selectedSlug, linked: !!root?.linked };
     const next = treeDialogsAfterRootChange();
@@ -582,6 +600,8 @@ export function FileTree() {
             }}
             entries={entries}
             onUntrack={setUntrackTarget}
+            onMarkSensitive={markSensitive}
+            markSensitiveDisabled={locked}
             rootPath={root.path}
             maxFileBytes={maxFileBytes}
             sensitivityByRel={sensitivityByRel}

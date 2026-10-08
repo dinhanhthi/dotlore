@@ -1381,6 +1381,27 @@ mod tests {
     }
 
     #[test]
+    fn an_escaped_rooted_pattern_matches_only_that_literal_path() {
+        let m = matcher(&["/a/b\\[1\\]\\*.json", "/s{ }{ }"]);
+        assert_eq!(
+            m.classify(Path::new("a/b[1]*.json")),
+            Some(Sensitivity::Secret)
+        );
+        assert_eq!(m.classify(Path::new("a/b1x.json")), None);
+        assert_eq!(m.classify(Path::new("s  ")), Some(Sensitivity::Secret));
+        assert_eq!(m.classify(Path::new("s")), None);
+        let m = matcher(&["/a\\{b,c\\}.md"]);
+        assert_eq!(
+            m.classify(Path::new("a{b,c}.md")),
+            Some(Sensitivity::Secret)
+        );
+        assert_eq!(m.classify(Path::new("ab.md")), None);
+        let m = matcher(&["/x.json"]);
+        assert_eq!(m.classify(Path::new("x.json")), Some(Sensitivity::Secret));
+        assert_eq!(m.classify(Path::new("d/x.json")), None);
+    }
+
+    #[test]
     fn a_pattern_with_a_slash_is_anchored_to_the_root() {
         let m = matcher(&["certs/*.key"]);
         assert_eq!(

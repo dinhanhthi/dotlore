@@ -79,6 +79,8 @@ type TreeNodeProps = {
     device?: string,
   ) => void;
   quickResolveDisabled?: boolean;
+  onMarkSensitive?: (rel: string) => void;
+  markSensitiveDisabled?: boolean;
 };
 
 export function TreeNode({
@@ -97,6 +99,8 @@ export function TreeNode({
   scopedViews,
   onQuickResolve,
   quickResolveDisabled,
+  onMarkSensitive,
+  markSensitiveDisabled,
 }: TreeNodeProps) {
   const status = nodeStatus(node, conflictSet);
   const weight = nodeWeight(node, maxFileBytes);
@@ -192,6 +196,14 @@ export function TreeNode({
           >
             Go to location
           </ContextMenuItem>
+          {onMarkSensitive && node.kind === "file" && sensitivity !== "secret" ? (
+            <ContextMenuItem
+              disabled={markSensitiveDisabled ?? false}
+              onClick={() => onMarkSensitive(node.path)}
+            >
+              Mark as sensitive
+            </ContextMenuItem>
+          ) : null}
           {target ? (
             <>
               <ContextMenuSeparator />
@@ -240,6 +252,8 @@ export function TreeNode({
               scopedViews={scopedViews}
               onQuickResolve={onQuickResolve}
               quickResolveDisabled={quickResolveDisabled}
+              onMarkSensitive={onMarkSensitive}
+              markSensitiveDisabled={markSensitiveDisabled}
             />
           ))}
         </div>

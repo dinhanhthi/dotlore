@@ -1,10 +1,40 @@
+import type { ComponentProps, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TreeNode as TreeNodeData } from "@/lib/tree";
 import type { EntryView, Sensitivity } from "@/lib/types";
 
 import { TreeNode } from "./TreeNode";
+
+type MenuItemProps = { children?: ReactNode; disabled?: boolean; onClick?: () => void };
+
+const { menuItems } = vi.hoisted(() => ({ menuItems: [] as MenuItemProps[] }));
+
+// Renders menu content inline (a closed base-ui menu renders nothing) and
+// records each item's props so a test can inspect and click it.
+vi.mock("@/components/ui/context-menu", async () => {
+  const actual = await vi.importActual<typeof import("@/components/ui/context-menu")>(
+    "@/components/ui/context-menu",
+  );
+  return {
+    ...actual,
+    ContextMenuContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+    ContextMenuItem: (props: MenuItemProps) => {
+      menuItems.push(props);
+      return <div role="menuitem">{props.children}</div>;
+    },
+    ContextMenuSeparator: () => <hr />,
+  };
+});
+
+beforeEach(() => {
+  menuItems.length = 0;
+});
+
+function markItems(): MenuItemProps[] {
+  return menuItems.filter((item) => item.children === "Mark as sensitive");
+}
 
 const file = (path: string): TreeNodeData => ({
   name: path.split("/").at(-1) ?? path,
@@ -20,7 +50,11 @@ const entries: EntryView[] = [
   { key: "CLAUDE.md", kind: "file", covering: [] },
 ];
 
-function renderNode(path: string, sensitivity: Sensitivity | null = null): string {
+function renderNode(
+  path: string,
+  sensitivity: Sensitivity | null = null,
+  extra: Partial<ComponentProps<typeof TreeNode>> = {},
+): string {
   return renderToStaticMarkup(
     <TreeNode
       node={file(path)}
@@ -35,6 +69,7 @@ function renderNode(path: string, sensitivity: Sensitivity | null = null): strin
       rootPath="/Users/demo/git/dotlore"
       maxFileBytes={50 * 1024 * 1024}
       sensitivityByRel={new Map([[path, sensitivity]])}
+      {...extra}
     />,
   );
 }
@@ -157,5 +192,74 @@ describe("TreeNode scopedViews", () => {
       ["notes/a.md", "file"],
     ]);
     expect(html).toContain(">a.md<");
+  });
+});
+
+describe("TreeNode mark as sensitive", () => {
+  it("offers the item on a plain file and calls the handler with its rel", () => {
+    const marked: string[] = [];
+    renderNode("docs/notes.md", null, { onMarkSensitive: (rel) => marked.push(rel) });
+    const items = markItems();
+    expect(items).toHaveLength(1);
+    expect(items[0].disabled).toBe(false);
+    items[0].onClick?.();
+    expect(marked).toEqual(["docs/notes.md"]);
+  });
+
+  it("offers the item on a TokenHint file", () => {
+    renderNode(".mcp.json", "tokenHint", { onMarkSensitive: () => {} });
+    expect(markItems()).toHaveLength(1);
+  });
+
+  it("does not offer the item on a Secret file", () => {
+    renderNode("config/credentials.json", "secret", { onMarkSensitive: () => {} });
+    expect(markItems()).toHaveLength(0);
+  });
+
+  it("does not offer the item without a handler", () => {
+    renderNode("docs/notes.md");
+    expect(markItems()).toHaveLength(0);
+  });
+
+  it("disables the item when markSensitiveDisabled is set", () => {
+    renderNode("docs/notes.md", null, {
+      onMarkSensitive: () => {},
+      markSensitiveDisabled: true,
+    });
+    expect(markItems()[0].disabled).toBe(true);
+  });
+
+  it("does not offer the item on a folder but does on its open child file", () => {
+    const marked: string[] = [];
+    renderToStaticMarkup(
+      <TreeNode
+        node={{
+          name: "notes",
+          path: "notes",
+          kind: "folder",
+          bytes: 0,
+          state: "Synced",
+          children: [file("notes/a.md")],
+        }}
+        depth={0}
+        selectedRel={null}
+        conflictSet={new Set()}
+        isOpen={() => true}
+        onToggle={() => {}}
+        onSelect={() => {}}
+        entries={entries}
+        onUntrack={() => {}}
+        rootPath="/Users/demo/git/dotlore"
+        maxFileBytes={50 * 1024 * 1024}
+        sensitivityByRel={new Map()}
+        onMarkSensitive={(rel) => marked.push(rel)}
+        markSensitiveDisabled
+      />,
+    );
+    const items = markItems();
+    expect(items).toHaveLength(1);
+    expect(items[0].disabled).toBe(true);
+    items[0].onClick?.();
+    expect(marked).toEqual(["notes/a.md"]);
   });
 });

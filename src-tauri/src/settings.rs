@@ -516,6 +516,19 @@ mod tests {
     }
 
     #[test]
+    fn a_braced_trailing_whitespace_pattern_survives_the_write_path() {
+        use crate::project::Sensitivity;
+        use std::path::Path;
+        let input = vec!["/s{ }".to_string(), "/t{\u{a0}}".to_string()];
+        let lines = sensitive_override(&input).unwrap().unwrap();
+        assert_eq!(lines, input);
+        let m = SensitiveMatcher::new(&lines).unwrap();
+        assert_eq!(m.classify(Path::new("s ")), Some(Sensitivity::Secret));
+        assert_eq!(m.classify(Path::new("t\u{a0}")), Some(Sensitivity::Secret));
+        assert_eq!(m.classify(Path::new("s")), None);
+    }
+
+    #[test]
     fn a_value_equal_to_builtin_is_stored_as_none() {
         let mut cfg = Config::default();
         let claude = project::builtin_lines("claude").unwrap();
