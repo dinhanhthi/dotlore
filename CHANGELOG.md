@@ -1,3 +1,10 @@
+## v0.7.2 (2026-10-08)
+
+### Desktop app
+
+- **GitHub and changelog buttons in the title bar.** Quick links to the repository and the release notes. [#325d1d58](https://github.com/dinhanhthi/dotlore/commit/325d1d58)
+- **The updater shows the current version when you are up to date.** [#e9f393d2](https://github.com/dinhanhthi/dotlore/commit/e9f393d2)
+
 ## v0.7.1 (2026-10-08)
 
 ### Conflicts
