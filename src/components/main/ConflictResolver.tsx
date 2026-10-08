@@ -20,14 +20,16 @@ import {
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { editorExtensions, viewerExtensions } from "@/lib/cm";
+import { uniqueConflictRels } from "@/lib/conflicts";
 import {
   BLOCKED,
   closeResolution,
+  conflicts as fetchConflicts,
   openResolution,
   resolveBinary,
   resolveConflict,
 } from "@/lib/ipc";
-import { closeClean } from "@/lib/leave-guard";
+import { closeClean, remoteResolveAction } from "@/lib/leave-guard";
 import {
   chunkToggleGutter,
   resultDecorations,
@@ -44,7 +46,7 @@ import {
   slotSummary,
   toggleSlot,
 } from "@/lib/merge-result";
-import { keepArgs, pairSibling, resolverSides } from "@/lib/resolver-sides";
+import { keepArgs, otherTitle, pairSibling, resolverSides } from "@/lib/resolver-sides";
 import { useRoots } from "@/lib/roots";
 import type { ResolutionDto, ResolveResultDto } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -117,8 +119,9 @@ function errorMessage(error: unknown): string {
 }
 
 export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) {
-  const { locked, refreshRoots, setResolverDirty } = useRoots();
+  const { locked, roots, refreshRoots, setResolverDirty } = useRoots();
   const [resolving, setResolving] = useState(false);
+  const [resolvedElsewhere, setResolvedElsewhere] = useState(false);
   const [dto, setDto] = useState<ResolutionDto | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -136,11 +139,20 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
   const initialResultRef = useRef("");
   const currentRef = useRef(0);
   const navigateRef = useRef<((index: number) => void) | null>(null);
+  const dirtyRef = useRef(false);
+  const resolvingRef = useRef(false);
+  resolvingRef.current = resolving;
+
+  // The tree re-reads conflicts on the same signal, so its icon and this
+  // window never disagree about whether the file is still conflicted.
+  const root = roots.find((row) => row.slug === slug);
+  const statusKey = root ? JSON.stringify(root.status) : "";
 
   useEffect(() => {
     setDto(null);
     setError(null);
     setNotice(null);
+    setResolvedElsewhere(false);
     setSiblingIndex(0);
     setDiscard({});
     setSummary(EMPTY_SUMMARY);
@@ -161,6 +173,33 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
       void closeResolution(slug, rel);
     };
   }, [slug, rel]);
+
+  // Another device resolved this file: close, or keep unsaved Result edits
+  // on screen with Resolve disabled.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchConflicts(slug)
+      .then((views) => {
+        if (cancelled) return;
+        const action = remoteResolveAction(
+          uniqueConflictRels(views).includes(rel.replace(/\\/g, "/")),
+          resolvingRef.current,
+          dirtyRef.current,
+        );
+        if (action === "notice") {
+          setResolvedElsewhere(true);
+          setNotice("Resolved on another device. Cancel to close.");
+        } else if (action === "close") {
+          closeClean(setResolverDirty, onClose);
+        }
+      })
+      .catch(() => {
+        // Keep the window; the next status change checks again.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, rel, statusKey, setResolverDirty, onClose]);
 
   useEffect(() => {
     if (!dto) return;
@@ -220,6 +259,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
     const { text, slots } = assembleResult(mine, theirs, chunks, []);
     initialResultRef.current = text;
     let dirty = false;
+    dirtyRef.current = false;
     setResolverDirty(false);
     const result = new EditorView({
       state: EditorState.create({
@@ -233,6 +273,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
               const next = update.state.doc.toString() !== initialResultRef.current;
               if (next !== dirty) {
                 dirty = next;
+                dirtyRef.current = next;
                 setResolverDirty(next);
               }
             }
@@ -337,6 +378,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
       view.destroy();
       resultViewRef.current = null;
       mergeViewRef.current = null;
+      dirtyRef.current = false;
       setResolverDirty(false);
     };
   }, [dto, rel, sides, other, setResolverDirty]);
@@ -425,6 +467,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
   const total = summary.total;
   const checked = siblingPath ? discard[siblingPath] !== false : true;
   const device = other?.label ?? "other device";
+  const title = other ? otherTitle(other) : "from other device";
 
   return (
     <div
@@ -439,7 +482,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
         <span className="min-w-0 truncate font-mono text-xs" title={rel}>
           {rel}
         </span>
-        <span className="shrink-0 text-muted-foreground">from {device}</span>
+        <span className="shrink-0 text-muted-foreground">this machine vs {device}</span>
         <div className="ml-auto flex min-w-0 items-center gap-1">
           {sides && sides.cloud.length > 1
             ? sides.cloud.map((item, index) => (
@@ -500,10 +543,10 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
               }}
             />
             <BinaryCard
-              label="FROM CLOUD"
+              label={title}
               device={device}
               bytes={other?.bytesLen ?? 0}
-              actionLabel="Keep from cloud"
+              actionLabel={`Keep ${device}`}
               disabled={locked || !other}
               onKeep={() => {
                 void handleBinary("cloud");
@@ -521,7 +564,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
               </Button>
             </div>
             <div className="flex items-center justify-between gap-2 border-l border-border px-pad-x py-1">
-              FROM CLOUD
+              {title}
               <Button variant="ghost" size="xs" onClick={() => handleKeepAll("b")}>
                 Keep all
               </Button>
@@ -605,7 +648,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
                 </TooltipTrigger>
                 <TooltipContent side="top" align="start" className="flex-col items-start gap-1.5">
                   <p>
-                    Two devices changed {liveName(rel)}. The newer version stayed in{" "}
+                    Two devices changed {liveName(rel)}. One version stayed in{" "}
                     {liveName(rel)}; the other version was saved next to it as a sibling
                     file, {liveName(siblingPath)}.
                   </p>
@@ -644,7 +687,7 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
                 onClick={() => {
                   void handleResolve();
                 }}
-                disabled={locked || !dto || resolving}
+                disabled={locked || !dto || resolving || resolvedElsewhere}
               >
                 {resolving ? (
                   <>

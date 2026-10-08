@@ -1,5 +1,8 @@
 import type { ResolutionDto } from "./types";
 
+/** Label of the live file when it is not this machine's version: what every device now has. */
+export const SYNCED_LABEL = "synced version";
+
 /** One version the resolver can show. `source` is `null` for the live file, else a sibling path. */
 export type ResolverSide = {
   source: string | null;
@@ -24,7 +27,7 @@ export type ResolverSides = {
 export function resolverSides(dto: ResolutionDto): ResolverSides {
   const live: ResolverSide = {
     source: null,
-    label: "cloud",
+    label: SYNCED_LABEL,
     text: dto.live_text,
     bytesLen: dto.live_bytes_len,
   };
@@ -44,6 +47,14 @@ export function resolverSides(dto: ResolutionDto): ResolverSides {
     .map((side, i) => (dto.siblings[i].is_me ? { ...side, label: "this machine (other copy)" } : side))
     .filter((_, i) => i !== index);
   return { mine, cloud: [live, ...rest] };
+}
+
+/**
+ * Title of the column opposite this machine: the device a sibling came from,
+ * or the synced live file. Both versions are in the cloud, so never "cloud".
+ */
+export function otherTitle(side: ResolverSide): string {
+  return side.source === null ? side.label : `from ${side.label}`;
 }
 
 /** The sibling file a comparison of `mine` against `other` would discard. */

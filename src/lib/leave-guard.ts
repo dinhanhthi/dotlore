@@ -41,3 +41,19 @@ export function closeClean(
   setDirty(false);
   close();
 }
+
+/** What an open resolver does after a status change re-reads the conflict list. */
+export type RemoteResolveAction = "stay" | "notice" | "close";
+
+/**
+ * Another device may have resolved the open file. Unsaved Result edits are
+ * never closed away: they stay on screen with a notice instead.
+ */
+export function remoteResolveAction(
+  stillConflicted: boolean,
+  resolving: boolean,
+  dirty: boolean,
+): RemoteResolveAction {
+  if (stillConflicted || resolving) return "stay";
+  return dirty ? "notice" : "close";
+}

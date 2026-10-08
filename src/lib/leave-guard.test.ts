@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   closeClean,
   isSameTarget,
+  remoteResolveAction,
+  shouldPromptLeave,
   type LeaveState,
   type LeaveTarget,
-  shouldPromptLeave,
 } from "./leave-guard";
 
 const resolving: LeaveState = { selectedSlug: "proj", resolvingRel: "a/b.md" };
@@ -72,5 +73,20 @@ describe("closeClean", () => {
     );
     expect(calls).toEqual(["dirty:false", "close"]);
     expect(prompted).toBe(false);
+  });
+});
+
+describe("remoteResolveAction", () => {
+  it("keeps unsaved Result edits open with a notice", () => {
+    expect(remoteResolveAction(false, false, true)).toBe("notice");
+  });
+
+  it("closes a clean resolver once the conflict is gone", () => {
+    expect(remoteResolveAction(false, false, false)).toBe("close");
+  });
+
+  it("stays while the file is still conflicted or a local resolve runs", () => {
+    expect(remoteResolveAction(true, false, false)).toBe("stay");
+    expect(remoteResolveAction(false, true, false)).toBe("stay");
   });
 });

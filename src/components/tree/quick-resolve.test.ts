@@ -69,13 +69,13 @@ describe("quickResolveItems", () => {
     expect(quickResolveItems([studio]).live.label).toBe("Keep all from this machine");
   });
 
-  it("labels a single cloud device as keep all from cloud", () => {
+  it("names a single cloud device in its keep-all label", () => {
     expect(quickResolveItems([studio, studioAgain])).toEqual({
       live: { label: "Keep all from this machine" },
-      cloudMenuLabel: "Keep all from cloud",
+      cloudMenuLabel: "Keep all from another device",
       cloud: [
         {
-          label: "Keep all from cloud",
+          label: "Keep all from studio",
           choice: { deviceId: "1a2b3c4d" },
           device: "studio",
         },
@@ -86,7 +86,7 @@ describe("quickResolveItems", () => {
   it("lists one submenu item per cloud device", () => {
     expect(quickResolveItems([studio, laptop])).toEqual({
       live: { label: "Keep all from this machine" },
-      cloudMenuLabel: "Keep all from cloud",
+      cloudMenuLabel: "Keep all from another device",
       cloud: [
         {
           label: "studio",
@@ -126,7 +126,7 @@ describe("quickResolveItems", () => {
     const mixed = { ...mine, live: studio.live };
     expect(quickResolveItems([mixed, studio]).cloud).toEqual([
       {
-        label: "Keep all from cloud",
+        label: "Keep all from studio",
         choice: { deviceId: "1a2b3c4d" },
         device: "studio",
       },
@@ -136,14 +136,14 @@ describe("quickResolveItems", () => {
   it("uses the unnamed bucket when a file has only this machine's lost copy", () => {
     expect(quickResolveItems([mine]).cloud).toEqual([
       {
-        label: "Keep all from cloud",
+        label: "Keep all synced versions",
         choice: "unnamed",
         device: "cloud",
       },
     ]);
   });
 
-  it("labels the unnamed bucket Noname cloud beside a named device", () => {
+  it("labels the unnamed bucket Synced version beside a named device", () => {
     expect(quickResolveItems([studio, mine]).cloud).toEqual([
       {
         label: "studio",
@@ -151,7 +151,7 @@ describe("quickResolveItems", () => {
         device: "studio",
       },
       {
-        label: "Noname cloud",
+        label: "Synced version",
         choice: "unnamed",
         device: "cloud",
       },
@@ -230,7 +230,7 @@ describe("quickResolveCopy", () => {
       title: "Keep all from laptop for CLAUDE.md?",
       description:
         "This machine's version and any other device versions of this file are discarded.",
-      action: "Keep all from cloud",
+      action: "Keep all from laptop",
     });
   });
 
@@ -244,7 +244,7 @@ describe("quickResolveCopy", () => {
     });
     expect(copy.title).toBe("Keep all from studio for CLAUDE.md?");
     expect(copy.description).toBe("This machine's version is discarded.");
-    expect(copy.action).toBe("Keep all from cloud");
+    expect(copy.action).toBe("Keep all from studio");
   });
 
   it("does not treat two siblings of one device as other devices", () => {
@@ -286,7 +286,7 @@ describe("quickResolveCopy", () => {
       title: "Keep all from studio for 2 files?",
       description:
         "Resolves 2 files that have a version from studio. Each of those files is fully resolved, so this machine's version and every other device's version of that file are discarded. The other 3 conflicted files stay unresolved.",
-      action: "Keep all from cloud",
+      action: "Keep all from studio",
     });
   });
 
@@ -302,11 +302,11 @@ describe("quickResolveCopy", () => {
       title: "Keep all from studio for 4 files?",
       description:
         "Resolves all 4 conflicted files. Each file is fully resolved: this machine's version and every other device's version of that file are discarded.",
-      action: "Keep all from cloud",
+      action: "Keep all from studio",
     });
   });
 
-  it("uses cloud for the unnamed bucket", () => {
+  it("calls the unnamed bucket the synced versions", () => {
     const one = quickResolveCopy({
       keep: "other",
       rel: "notes/LOCAL.md",
@@ -316,9 +316,9 @@ describe("quickResolveCopy", () => {
       scopeCount: 1,
     });
     expect(one).toEqual({
-      title: "Keep all from cloud for LOCAL.md?",
+      title: "Keep all synced versions for LOCAL.md?",
       description: "This machine's version is discarded.",
-      action: "Keep all from cloud",
+      action: "Keep all synced versions",
     });
 
     const partial = quickResolveCopy({
@@ -327,9 +327,9 @@ describe("quickResolveCopy", () => {
       batchSize: 2,
       scopeCount: 5,
     });
-    expect(partial.title).toBe("Keep all from cloud for 2 files?");
+    expect(partial.title).toBe("Keep all synced versions for 2 files?");
     expect(partial.description).toBe(
-      "Resolves 2 files that have a version from cloud. Each of those files is fully resolved, so this machine's version and every other device's version of that file are discarded. The other 3 conflicted files stay unresolved.",
+      "Resolves 2 files that have a synced version from another device. Each of those files is fully resolved, so this machine's version and every other device's version of that file are discarded. The other 3 conflicted files stay unresolved.",
     );
   });
 
@@ -467,7 +467,7 @@ describe("quickResolveTargetCopy", () => {
     });
   });
 
-  it("keeps the cloud copy when an unnamed file resolves as live", () => {
+  it("keeps the synced copy when an unnamed file resolves as live", () => {
     expect(
       quickResolveTargetCopy({
         choice: "unnamed",
@@ -476,9 +476,9 @@ describe("quickResolveTargetCopy", () => {
         files: [{ rel: "notes/LOCAL.md", keep: "live", views: [mine] }],
       }),
     ).toEqual({
-      title: "Keep all from cloud for LOCAL.md?",
+      title: "Keep all synced versions for LOCAL.md?",
       description: "This machine's version is discarded.",
-      action: "Keep all from cloud",
+      action: "Keep all synced versions",
     });
   });
 
@@ -497,7 +497,7 @@ describe("quickResolveTargetCopy", () => {
       title: "Keep all from studio for 2 files?",
       description:
         "Resolves 2 files that have a version from studio. Each of those files is fully resolved, so this machine's version and every other device's version of that file are discarded. The other 3 conflicted files stay unresolved.",
-      action: "Keep all from cloud",
+      action: "Keep all from studio",
     });
   });
 });

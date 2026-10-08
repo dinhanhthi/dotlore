@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { keepArgs, pairSibling, resolverSides } from "./resolver-sides";
+import { keepArgs, otherTitle, pairSibling, resolverSides } from "./resolver-sides";
 import type { ResolutionDto, SiblingDto } from "./types";
 
 function sibling(overrides: Partial<SiblingDto> & { path: string }): SiblingDto {
@@ -57,7 +57,7 @@ describe("resolverSides", () => {
       bytesLen: 7,
     });
     expect(sides.cloud).toEqual([
-      { source: null, label: "cloud", text: "live text", bytesLen: 9 },
+      { source: null, label: "synced version", text: "live text", bytesLen: 9 },
     ]);
   });
 
@@ -81,9 +81,21 @@ describe("resolverSides", () => {
     );
     expect(sides.mine.text).toBe("first");
     expect(sides.cloud.map((s) => [s.source, s.label])).toEqual([
-      [null, "cloud"],
+      [null, "synced version"],
       ["a.conflict-aaaaaaaa-2222222.md", "this machine (other copy)"],
     ]);
+  });
+});
+
+describe("otherTitle", () => {
+  it("names the device a sibling came from", () => {
+    const won = resolverSides(dto([sibling({ path: "s.md", device_name: "Thi M4 prod" })]));
+    expect(otherTitle(won.cloud[0])).toBe("from Thi M4 prod");
+  });
+
+  it("calls the live file the synced version when this machine lost", () => {
+    const lost = resolverSides(dto([sibling({ path: "me.md", is_me: true })]));
+    expect(otherTitle(lost.cloud[0])).toBe("synced version");
   });
 });
 

@@ -8,20 +8,29 @@ import { BLOCKED } from "@/lib/ipc";
 import type { ConflictView, ResolutionDto, ResolveResultDto } from "@/lib/types";
 
 const LIVE_LABEL = "Keep all from this machine" as const;
-const CLOUD_LABEL = "Keep all from cloud" as const;
+const OTHER_MENU_LABEL = "Keep all from another device" as const;
+/** `device` of the unnamed bucket: the live file won and its device is unknown. */
+const UNNAMED = "cloud";
+/** Matches the resolver's "synced version" column. */
+const SYNCED_LABEL = "Keep all synced versions";
+
+/** Menu and confirm-button label for keeping `device`'s versions. */
+function keepLabel(device: string): string {
+  return device === UNNAMED ? SYNCED_LABEL : `Keep all from ${device}`;
+}
 
 export type QuickResolveCloudChoice = "unnamed" | { deviceId: string };
 
 export type QuickResolveCloudItem = {
   label: string;
   choice: QuickResolveCloudChoice;
-  /** Word used in the confirm title. `"cloud"` for the unnamed bucket. */
+  /** Device name for the confirm copy. `"cloud"` for the unnamed bucket. */
   device: string;
 };
 
 export type QuickResolveMenu = {
   live: { label: typeof LIVE_LABEL };
-  cloudMenuLabel: typeof CLOUD_LABEL;
+  cloudMenuLabel: typeof OTHER_MENU_LABEL;
   cloud: QuickResolveCloudItem[];
 };
 
@@ -63,7 +72,7 @@ function deviceItemLabel(
   many: boolean,
   colliding: Set<string>,
 ): string {
-  if (!many) return CLOUD_LABEL;
+  if (!many) return keepLabel(name);
   return colliding.has(name) ? `${name} (${id8})` : name;
 }
 
@@ -85,14 +94,14 @@ export function quickResolveItems(views: ConflictView[]): QuickResolveMenu {
   }));
   if (unnamed) {
     cloud.push({
-      label: many ? "Noname cloud" : CLOUD_LABEL,
+      label: many ? "Synced version" : SYNCED_LABEL,
       choice: "unnamed",
-      device: "cloud",
+      device: UNNAMED,
     });
   }
   return {
     live: { label: LIVE_LABEL },
-    cloudMenuLabel: CLOUD_LABEL,
+    cloudMenuLabel: OTHER_MENU_LABEL,
     cloud,
   };
 }
@@ -107,7 +116,7 @@ function otherVersionCount(views: ConflictView[]): number {
 function cloudDeviceWord(device: string | undefined, views: ConflictView[]): string {
   if (device) return device;
   const named = cloudDevices(views);
-  return named.length === 1 ? named[0].name : "cloud";
+  return named.length === 1 ? named[0].name : UNNAMED;
 }
 
 function oneFileCopy(
@@ -128,12 +137,12 @@ function oneFileCopy(
   }
   const device = cloudDeviceWord(input.device, views);
   return {
-    title: `Keep all from ${device} for ${name}?`,
+    title: `${keepLabel(device)} for ${name}?`,
     description:
       cloudDevices(views).length > 1
         ? "This machine's version and any other device versions of this file are discarded."
         : "This machine's version is discarded.",
-    action: CLOUD_LABEL,
+    action: keepLabel(device),
   };
 }
 
@@ -149,19 +158,22 @@ function manyFilesCopy(
     };
   }
   const device = cloudDeviceWord(input.device, input.views ?? []);
-  const title = `Keep all from ${device} for ${batchSize} files?`;
+  const title = `${keepLabel(device)} for ${batchSize} files?`;
+  const action = keepLabel(device);
   if (batchSize < scopeCount) {
     const rest = scopeCount - batchSize;
+    const source =
+      device === UNNAMED ? "a synced version from another device" : `a version from ${device}`;
     return {
       title,
-      description: `Resolves ${batchSize} files that have a version from ${device}. Each of those files is fully resolved, so this machine's version and every other device's version of that file are discarded. The other ${rest} conflicted files stay unresolved.`,
-      action: CLOUD_LABEL,
+      description: `Resolves ${batchSize} files that have ${source}. Each of those files is fully resolved, so this machine's version and every other device's version of that file are discarded. The other ${rest} conflicted files stay unresolved.`,
+      action,
     };
   }
   return {
     title,
     description: `Resolves all ${batchSize} conflicted files. Each file is fully resolved: this machine's version and every other device's version of that file are discarded.`,
-    action: CLOUD_LABEL,
+    action,
   };
 }
 
