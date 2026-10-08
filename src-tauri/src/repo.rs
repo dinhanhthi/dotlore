@@ -47,7 +47,17 @@ const ADD_CHUNK: usize = 256;
 /// a caller can silently forget, and it is the seam the unit tests below hang
 /// `no_resolver` on to assert that nothing they exercise ever reaches an
 /// unmerged index.
-pub type IndexResolver = fn(&Git, &str, &str, &str) -> Result<Vec<PathBuf>>;
+pub type IndexResolver = fn(&Git, &str, &str, &str, Winner) -> Result<Vec<PathBuf>>;
+
+/// Which side of a conflicted merge keeps the live file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Winner {
+    /// The newer commit, tie broken by hash: the cross-device policy, which
+    /// both devices must compute identically over the same two commits.
+    Newer,
+    /// Always the merged-in side. Only for a merge one device makes alone.
+    Theirs,
+}
 
 /// Whether a fetch pass includes this device's own bundles. Recovery does;
 /// a normal cycle has no use for its own history.
@@ -517,7 +527,7 @@ impl Repo {
         if out.status.success() {
             return Ok(MergeOutcome::Clean);
         }
-        let paths = (tx.resolve_index)(g, &r, &self.my_id, their_id)?;
+        let paths = (tx.resolve_index)(g, &r, &self.my_id, their_id, Winner::Newer)?;
         g.ok(&[
             "commit",
             "--no-edit",
@@ -816,7 +826,7 @@ impl Repo {
 /// One durable apply: an isolated detached worktree plus its journal.
 ///
 /// `git` is bound to `worktree`, not to the staging repo, and is the handle
-/// the conflict policy uses (`conflict::resolve_index(&tx.git, ..)` and
+/// the conflict policy uses (`conflict::resolve_index(&tx.git, .., winner)` and
 /// `conflict::resolve(tx, ..)`).
 pub struct Transaction {
     pub git: Git,
@@ -1186,9 +1196,13 @@ impl Transaction {
         ])?;
         let out = g.run(&["merge", "--no-edit", &t])?;
         if !out.status.success() {
-            // Both sides are this device's own view of the root here, so the
-            // loser sibling carries our id8 either way.
-            (self.resolve_index)(g, &t, &repo.my_id, &repo.my_id)?;
+            // `T` always wins: peers already hold it, so letting the unpublished
+            // root edit win would flip their live file back. That edit is this
+            // device's, so the sibling carries our id8. Only this device makes
+            // this merge, so the cross-device `Newer` rule is not needed, and
+            // with `L` and `T` often in the same second it was a hash coin flip
+            // that put a peer's bytes under our id8.
+            (self.resolve_index)(g, &t, &repo.my_id, &repo.my_id, Winner::Theirs)?;
             g.ok(&["commit", "--no-edit", "-m", "reconcile"])?;
         }
 
@@ -1719,7 +1733,7 @@ mod tests {
     const ID_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     /// Task 2 owns the real policy; nothing here reaches an unmerged index.
-    fn no_resolver(_: &Git, _: &str, _: &str, _: &str) -> Result<Vec<PathBuf>> {
+    fn no_resolver(_: &Git, _: &str, _: &str, _: &str, _: Winner) -> Result<Vec<PathBuf>> {
         bail!("index resolver not expected in this test")
     }
 
@@ -2606,6 +2620,73 @@ mod tests {
         // The merged remote head stays an ancestor, so A is never re-merged.
         let theirs = b.git.rev(&remote_ref(&key, ID_A)).unwrap();
         assert!(b.git.is_ancestor(&theirs, "refs/heads/main"));
+    }
+
+    /// When the hand edit and the remote edit touch the same line, the
+    /// already-published target keeps the live file and the hand edit becomes
+    /// a sibling under this device's id8. Before `Winner::Theirs` this rode on
+    /// commit hash order whenever `local` and `merged` shared a second, so it
+    /// could not fail deterministically.
+    #[test]
+    fn a_conflicting_root_edit_loses_to_the_published_target_under_our_id() {
+        let fx = fixture();
+        let cloud = fx.cloud();
+        let key = provider_key(&cloud);
+        fx.write("CLAUDE.md", b"base\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b
+            .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+            .unwrap();
+        tx.set_target(&b).unwrap();
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+
+        fx.write("CLAUDE.md", b"A EDIT\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b
+            .begin_tx(&key, "HEAD", crate::conflict::resolve_index)
+            .unwrap();
+        assert_eq!(
+            b.merge_remote(&tx, ID_A).unwrap(),
+            MergeOutcome::FastForward
+        );
+        tx.set_target(&b).unwrap();
+
+        fs::write(b_root.path().join("CLAUDE.md"), b"B EDIT\n").unwrap();
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+
+        assert_eq!(
+            fs::read(b_root.path().join("CLAUDE.md")).unwrap(),
+            b"A EDIT\n"
+        );
+        // Siblings are staging-private: they live in `main`, not the root.
+        let tree = b
+            .git
+            .ok(&["ls-tree", "-r", "--name-only", "refs/heads/main"])
+            .unwrap();
+        let siblings: Vec<&str> = tree
+            .lines()
+            .filter(|n| n.starts_with("CLAUDE.conflict-"))
+            .collect();
+        assert_eq!(siblings.len(), 1, "{siblings:?}");
+        assert!(
+            siblings[0].starts_with(&format!("CLAUDE.conflict-{}-", &ID_B[..8])),
+            "{siblings:?}"
+        );
+        let bytes = b
+            .git
+            .ok(&["show", &format!("refs/heads/main:{}", siblings[0])])
+            .unwrap();
+        assert_eq!(bytes, "B EDIT");
     }
 
     /// Reconcile must mirror with the merged target's include-list, not

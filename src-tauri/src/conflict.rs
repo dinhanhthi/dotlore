@@ -9,6 +9,9 @@
 //!
 //! - one winner per merge (not per file): the newer commit, tie broken by the
 //!   larger commit hash;
+//! - except in a root-edit reconcile (`Transaction::reconcile`), a merge only
+//!   one device makes: there the already-merged target always wins
+//!   ([`Winner::Theirs`]) and the racing root edit becomes the sibling;
 //! - the winner's blob becomes the live file, so no git conflict marker ever
 //!   reaches a tracked path;
 //! - the loser's bytes are committed next to it as
@@ -26,7 +29,7 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use crate::git::Git;
 use crate::project;
-use crate::repo::Transaction;
+use crate::repo::{Transaction, Winner};
 
 /// Separator between a live name and the generated conflict suffix.
 const DELIM: &str = ".conflict-";
@@ -91,8 +94,12 @@ pub fn resolve_index(
     their_ref: &str,
     my_id: &str,
     their_id: &str,
+    winner: Winner,
 ) -> Result<Vec<PathBuf>> {
-    let ours_win = winner_is_ours(git, their_ref)?;
+    let ours_win = match winner {
+        Winner::Newer => winner_is_ours(git, their_ref)?,
+        Winner::Theirs => false,
+    };
     let loser_id8 = short8(if ours_win { their_id } else { my_id })?;
     let mut out = Vec::new();
     for (code, path) in unmerged(git)? {
@@ -631,7 +638,7 @@ mod tests {
         assert!(winner_is_ours(&ga, &r).unwrap());
         merge_conflicted(&ga, &r);
 
-        let got = resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        let got = resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
         assert_eq!(got, vec![PathBuf::from("CLAUDE.md")]);
 
         let sibling = format!("CLAUDE.conflict-bbbbbbbb-{}.md", p.blob7(B_TEXT));
@@ -645,6 +652,23 @@ mod tests {
         assert_eq!(committed(&ga), vec![sibling, "CLAUDE.md".to_string()]);
     }
 
+    /// `Theirs` ignores commit time: ours is strictly newer and still loses.
+    #[test]
+    fn uu_theirs_policy_wins_even_when_ours_is_newer() {
+        let p = diverged(2_000_000, 1_000_000);
+        let ga = p.ga();
+        let r = p.fetch(&ga, &p.b, ID_B);
+        assert!(winner_is_ours(&ga, &r).unwrap());
+        merge_conflicted(&ga, &r);
+
+        resolve_index(&ga, &r, ID_A, ID_B, Winner::Theirs).unwrap();
+
+        let sibling = format!("CLAUDE.conflict-aaaaaaaa-{}.md", p.blob7(A_TEXT));
+        assert_eq!(read(&p.a, "CLAUDE.md"), B_TEXT);
+        assert_eq!(read(&p.a, &sibling), A_TEXT);
+        no_markers(&p.a);
+    }
+
     #[test]
     fn uu_newer_theirs_wins_and_our_bytes_become_the_sibling() {
         let p = diverged(1_000_000, 2_000_000);
@@ -653,7 +677,7 @@ mod tests {
         assert!(!winner_is_ours(&ga, &r).unwrap());
         merge_conflicted(&ga, &r);
 
-        resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
 
         let sibling = format!("CLAUDE.conflict-aaaaaaaa-{}.md", p.blob7(A_TEXT));
         assert_eq!(read(&p.a, "CLAUDE.md"), B_TEXT);
@@ -683,11 +707,11 @@ mod tests {
         assert_eq!(winner_is_ours(&gb, &ra).unwrap(), hb > ha);
 
         merge_conflicted(&ga, &rb);
-        resolve_index(&ga, &rb, ID_A, ID_B).unwrap();
+        resolve_index(&ga, &rb, ID_A, ID_B, Winner::Newer).unwrap();
         ga.ok(&["commit", "--no-edit", "-m", "merge b"]).unwrap();
 
         merge_conflicted(&gb, &ra);
-        resolve_index(&gb, &ra, ID_B, ID_A).unwrap();
+        resolve_index(&gb, &ra, ID_B, ID_A, Winner::Newer).unwrap();
         gb.ok(&["commit", "--no-edit", "-m", "merge a"]).unwrap();
 
         assert_eq!(
@@ -708,7 +732,7 @@ mod tests {
         let ga = p.ga();
         let r = p.fetch(&ga, &p.b, ID_B);
         merge_conflicted(&ga, &r);
-        resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
         ga.ok(&["commit", "--no-edit", "-m", "merge 1"]).unwrap();
 
         const A2: &[u8] = b"A-again\ntwo\nthree\n";
@@ -720,7 +744,7 @@ mod tests {
 
         let r = p.fetch(&ga, &p.b, ID_B);
         merge_conflicted(&ga, &r);
-        resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
         ga.ok(&["commit", "--no-edit", "-m", "merge 2"]).unwrap();
 
         let first = format!("CLAUDE.conflict-bbbbbbbb-{}.md", p.blob7(B_TEXT));
@@ -771,7 +795,7 @@ mod tests {
         assert_eq!(stages, vec!["2", "3"], "expected an AA entry, no stage 1");
         assert_eq!(unmerged(&ga).unwrap()[0].0, "AA");
 
-        let got = resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        let got = resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
         assert_eq!(got, vec![PathBuf::from("CLAUDE.md")]);
 
         let sibling = format!("CLAUDE.conflict-bbbbbbbb-{}.md", p.blob7(B_TEXT));
@@ -804,7 +828,7 @@ mod tests {
         let ga = p.ga();
         let r = p.fetch(&ga, &p.b, ID_B);
         merge_conflicted(&ga, &r);
-        resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
 
         let sibling = format!("icon.conflict-bbbbbbbb-{}.png", p.blob7(theirs));
         assert_eq!(read(&p.a, "icon.png"), mine);
@@ -829,7 +853,7 @@ mod tests {
         write(&p.a, "b.md", b"stale junk\n");
 
         assert_eq!(
-            resolve_index(&ga, &r, ID_A, ID_B).unwrap(),
+            resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap(),
             Vec::<PathBuf>::new()
         );
         ga.ok(&["commit", "--no-edit", "-m", "merge"]).unwrap();
@@ -859,7 +883,7 @@ mod tests {
         write(&p.a, "take.md", b"stale junk\n");
 
         assert_eq!(
-            resolve_index(&ga, &r, ID_A, ID_B).unwrap(),
+            resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap(),
             Vec::<PathBuf>::new()
         );
         ga.ok(&["commit", "--no-edit", "-m", "merge"]).unwrap();
@@ -890,7 +914,7 @@ mod tests {
         merge_conflicted(&ga, &r);
         assert_eq!(unmerged(&ga).unwrap()[0].0, "AA");
 
-        let got = resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        let got = resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
         assert_eq!(got, Vec::<PathBuf>::new());
         no_conflict_siblings(&p.a);
         assert!(list(&ga).unwrap().is_empty());
@@ -926,7 +950,7 @@ mod tests {
         let ga = p.ga();
         let r = p.fetch(&ga, &p.b, ID_B);
         merge_conflicted(&ga, &r);
-        resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
 
         let merged = project::parse(&read(&p.a, project::PROJECT_FILE)).unwrap();
         assert_eq!(merged.entries["docs/"].gen, 2);
@@ -968,9 +992,9 @@ mod tests {
         let ra = p.fetch(&gb, &p.a, ID_A);
 
         merge_conflicted(&ga, &rb);
-        resolve_index(&ga, &rb, ID_A, ID_B).unwrap();
+        resolve_index(&ga, &rb, ID_A, ID_B, Winner::Newer).unwrap();
         merge_conflicted(&gb, &ra);
-        resolve_index(&gb, &ra, ID_B, ID_A).unwrap();
+        resolve_index(&gb, &ra, ID_B, ID_A, Winner::Newer).unwrap();
 
         assert_eq!(read(&p.a, project::PROJECT_FILE), expected);
         assert_eq!(read(&p.b, project::PROJECT_FILE), expected);
@@ -1004,7 +1028,7 @@ mod tests {
         assert!(winner_is_ours(&ga, &r).unwrap());
         merge_conflicted(&ga, &r);
 
-        let got = resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        let got = resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
         assert_eq!(got, vec![PathBuf::from("CLAUDE.md")]);
 
         let sibling = format!("CLAUDE.conflict-bbbbbbbb-{}.md", p.blob7(B_TEXT));
@@ -1057,7 +1081,7 @@ mod tests {
         .unwrap()
         .is_none());
         assert_eq!(
-            resolve_index(&ga, &r, ID_A, ID_B).unwrap(),
+            resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap(),
             Vec::<PathBuf>::new()
         );
         ga.ok(&["commit", "--no-edit", "-m", "merge"]).unwrap();
@@ -1160,7 +1184,7 @@ mod tests {
         let ga = p.ga();
         let r = p.fetch(&ga, &p.b, ID_B);
         merge_conflicted(&ga, &r);
-        resolve_index(&ga, &r, ID_A, ID_B).unwrap();
+        resolve_index(&ga, &r, ID_A, ID_B, Winner::Newer).unwrap();
         ga.ok(&["commit", "--no-edit", "-m", "merge"]).unwrap();
 
         assert_eq!(
