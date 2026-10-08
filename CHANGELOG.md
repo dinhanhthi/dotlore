@@ -1,3 +1,9 @@
+## v0.7.4 (2026-10-08)
+
+### Desktop app
+
+- **Sensitive files are purple instead of yellow.** Secret file names and the key icon no longer share the conflict color. [#df5598e4](https://github.com/dinhanhthi/dotlore/commit/df5598e4)
+
 ## v0.7.3 (2026-10-08)
 
 ### Conflicts
