@@ -3,11 +3,11 @@ import { Info, KeyRound } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Sensitivity } from "@/lib/types";
 
-/** Warning color for a Secret file's name; nothing otherwise. */
+/** Purple color for a Secret file's name; nothing otherwise. */
 export function sensitiveNameClass(
   sensitivity: Sensitivity | null | undefined,
 ): string | undefined {
-  return sensitivity === "secret" ? "text-status-conflict" : undefined;
+  return sensitivity === "secret" ? "text-status-sensitive" : undefined;
 }
 
 /** Key or hint icon with a tooltip; renders nothing for a plain file. */
@@ -30,7 +30,7 @@ export function SensitivityMark({
         render={<span className="inline-flex shrink-0" aria-label={label} />}
       >
         {sensitivity === "secret" ? (
-          <KeyRound aria-hidden className="size-3.5 text-status-conflict" />
+          <KeyRound aria-hidden className="size-3.5 text-status-sensitive" />
         ) : (
           <Info aria-hidden className="size-3.5 text-muted-foreground" />
         )}

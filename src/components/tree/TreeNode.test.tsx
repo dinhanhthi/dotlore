@@ -105,12 +105,12 @@ describe("TreeNode sensitivity", () => {
 
   it("shows a Secret file's name in the warning color", () => {
     const html = renderNode("config/credentials.json", "secret");
-    expect(html).toMatch(/<span class="[^"]*text-status-conflict[^"]*">credentials\.json<\/span>/);
+    expect(html).toMatch(/<span class="[^"]*text-status-sensitive[^"]*">credentials\.json<\/span>/);
   });
 
   it("keeps the normal name color on a TokenHint file and a plain file", () => {
-    expect(renderNode(".mcp.json", "tokenHint")).not.toMatch(/text-status-conflict[^"]*">\.mcp\.json/);
-    expect(renderNode("CLAUDE.md")).not.toMatch(/text-status-conflict[^"]*">CLAUDE\.md/);
+    expect(renderNode(".mcp.json", "tokenHint")).not.toMatch(/text-status-sensitive[^"]*">\.mcp\.json/);
+    expect(renderNode("CLAUDE.md")).not.toMatch(/text-status-sensitive[^"]*">CLAUDE\.md/);
   });
 
   it("does not show either icon for a plain file", () => {

@@ -40,7 +40,7 @@ describe("PickerNode sensitivity", () => {
     expect(html).toContain('aria-label="Sensitive file — may contain secrets"');
     expect(html).toContain("lucide-key-round");
     expect(html).not.toContain("lucide-triangle-alert");
-    expect(html).toMatch(/<span class="[^"]*text-status-conflict[^"]*">credentials\.json<\/span>/);
+    expect(html).toMatch(/<span class="[^"]*text-status-sensitive[^"]*">credentials\.json<\/span>/);
     expect(html.indexOf('aria-label="Sensitive file')).toBeLessThan(
       html.indexOf('aria-label="Track credentials.json"'),
     );
@@ -49,21 +49,21 @@ describe("PickerNode sensitivity", () => {
   it("shows the info hint on a tokenHint file", () => {
     const html = renderRow(".mcp.json", "tokenHint");
     expect(html).toContain('aria-label="May contain API tokens"');
-    expect(html).not.toMatch(/text-status-conflict[^"]*">\.mcp\.json/);
+    expect(html).not.toMatch(/text-status-sensitive[^"]*">\.mcp\.json/);
   });
 
   it("shows neither mark on a plain file", () => {
     const html = renderRow("notes.md", null);
     expect(html).not.toContain('aria-label="Sensitive file');
     expect(html).not.toContain('aria-label="May contain API tokens"');
-    expect(html).not.toMatch(/text-status-conflict[^"]*">notes\.md/);
+    expect(html).not.toMatch(/text-status-sensitive[^"]*">notes\.md/);
   });
 
   it("shows no mark on a folder row", () => {
     const html = renderRow("secrets", "secret", "directory");
     expect(html).not.toContain('aria-label="Sensitive file');
     expect(html).not.toContain('aria-label="May contain API tokens"');
-    expect(html).not.toContain("text-status-conflict");
+    expect(html).not.toContain("text-status-sensitive");
   });
 });
 
