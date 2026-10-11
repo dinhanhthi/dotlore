@@ -1,3 +1,13 @@
+## v0.7.5 (2026-10-11)
+
+### Sidebar & tree
+
+- **Mark a file as sensitive from its context menu.** Right-click a file in the tree to add it to the sensitive patterns without opening Settings. [#f24574da](https://github.com/dinhanhthi/dotlore/commit/f24574da)
+
+### Desktop app
+
+- **The app data folder button in Settings is larger and secondary.** [#23d17b3d](https://github.com/dinhanhthi/dotlore/commit/23d17b3d)
+
 ## v0.7.4 (2026-10-08)
 
 ### Desktop app
