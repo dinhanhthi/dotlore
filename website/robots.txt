@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://dotlore.dinh.work/sitemap.xml
+Sitemap: https://dotlore.dinhanhthi.com/sitemap.xml
