@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { canRestore, filesUnder, passLabel, statusLabel, trashTree } from "./trash";
-import type { TrashFile, TrashProject } from "./types";
+import {
+  canRestore,
+  cutoffDay,
+  filesUnder,
+  olderThan,
+  passLabel,
+  statusLabel,
+  trashTotals,
+  trashTree,
+} from "./trash";
+import type { TrashFile, TrashPass, TrashProject } from "./types";
 
 function file(rel: string, bytes = 0, status: TrashFile["status"] = "same"): TrashFile {
   return { rel, bytes, status };
@@ -67,5 +76,50 @@ describe("canRestore", () => {
     const project: TrashProject = { slug: "p", root: "/Users/me/p", passes: [] };
     expect(canRestore(project)).toBe(true);
     expect(canRestore({ ...project, root: null })).toBe(false);
+  });
+});
+
+describe("cutoffDay", () => {
+  it("subtracts months on local calendar fields and clamps to month end", () => {
+    expect(cutoffDay(new Date(2026, 9, 13), 1)).toBe("2026-09-13");
+    expect(cutoffDay(new Date(2026, 2, 31), 1)).toBe("2026-02-28");
+    expect(cutoffDay(new Date(2024, 2, 31), 1)).toBe("2024-02-29");
+    expect(cutoffDay(new Date(2026, 0, 15), 3)).toBe("2025-10-15");
+    expect(cutoffDay(new Date(2026, 9, 13), 12)).toBe("2025-10-13");
+  });
+});
+
+function pass(day: string, files: TrashFile[]): TrashPass {
+  return { day, pass: "120000", path: `/trash/${day}/120000`, files };
+}
+
+const projects: TrashProject[] = [
+  {
+    slug: "a",
+    root: "/Users/me/a",
+    passes: [
+      pass("2026-08-01", [file("x.md", 10), file("y.md", 20)]),
+      pass("2026-09-13", [file("z.md", 5)]),
+      pass("undated", [file("u.md", 100)]),
+    ],
+  },
+  {
+    slug: "b",
+    root: null,
+    passes: [pass("2026-09-12", [file("w.md", 1)])],
+  },
+];
+
+describe("trashTotals", () => {
+  it("sums passes, files and bytes over every pass", () => {
+    expect(trashTotals(projects)).toEqual({ passes: 4, files: 5, bytes: 136 });
+    expect(trashTotals([])).toEqual({ passes: 0, files: 0, bytes: 0 });
+  });
+});
+
+describe("olderThan", () => {
+  it("counts dated passes before the cutoff, not undated or the cutoff day", () => {
+    expect(olderThan(projects, "2026-09-13")).toEqual({ passes: 2, files: 3, bytes: 31 });
+    expect(olderThan(projects, "2026-08-01")).toEqual({ passes: 0, files: 0, bytes: 0 });
   });
 });

@@ -1,9 +1,17 @@
-import { ArchiveRestore, Info, Trash2 } from "lucide-react";
+import { ArchiveRestore, ChevronDown, Info, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState, type ComponentProps, type ReactNode } from "react";
 
 import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
 import { FilePane } from "@/components/main/FileViewer";
+import { formatBytes } from "@/components/tree/entries";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -14,15 +22,25 @@ import { errorMessage } from "@/lib/errors";
 import {
   BLOCKED,
   deleteTrash,
+  deleteTrashOlderThan,
   emptyTrash,
   listTrash,
   readTrashFile,
   reportError,
   restoreTrash,
+  trashMaxMb,
 } from "@/lib/ipc";
 import { composeLivePath } from "@/lib/path";
 import { useRoots } from "@/lib/roots";
-import { canRestore, filesUnder, passLabel } from "@/lib/trash";
+import {
+  canRestore,
+  cutoffDay,
+  filesUnder,
+  olderThan,
+  passLabel,
+  trashTotals,
+  type TrashCounts,
+} from "@/lib/trash";
 import type {
   FileContent,
   RestoreChoice,
@@ -54,6 +72,66 @@ function locate(projects: TrashProject[], selection: TrashSelection | null): Loc
 
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+const AGES: { label: string; months: number }[] = [
+  { label: "Older than 1 month", months: 1 },
+  { label: "Older than 3 months", months: 3 },
+  { label: "Older than 6 months", months: 6 },
+  { label: "Older than 1 year", months: 12 },
+];
+
+export type AgeChoice = {
+  label: string;
+  /** `YYYY-MM-DD`; passes dated before it are deleted. */
+  before: string;
+  counts: TrashCounts;
+  disabled: boolean;
+};
+
+/** The "Empty trash" menu's age choices; one with nothing to delete is disabled. */
+export function menuChoices(projects: TrashProject[], now: Date): AgeChoice[] {
+  return AGES.map(({ label, months }) => {
+    const before = cutoffDay(now, months);
+    const counts = olderThan(projects, before);
+    return { label, before, counts, disabled: counts.passes === 0 };
+  });
+}
+
+function countsText(counts: TrashCounts): string {
+  return `${plural(counts.passes, "sync")} (${plural(counts.files, "file")}, ${formatBytes(counts.bytes)})`;
+}
+
+type Target = Omit<TrashSelection, "kind">;
+
+type Confirm =
+  | { kind: "delete"; target: Target }
+  | { kind: "empty" }
+  | { kind: "older"; label: string; before: string; counts: TrashCounts };
+
+/** Title, description and action of the confirm dialog for `confirm`. */
+export function confirmCopy(confirm: Confirm | null, projects: TrashProject[] | null) {
+  if (confirm?.kind === "empty") {
+    const totals = trashTotals(projects ?? []);
+    const all = totals.passes === 1 ? "" : "all ";
+    return {
+      title: "Empty the trash?",
+      description: `Deletes ${all}${countsText(totals)} from the trash on this Mac. This cannot be undone.`,
+      actionLabel: "Empty trash",
+    };
+  }
+  if (confirm?.kind === "older") {
+    return {
+      title: "Delete older copies?",
+      description: `Deletes ${countsText(confirm.counts)} ${confirm.label.toLowerCase()} from the trash on this Mac. This cannot be undone.`,
+      actionLabel: "Delete",
+    };
+  }
+  return {
+    title: "Delete from trash?",
+    description: "The selected files are deleted from the trash on this Mac. This cannot be undone.",
+    actionLabel: "Delete",
+  };
 }
 
 /** What a finished restore must tell the user, or `null` for a clean success. */
@@ -151,8 +229,70 @@ export type TrashViewProps = {
   writeDisabled: boolean;
   onRestore: () => void;
   onDelete: () => void;
-  onEmpty: () => void;
+  /** An age choice deletes older passes; `null` empties the whole trash. */
+  onEmpty: (choice: AgeChoice | null) => void;
+  /** The trash size limit in MB; `null` while unknown. */
+  capMb: number | null;
+  /** Clock for the age choices; defaults to the current time. */
+  now?: Date;
 };
+
+function EmptyTrashMenu({
+  projects,
+  writeDisabled,
+  now,
+  onEmpty,
+}: {
+  projects: TrashProject[] | null;
+  writeDisabled: boolean;
+  now: Date | undefined;
+  onEmpty: (choice: AgeChoice | null) => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const disabled = projects === null || projects.length === 0 || writeDisabled;
+  const choices = menuChoices(projects ?? [], now ?? new Date());
+
+  return (
+    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+      <Tooltip disabled={menuOpen}>
+        <TooltipTrigger
+          render={
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={disabled}
+                  aria-label="Empty trash"
+                />
+              }
+            />
+          }
+        >
+          Empty trash
+          <ChevronDown aria-hidden />
+        </TooltipTrigger>
+        <TooltipContent>Empty trash</TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="end" sideOffset={6}>
+        {choices.map((choice) => (
+          <DropdownMenuItem
+            key={choice.label}
+            disabled={choice.disabled}
+            onClick={() => onEmpty(choice)}
+          >
+            {choice.label}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" disabled={disabled} onClick={() => onEmpty(null)}>
+          Everything
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 export function TrashView({
   projects,
@@ -166,6 +306,8 @@ export function TrashView({
   onRestore,
   onDelete,
   onEmpty,
+  capMb,
+  now,
 }: TrashViewProps) {
   const { roots } = useRoots();
   const nameOf = (slug: string) => roots.find((row) => row.slug === slug)?.name ?? slug;
@@ -247,16 +389,19 @@ export function TrashView({
             <Info aria-hidden className="size-4 shrink-0 text-muted-foreground" />
             <span>{NOTICE}</span>
           </p>
+          {projects !== null ? (
+            <p className="text-xs text-muted-foreground">
+              Uses {formatBytes(trashTotals(projects).bytes)}
+              {capMb !== null ? ` of ${capMb} MB` : ""}
+            </p>
+          ) : null}
         </div>
-        <TipButton
-          label="Empty trash"
-          variant="outline"
-          size="sm"
-          disabled={projects === null || empty || writeDisabled}
-          onClick={onEmpty}
-        >
-          Empty trash
-        </TipButton>
+        <EmptyTrashMenu
+          projects={projects}
+          writeDisabled={writeDisabled}
+          now={now}
+          onEmpty={onEmpty}
+        />
       </header>
       {projects === null ? (
         listError !== null ? (
@@ -300,8 +445,6 @@ export function TrashView({
   );
 }
 
-type Target = Omit<TrashSelection, "kind">;
-
 function targetOf(selection: TrashSelection): Target {
   const { slug, day, pass, rel } = selection;
   return { slug, day, pass, rel };
@@ -315,10 +458,9 @@ export function TrashPanel() {
   const [error, setError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [restoreAsk, setRestoreAsk] = useState<{ target: Target; rels: string[] } | null>(null);
-  const [confirm, setConfirm] = useState<
-    { kind: "delete"; target: Target } | { kind: "empty" } | null
-  >(null);
+  const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [capMb, setCapMb] = useState<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -336,6 +478,14 @@ export function TrashPanel() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    void trashMaxMb()
+      .then(setCapMb)
+      .catch(() => {
+        // The header then shows the size without the cap.
+      });
+  }, []);
 
   const fileKey =
     selection?.kind === "file" && selection.rel !== null
@@ -400,24 +550,20 @@ export function TrashPanel() {
     }
   }
 
+  async function removeOlder(before: string) {
+    try {
+      if ((await deleteTrashOlderThan(before)) === BLOCKED) return;
+      await reload();
+    } catch {
+      // Banner is set by `runTask()`.
+    }
+  }
+
   function answer(choice: RestoreChoice) {
     const ask = restoreAsk;
     setRestoreAsk(null);
     if (ask) void restore(ask.target, choice);
   }
-
-  const confirmCopy =
-    confirm?.kind === "empty"
-      ? {
-          title: "Empty the trash?",
-          description: "Every copy in the trash on this Mac is deleted. This cannot be undone.",
-          actionLabel: "Empty trash",
-        }
-      : {
-          title: "Delete from trash?",
-          description: "The selected files are deleted from the trash on this Mac. This cannot be undone.",
-          actionLabel: "Delete",
-        };
 
   return (
     <>
@@ -438,10 +584,15 @@ export function TrashPanel() {
           setConfirm({ kind: "delete", target: targetOf(selection) });
           setConfirmOpen(true);
         }}
-        onEmpty={() => {
-          setConfirm({ kind: "empty" });
+        onEmpty={(choice) => {
+          setConfirm(
+            choice === null
+              ? { kind: "empty" }
+              : { kind: "older", label: choice.label, before: choice.before, counts: choice.counts },
+          );
           setConfirmOpen(true);
         }}
+        capMb={capMb}
       />
       <TrashRestoreDialog
         open={restoreAsk !== null}
@@ -453,10 +604,11 @@ export function TrashPanel() {
       <TrashConfirmAlert
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        {...confirmCopy}
+        {...confirmCopy(confirm, projects)}
         onConfirm={() => {
           const current = confirm;
           if (current?.kind === "empty") void empty();
+          else if (current?.kind === "older") void removeOlder(current.before);
           else if (current?.kind === "delete") void remove(current.target);
         }}
       />

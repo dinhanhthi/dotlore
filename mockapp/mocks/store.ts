@@ -23,6 +23,7 @@ import type {
 
 export const DEFAULT_MAX_FILE_MB = 50;
 export const DEFAULT_MAX_SEED_FOLDER_MB = 200;
+export const DEFAULT_TRASH_MAX_MB = 500;
 
 /** Built-in project seed patterns shown in Settings until the user edits them. */
 export const DEFAULT_PATTERNS = [
@@ -64,6 +65,7 @@ export type MockState = {
   sensitivePatterns: string[];
   maxFileMb: number;
   maxSeedFolderMb: number;
+  trashMaxMb: number;
   trash: TrashProject[];
   /** Trash file previews keyed by `trashKey(slug, day, pass, rel)`. */
   trashContents: Record<string, FileContent>;
@@ -244,6 +246,7 @@ export function emptyPopulated(): MockState {
     sensitivePatterns: [...SECRET_PATTERNS],
     maxFileMb: DEFAULT_MAX_FILE_MB,
     maxSeedFolderMb: DEFAULT_MAX_SEED_FOLDER_MB,
+    trashMaxMb: DEFAULT_TRASH_MAX_MB,
     ...demoTrash(),
   };
 }
@@ -295,6 +298,10 @@ export function resetStore(next?: Partial<MockState>): void {
     next && "maxSeedFolderMb" in next
       ? (next.maxSeedFolderMb ?? DEFAULT_MAX_SEED_FOLDER_MB)
       : seed.maxSeedFolderMb;
+  store.trashMaxMb =
+    next && "trashMaxMb" in next
+      ? (next.trashMaxMb ?? DEFAULT_TRASH_MAX_MB)
+      : seed.trashMaxMb;
   store.trash = next?.trash ? clone(next.trash) : seed.trash;
   store.trashContents = next?.trashContents
     ? clone(next.trashContents)

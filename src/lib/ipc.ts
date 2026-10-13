@@ -326,6 +326,13 @@ export function emptyTrash(): Promise<void | typeof BLOCKED> {
   return runTask("Emptying trash…", () => invoke<void>("empty_trash"));
 }
 
+/** Delete every dated trash pass before `before` (`YYYY-MM-DD`); resolves to a count. */
+export function deleteTrashOlderThan(before: string): Promise<number | typeof BLOCKED> {
+  return runTask("Deleting…", () =>
+    invoke<number>("delete_trash_older_than", { before }),
+  );
+}
+
 export function gitMissing(): Promise<boolean> {
   return invoke("git_missing");
 }
@@ -663,6 +670,15 @@ export function maxSeedFolderMb(): Promise<number> {
 
 export function setMaxSeedFolderMb(mb: number): Promise<void> {
   return run(() => invoke("set_max_seed_folder_mb", { mb }));
+}
+
+export function trashMaxMb(): Promise<number> {
+  return invoke("trash_max_mb");
+}
+
+/** Rejected below 100 MB by the backend. */
+export function setTrashMaxMb(mb: number): Promise<void> {
+  return run(() => invoke("set_trash_max_mb", { mb }));
 }
 
 export function icloudDir(): Promise<string> {

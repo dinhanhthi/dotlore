@@ -387,6 +387,26 @@ function deleteTrash(args: Record<string, unknown>): void {
   store.trash = store.trash.filter((item) => item.passes.length > 0);
 }
 
+function deleteTrashOlderThan(args: Record<string, unknown>): number {
+  const before = argString(args, "before");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(before)) {
+    throw new Error(`invalid trash day ${JSON.stringify(before)}`);
+  }
+  let removed = 0;
+  for (const project of store.trash) {
+    project.passes = project.passes.filter((entry) => {
+      if (entry.day === "undated" || entry.day >= before) return true;
+      for (const file of entry.files) {
+        delete store.trashContents[trashKey(project.slug, entry.day, entry.pass, file.rel)];
+      }
+      removed += 1;
+      return false;
+    });
+  }
+  store.trash = store.trash.filter((item) => item.passes.length > 0);
+  return removed;
+}
+
 const handlers: Record<
   string,
   (args: Record<string, unknown>) => unknown
@@ -672,6 +692,7 @@ const handlers: Record<
   },
   restore_trash: restoreTrash,
   delete_trash: deleteTrash,
+  delete_trash_older_than: deleteTrashOlderThan,
   empty_trash: () => {
     store.trash = [];
     store.trashContents = {};
@@ -682,6 +703,16 @@ const handlers: Record<
       throw new Error("mockapp: mb is required");
     }
     store.maxSeedFolderMb = args.mb;
+  },
+  trash_max_mb: () => store.trashMaxMb,
+  set_trash_max_mb: (args) => {
+    if (typeof args.mb !== "number" || !Number.isFinite(args.mb)) {
+      throw new Error("mockapp: mb is required");
+    }
+    if (!Number.isInteger(args.mb) || args.mb < 100) {
+      throw new Error("the trash size limit must be at least 100 MB");
+    }
+    store.trashMaxMb = args.mb;
   },
 };
 

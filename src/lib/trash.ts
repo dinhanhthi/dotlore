@@ -1,5 +1,5 @@
 import { buildTree, type TreeNode } from "./tree";
-import type { TrashFile, TrashProject, TrashStatus } from "./types";
+import type { TrashFile, TrashPass, TrashProject, TrashStatus } from "./types";
 
 const MONTHS = [
   "Jan",
@@ -83,4 +83,48 @@ export function statusLabel(status: TrashStatus | null): string {
 /** A removed project (no root) has nowhere to restore into. */
 export function canRestore(project: TrashProject): boolean {
   return project.root !== null;
+}
+
+/**
+ * `YYYY-MM-DD` for `months` calendar months before `now`, from local date
+ * fields; the day is clamped to the target month's last day (Mar 31 → Feb 28).
+ */
+export function cutoffDay(now: Date, months: number): string {
+  const total = now.getFullYear() * 12 + now.getMonth() - months;
+  const year = Math.floor(total / 12);
+  const month = total - year * 12;
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const day = Math.min(now.getDate(), lastDay);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${year}-${pad(month + 1)}-${pad(day)}`;
+}
+
+export interface TrashCounts {
+  passes: number;
+  files: number;
+  bytes: number;
+}
+
+function countPasses(passes: TrashPass[]): TrashCounts {
+  const counts = { passes: 0, files: 0, bytes: 0 };
+  for (const pass of passes) {
+    counts.passes += 1;
+    counts.files += pass.files.length;
+    for (const file of pass.files) counts.bytes += file.bytes;
+  }
+  return counts;
+}
+
+/** Passes, files and bytes over every pass of every project. */
+export function trashTotals(projects: TrashProject[]): TrashCounts {
+  return countPasses(projects.flatMap((project) => project.passes));
+}
+
+/** Like `trashTotals`, over dated passes whose day is before `before` (`YYYY-MM-DD`). */
+export function olderThan(projects: TrashProject[], before: string): TrashCounts {
+  return countPasses(
+    projects
+      .flatMap((project) => project.passes)
+      .filter((pass) => pass.day !== "undated" && pass.day < before),
+  );
 }

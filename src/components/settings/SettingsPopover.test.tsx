@@ -29,7 +29,11 @@ const {
   deviceName,
   setDeviceName,
   listDevices,
+  trashMaxMb,
+  setTrashMaxMb,
 } = vi.hoisted(() => ({
+  trashMaxMb: vi.fn((): Promise<number> => Promise.resolve(500)),
+  setTrashMaxMb: vi.fn(async (_mb: number): Promise<void> => {}),
   inputs: new Map<
     string,
     { onBlur?: (event: { target: { value: string } }) => void }
@@ -169,6 +173,8 @@ vi.mock("@/lib/ipc", () => ({
   setDefaultIgnore: () => Promise.resolve(),
   setMaxFileMb: () => Promise.resolve(),
   setMaxSeedFolderMb: () => Promise.resolve(),
+  trashMaxMb,
+  setTrashMaxMb,
   loginItemEnabled: () => Promise.resolve(false),
   appHome: () => Promise.resolve("/Users/demo/Library/Application Support/dotlore"),
   openAppHome: () => Promise.resolve(),
@@ -272,6 +278,22 @@ describe("SettingsSync", () => {
     expect(html).toContain("Max folder size when adding");
     expect(html).toContain("every sync");
     expect(html).toContain("first added");
+    expect(html).toContain("Trash size limit");
+    expect(html).toMatch(/id="trash-max-mb"[^>]*min="100"/);
+    expect(html).toContain("At least 100 MB");
+  });
+
+  it("saves a trash size limit of at least 100 MB only", async () => {
+    setTrashMaxMb.mockClear();
+    trashMaxMb.mockClear();
+    wrap(<SettingsSync onChangeFolder={() => {}} />);
+    inputs.get("trash-max-mb")?.onBlur?.({ target: { value: "99" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(setTrashMaxMb).not.toHaveBeenCalled();
+    expect(trashMaxMb).toHaveBeenCalled();
+    inputs.get("trash-max-mb")?.onBlur?.({ target: { value: "100" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(setTrashMaxMb).toHaveBeenCalledWith(100);
   });
 });
 

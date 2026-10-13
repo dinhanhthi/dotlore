@@ -58,6 +58,8 @@ import {
   setMaxSeedFolderMb,
   setPatternCatalog,
   setSensitivePatterns,
+  setTrashMaxMb,
+  trashMaxMb,
   WIPE_LABEL,
   type PatternCatalog,
 } from "@/lib/ipc";
@@ -85,10 +87,11 @@ async function commitMb(
   read: () => Promise<number>,
   setLocal: (mb: number) => void,
   locked: boolean,
+  min = 1,
 ) {
   if (locked) return;
   const mb = Math.round(raw);
-  if (!Number.isFinite(mb) || mb <= 0) {
+  if (!Number.isFinite(mb) || mb < min) {
     void read()
       .then(setLocal)
       .catch(() => {});
@@ -108,15 +111,17 @@ function SettingsLimits() {
   const { locked } = useRoots();
   const [fileMb, setFileMb] = useState(50);
   const [folderMb, setFolderMb] = useState(200);
+  const [trashMb, setTrashMb] = useState(500);
 
   useEffect(() => {
-    void Promise.all([maxFileMb(), maxSeedFolderMb()])
-      .then(([file, folder]) => {
+    void Promise.all([maxFileMb(), maxSeedFolderMb(), trashMaxMb()])
+      .then(([file, folder, trash]) => {
         setFileMb(file);
         setFolderMb(folder);
+        setTrashMb(trash);
       })
       .catch(() => {
-        // getters failed; leave the 50 / 200 placeholders
+        // getters failed; leave the 50 / 200 / 500 placeholders
       });
   }, []);
 
@@ -182,6 +187,40 @@ function SettingsLimits() {
             Only applies when a project or an entry is first added, to stop a
             directory of many small files (like ~/.cursor/chats/, 4.1 GB) being
             pulled in wholesale.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="trash-max-mb" className="text-sm">
+              Trash size limit
+            </label>
+            <div className="flex items-center gap-1.5">
+              <Input
+                id="trash-max-mb"
+                type="number"
+                min={100}
+                step={1}
+                className="w-24"
+                value={trashMb}
+                disabled={locked}
+                onChange={(event) => setTrashMb(Number(event.target.value))}
+                onBlur={(event) => {
+                  void commitMb(
+                    Number(event.target.value),
+                    setTrashMaxMb,
+                    trashMaxMb,
+                    setTrashMb,
+                    locked,
+                    100,
+                  );
+                }}
+              />
+              <span className="text-xs text-muted-foreground">MB</span>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Oldest syncs are removed from this Mac's trash when it grows past
+            this. At least 100 MB.
           </p>
         </div>
       </div>

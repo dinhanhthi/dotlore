@@ -6,7 +6,13 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roots";
 import type { FileContent, RootRow, TrashProject } from "@/lib/types";
 
-import { restoreNotice, TrashView, type TrashViewProps } from "./TrashPanel";
+import {
+  confirmCopy,
+  menuChoices,
+  restoreNotice,
+  TrashView,
+  type TrashViewProps,
+} from "./TrashPanel";
 import { TrashConfirmAlert } from "./TrashConfirmAlert";
 import { TrashRestoreDialog } from "./TrashRestoreDialog";
 import type { TrashSelection } from "./TrashTree";
@@ -18,6 +24,8 @@ vi.mock("@/lib/ipc", () => ({
   restoreTrash: vi.fn(),
   deleteTrash: vi.fn(),
   emptyTrash: vi.fn(),
+  deleteTrashOlderThan: vi.fn(),
+  trashMaxMb: vi.fn(),
   readFile: vi.fn(),
   reportError: vi.fn(),
   subscribeWork: () => () => {},
@@ -137,6 +145,7 @@ function render(props: Partial<TrashViewProps> = {}): string {
     onRestore: () => {},
     onDelete: () => {},
     onEmpty: () => {},
+    capMb: 500,
     ...props,
   };
   return renderToStaticMarkup(
@@ -234,6 +243,13 @@ describe("TrashView", () => {
     expect(html).toContain('aria-label="Restore"');
   });
 
+  it("header shows the trash size and the cap", () => {
+    expect(render()).toContain("Uses 20 bytes of 500 MB");
+    const unknown = render({ capMb: null });
+    expect(unknown).toContain("Uses 20 bytes");
+    expect(unknown).not.toContain("Uses 20 bytes of");
+  });
+
   it("every button has a tooltip matching its aria-label", () => {
     const html =
       render({ selection: fileSelection, content: text }) +
@@ -275,6 +291,75 @@ describe("TrashView", () => {
       ]),
     );
     for (const label of labels) expect(tips).toContain(label);
+  });
+});
+
+function pass(day: string, bytes: number[]): TrashProject["passes"][number] {
+  return {
+    day,
+    pass: "120000",
+    path: `/home/trash/dotlore/${day}/120000`,
+    files: bytes.map((size, i) => ({ rel: `f${i}.md`, bytes: size, status: "same" })),
+  };
+}
+
+describe("empty trash menu", () => {
+  const now = new Date(2026, 9, 13, 15, 0, 0);
+  const spread: TrashProject[] = [
+    {
+      slug: "dotlore",
+      root: "/Users/demo/git/dotlore",
+      passes: [pass("2026-10-13", [1]), pass("2026-08-01", [2, 3]), pass("undated", [4])],
+    },
+    { slug: "gone", root: null, passes: [pass("2026-06-01", [5])] },
+  ];
+
+  it("the empty trash menu lists the age choices and disables those with nothing to delete", () => {
+    const choices = menuChoices(spread, now);
+    expect(choices.map(({ label, before, disabled }) => ({ label, before, disabled }))).toEqual([
+      { label: "Older than 1 month", before: "2026-09-13", disabled: false },
+      { label: "Older than 3 months", before: "2026-07-13", disabled: false },
+      { label: "Older than 6 months", before: "2026-04-13", disabled: true },
+      { label: "Older than 1 year", before: "2025-10-13", disabled: true },
+    ]);
+    expect(choices[0]?.counts).toEqual({ passes: 2, files: 3, bytes: 10 });
+    expect(choices[1]?.counts).toEqual({ passes: 1, files: 1, bytes: 5 });
+    expect(menuChoices([], now).every((choice) => choice.disabled)).toBe(true);
+  });
+
+  it("an age confirm states how many syncs, files and bytes it deletes", () => {
+    const older = confirmCopy(
+      {
+        kind: "older",
+        label: "Older than 3 months",
+        before: "2026-07-13",
+        counts: { passes: 4, files: 12, bytes: 3355443 },
+      },
+      spread,
+    );
+    expect(older.title).toBe("Delete older copies?");
+    expect(older.description).toBe(
+      "Deletes 4 syncs (12 files, 3.2 MB) older than 3 months from the trash on this Mac. This cannot be undone.",
+    );
+    expect(older.actionLabel).toBe("Delete");
+    const single = confirmCopy(
+      {
+        kind: "older",
+        label: "Older than 1 year",
+        before: "2025-10-13",
+        counts: { passes: 1, files: 1, bytes: 5 },
+      },
+      spread,
+    );
+    expect(single.description).toBe(
+      "Deletes 1 sync (1 file, 5 bytes) older than 1 year from the trash on this Mac. This cannot be undone.",
+    );
+    const everything = confirmCopy({ kind: "empty" }, spread);
+    expect(everything.title).toBe("Empty the trash?");
+    expect(everything.description).toBe(
+      "Deletes all 4 syncs (5 files, 15 bytes) from the trash on this Mac. This cannot be undone.",
+    );
+    expect(everything.actionLabel).toBe("Empty trash");
   });
 });
 
