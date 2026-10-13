@@ -4,7 +4,13 @@ import { getWorkSnapshot, subscribeWork, type ErrorLogEntry } from "./ipc";
 
 import type { LinkableRow, RootRow } from "./types";
 
-export type AppView = "root" | "all" | "starred" | "conflicts" | "errors";
+export type AppView =
+  | "root"
+  | "all"
+  | "starred"
+  | "conflicts"
+  | "errors"
+  | "trash";
 
 export type FocusRequest = {
   slug: string;
@@ -67,6 +73,7 @@ export type RootsContextValue = RootsState & {
   showStarred: () => void;
   showConflicts: () => void;
   showErrors: () => void;
+  showTrash: () => void;
   toggleStar: (slug: string) => void;
   /** Set `providerDir` immediately so onboarding unmounts, then refresh roots. */
   applyProvider: (dir: string) => void;

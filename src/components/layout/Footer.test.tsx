@@ -55,6 +55,7 @@ function wrap(node: React.ReactNode, overrides: Partial<RootsContextValue> = {})
     showStarred: () => {},
     showConflicts: () => {},
     showErrors: () => {},
+    showTrash: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},

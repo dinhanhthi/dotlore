@@ -4,7 +4,11 @@ import type {
   EntryView,
   InspectedEntryDto,
   PickerRow,
+  RestoreResult,
   RootRow,
+  TrashFile,
+  TrashPass,
+  TrashProject,
 } from "@/lib/types";
 
 import {
@@ -22,6 +26,7 @@ import {
   resolutionFor,
   store,
   syncConflictCount,
+  trashKey,
 } from "./store";
 
 function maxFileBytes(): number {
@@ -296,6 +301,92 @@ function confirmedFolderBytes(args: Record<string, unknown>): number | null {
   return null;
 }
 
+type TrashArgs = { slug: string; day: string; pass: string; rel: string | null };
+
+function trashArgs(args: Record<string, unknown>): TrashArgs {
+  return {
+    slug: argString(args, "slug"),
+    day: argString(args, "day"),
+    pass: argString(args, "pass"),
+    rel: args.rel == null ? null : argString(args, "rel"),
+  };
+}
+
+function requireTrashPass({ slug, day, pass }: TrashArgs): {
+  project: TrashProject;
+  entry: TrashPass;
+} {
+  const project = store.trash.find((item) => item.slug === slug);
+  const entry = project?.passes.find((item) => item.day === day && item.pass === pass);
+  if (!project || !entry) throw new Error(`No such trash pass: ${slug}/${day}/${pass}`);
+  return { project, entry };
+}
+
+/** `rel` is a file, a folder prefix, or null for the whole pass. */
+function inTrashTarget(file: TrashFile, rel: string | null): boolean {
+  return rel === null || file.rel === rel || file.rel.startsWith(`${rel}/`);
+}
+
+/** `docs/a.md` -> `docs/a.restored.md`; a name with no extension (or a dotfile) gets the suffix on the whole name. */
+function restoredRel(rel: string): string {
+  const slash = rel.lastIndexOf("/");
+  const dir = rel.slice(0, slash + 1);
+  const name = rel.slice(slash + 1);
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return `${dir}${name}.restored`;
+  return `${dir}${name.slice(0, dot)}.restored${name.slice(dot)}`;
+}
+
+function restoreTrash(args: Record<string, unknown>): RestoreResult {
+  const target = trashArgs(args);
+  const choice = args.choice;
+  if (choice !== "ask" && choice !== "replace" && choice !== "keep_both") {
+    throw new Error(`mockapp: unknown restore choice ${String(choice)}`);
+  }
+  const { project, entry } = requireTrashPass(target);
+  if (project.root === null) {
+    throw new Error(
+      `${project.slug} was removed from Dotlore; its trash can no longer be restored`,
+    );
+  }
+  const files = entry.files.filter((file) => inTrashTarget(file, target.rel));
+  if (files.length === 0) throw new Error("nothing to restore in this trash item");
+  if (choice === "ask") {
+    const rels = files.filter((file) => file.status === "differs").map((file) => file.rel);
+    if (rels.length > 0) return { kind: "existing", rels };
+  }
+  const restored: { from: string; to: string }[] = [];
+  const unchanged: string[] = [];
+  for (const file of files) {
+    if (file.status === "same") {
+      unchanged.push(file.rel);
+    } else if (file.status === "differs" && choice === "keep_both") {
+      // The live file is left alone, so it still differs from this copy.
+      restored.push({ from: file.rel, to: restoredRel(file.rel) });
+    } else {
+      restored.push({ from: file.rel, to: file.rel });
+      file.status = "same";
+    }
+  }
+  emitStatus();
+  return { kind: "done", restored, unchanged, skipped: [] };
+}
+
+function deleteTrash(args: Record<string, unknown>): void {
+  const target = trashArgs(args);
+  const { project, entry } = requireTrashPass(target);
+  const doomed = entry.files.filter((file) => inTrashTarget(file, target.rel));
+  if (doomed.length === 0) {
+    throw new Error(`No such trash item: ${target.rel ?? target.pass}`);
+  }
+  for (const file of doomed) {
+    delete store.trashContents[trashKey(target.slug, target.day, target.pass, file.rel)];
+  }
+  entry.files = entry.files.filter((file) => !inTrashTarget(file, target.rel));
+  project.passes = project.passes.filter((item) => item.files.length > 0);
+  store.trash = store.trash.filter((item) => item.passes.length > 0);
+}
+
 const handlers: Record<
   string,
   (args: Record<string, unknown>) => unknown
@@ -564,6 +655,26 @@ const handlers: Record<
       throw new Error("mockapp: mb is required");
     }
     store.maxFileMb = args.mb;
+  },
+  open_app_home: () => undefined,
+  open_trash: () => undefined,
+  list_trash: () => structuredClone(store.trash),
+  read_trash_file: (args) => {
+    const target = trashArgs(args);
+    const rel = argString(args, "rel");
+    const { entry } = requireTrashPass(target);
+    const file = entry.files.find((item) => item.rel === rel);
+    if (!file) throw new Error(`No such trash file: ${target.slug}/${rel}`);
+    const stored = store.trashContents[trashKey(target.slug, target.day, target.pass, rel)];
+    if (stored) return { ...stored };
+    const text = `Trash copy of ${rel}\n`;
+    return { text, binary: false, too_large: false, bytes_len: text.length };
+  },
+  restore_trash: restoreTrash,
+  delete_trash: deleteTrash,
+  empty_trash: () => {
+    store.trash = [];
+    store.trashContents = {};
   },
   max_seed_folder_mb: () => store.maxSeedFolderMb,
   set_max_seed_folder_mb: (args) => {

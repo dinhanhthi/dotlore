@@ -162,3 +162,41 @@ export type ResolveResultDto =
   | { outcome: "applied" }
   | { outcome: "stale"; refreshed: ResolutionDto }
   | { outcome: "pending" };
+
+/** Mirrors `trash::TrashStatus` (`rename_all = "snake_case"`). */
+export type TrashStatus = "not_in_project" | "differs" | "same" | "unknown";
+
+/** Mirrors `trash::TrashFile` (snake_case fields). `status` is null for a removed project. */
+export type TrashFile = {
+  rel: string;
+  bytes: number;
+  status: TrashStatus | null;
+};
+
+/** Mirrors `trash::TrashPass` (snake_case fields). `path` is the absolute pass folder. */
+export type TrashPass = {
+  day: string;
+  pass: string;
+  path: string;
+  files: TrashFile[];
+};
+
+/** Mirrors `trash::TrashProject` (snake_case fields). `root` is null for a removed project. */
+export type TrashProject = {
+  slug: string;
+  root: string | null;
+  passes: TrashPass[];
+};
+
+/** Mirrors `engine::RestoreChoice` (`rename_all = "snake_case"`). */
+export type RestoreChoice = "ask" | "replace" | "keep_both";
+
+/** Mirrors `engine::RestoreResult` (`tag = "kind"`, snake_case). */
+export type RestoreResult =
+  | { kind: "existing"; rels: string[] }
+  | {
+      kind: "done";
+      restored: { from: string; to: string }[];
+      unchanged: string[];
+      skipped: string[];
+    };

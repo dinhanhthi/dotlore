@@ -101,6 +101,7 @@ function renderSidebar(overrides: Partial<RootsContextValue> = {}) {
     showStarred: () => {},
     showConflicts: () => {},
     showErrors: () => {},
+    showTrash: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots,

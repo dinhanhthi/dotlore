@@ -42,6 +42,7 @@ function wrap(
     showStarred: () => {},
     showConflicts: () => {},
     showErrors: () => {},
+    showTrash: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},

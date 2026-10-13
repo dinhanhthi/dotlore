@@ -70,6 +70,7 @@ function render(roots: RootRow[], commandErrors: ErrorLogEntry[] = []): string {
     showStarred: () => {},
     showConflicts: () => {},
     showErrors: () => {},
+    showTrash: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},

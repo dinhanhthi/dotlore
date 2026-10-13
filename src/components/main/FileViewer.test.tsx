@@ -7,9 +7,9 @@ import {
   RootsContext,
   type RootsContextValue,
 } from "@/lib/roots";
-import type { RootRow } from "@/lib/types";
+import type { FileContent, RootRow } from "@/lib/types";
 
-import { FileViewer } from "./FileViewer";
+import { FilePane, FileViewer } from "./FileViewer";
 
 const row: RootRow = {
   slug: "dotlore",
@@ -36,6 +36,7 @@ function renderViewer(): string {
     showStarred: () => {},
     showConflicts: () => {},
     showErrors: () => {},
+    showTrash: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},
@@ -74,5 +75,38 @@ describe("FileViewer word wrap", () => {
   it("keeps an explicit off preference", () => {
     vi.stubGlobal("localStorage", { getItem: () => "0", setItem: () => {} });
     expect(wordWrapButton(renderViewer())).toContain('aria-pressed="false"');
+  });
+});
+
+function renderPane(content: FileContent | null): string {
+  return renderToStaticMarkup(
+    <TooltipProvider>
+      <FilePane
+        rel="CLAUDE.md"
+        content={content}
+        error={null}
+        actions={<button type="button" aria-label="Restore" />}
+      />
+    </TooltipProvider>,
+  );
+}
+
+describe("FilePane", () => {
+  it("renders the given actions and no Star or Remove controls", () => {
+    const html = renderPane(null);
+    expect(html).toContain('aria-label="Restore"');
+    expect(html).not.toContain('aria-label="Star"');
+    expect(html).not.toContain('aria-label="Unstar"');
+    expect(html).not.toContain('aria-label="Remove from Dotlore"');
+  });
+
+  it("shows too-large and binary messages", () => {
+    const base = { text: null, binary: false, too_large: false, bytes_len: 42 };
+    expect(renderPane({ ...base, too_large: true })).toContain(
+      "File too large to preview (42 bytes)",
+    );
+    expect(renderPane({ ...base, binary: true })).toContain(
+      "Binary file — 42 bytes",
+    );
   });
 });

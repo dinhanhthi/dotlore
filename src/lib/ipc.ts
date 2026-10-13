@@ -13,10 +13,13 @@ import type {
   PickerRow,
   ResolutionDto,
   ResolveResultDto,
+  RestoreChoice,
+  RestoreResult,
   RootRow,
   StatusPayload,
   TrackedFile,
   TrackResultDto,
+  TrashProject,
   UploadState,
 } from "./types";
 
@@ -279,6 +282,48 @@ export function openAppHome(): Promise<void> {
 /** Open the local trash: every file sync deleted or overwrote, by day. */
 export function openTrash(): Promise<void> {
   return invoke("open_trash");
+}
+
+export function listTrash(): Promise<TrashProject[]> {
+  return invoke("list_trash");
+}
+
+export function readTrashFile(
+  slug: string,
+  day: string,
+  pass: string,
+  rel: string,
+): Promise<FileContent> {
+  return invoke("read_trash_file", { slug, day, pass, rel });
+}
+
+/** Restore one file, or the whole pass when `rel` is null. */
+export function restoreTrash(
+  slug: string,
+  day: string,
+  pass: string,
+  rel: string | null,
+  choice: RestoreChoice,
+): Promise<RestoreResult | typeof BLOCKED> {
+  return runTask("Restoring…", () =>
+    invoke<RestoreResult>("restore_trash", { slug, day, pass, rel, choice }),
+  );
+}
+
+/** Delete one trash copy, or the whole pass when `rel` is null. */
+export function deleteTrash(
+  slug: string,
+  day: string,
+  pass: string,
+  rel: string | null,
+): Promise<void | typeof BLOCKED> {
+  return runTask("Deleting…", () =>
+    invoke<void>("delete_trash", { slug, day, pass, rel }),
+  );
+}
+
+export function emptyTrash(): Promise<void | typeof BLOCKED> {
+  return runTask("Emptying trash…", () => invoke<void>("empty_trash"));
 }
 
 export function gitMissing(): Promise<boolean> {

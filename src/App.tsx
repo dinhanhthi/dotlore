@@ -415,6 +415,16 @@ export function App() {
     );
   }, [guardLeave]);
 
+  const showTrash = useCallback(() => {
+    guardLeave(() =>
+      setState((current) => ({
+        ...current,
+        view: "trash",
+        resolvingRel: null,
+      })),
+    );
+  }, [guardLeave]);
+
   const toggleStar = useCallback((slug: string) => {
     const starredSlugs = toggleStarred(slug);
     setState((current) => ({ ...current, starredSlugs }));
@@ -511,6 +521,7 @@ export function App() {
       showStarred,
       showConflicts,
       showErrors,
+      showTrash,
       toggleStar,
       applyProvider,
       refreshRoots,
@@ -534,6 +545,7 @@ export function App() {
       showStarred,
       showConflicts,
       showErrors,
+      showTrash,
       toggleStar,
       applyProvider,
       refreshRoots,
