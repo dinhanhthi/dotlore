@@ -358,7 +358,7 @@ fn write_restored_sibling(root: &Path, rel: &Path, state: &FileState) -> Result<
         .extension()
         .map(|e| format!(".{}", e.to_string_lossy()))
         .unwrap_or_default();
-    let mode = mode_for(state.executable);
+    let mode = mode_like(&root.join(rel), state.executable);
     let mut n = 0u32;
     loop {
         let num = if n == 0 {
@@ -1021,20 +1021,7 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
     }
     let bytes = fs::read(src)?;
     let exec = is_exec(md.permissions().mode());
-    // Only the executable bit is ours to set. An existing target keeps its
-    // own permissions: settings.json holds API keys and is routinely 0600,
-    // and a fixed 0644 would silently make it world-readable.
-    let mode = match fs::symlink_metadata(dst) {
-        Ok(dmd) if dmd.file_type().is_file() => {
-            let cur = dmd.permissions().mode() & 0o777;
-            if exec {
-                cur | 0o111
-            } else {
-                cur & !0o111
-            }
-        }
-        _ => mode_for(exec),
-    };
+    let mode = mode_like(dst, exec);
 
     let dir = dst
         .parent()
@@ -1084,6 +1071,24 @@ fn write_atomic(src: &Path, dst: &Path) -> Result<()> {
 
 fn is_exec(mode: u32) -> bool {
     mode & 0o111 != 0
+}
+
+/// The mode for bytes written at or beside `template`. Only the executable bit
+/// is ours to set. An existing regular file keeps its own permissions:
+/// settings.json holds API keys and is routinely 0600, and a fixed 0644 would
+/// silently make it (or a copy next to it) world-readable.
+fn mode_like(template: &Path, exec: bool) -> u32 {
+    match fs::symlink_metadata(template) {
+        Ok(md) if md.file_type().is_file() => {
+            let cur = md.permissions().mode() & 0o777;
+            if exec {
+                cur | 0o111
+            } else {
+                cur & !0o111
+            }
+        }
+        _ => mode_for(exec),
+    }
 }
 
 fn mode_for(executable: bool) -> u32 {
@@ -2589,6 +2594,46 @@ mod tests {
 
         assert!(res.is_err());
         assert_eq!(fs::read(root.join("docs/a.md")).unwrap(), b"live");
+    }
+
+    /// A Keep both copy takes the live file's permissions, so the old bytes of
+    /// a 0600 `settings.json` never land in a world-readable sibling.
+    #[test]
+    fn restore_keep_both_keeps_the_live_files_private_mode() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "settings.json", "old");
+        put(&root.join("settings.json"), "live");
+        chmod(&root.join("settings.json"), 0o600);
+        let out = restore_to_root(
+            &root,
+            Path::new("settings.json"),
+            &src,
+            &displaced,
+            OnExisting::KeepBoth,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            Restored::Written(PathBuf::from("settings.restored.json"))
+        );
+        assert_eq!(mode_of(&root.join("settings.restored.json")), 0o600);
+
+        // Only the exec bit follows the trash copy, set the way a sync
+        // overwrite sets it (`write_atomic`).
+        let src = td.path().join("trash/run.sh");
+        put(&src, "old");
+        chmod(&src, 0o700);
+        put(&root.join("run.sh"), "live");
+        chmod(&root.join("run.sh"), 0o640);
+        restore_to_root(
+            &root,
+            Path::new("run.sh"),
+            &src,
+            &displaced,
+            OnExisting::KeepBoth,
+        )
+        .unwrap();
+        assert_eq!(mode_of(&root.join("run.restored.sh")), 0o751);
     }
 
     #[test]
