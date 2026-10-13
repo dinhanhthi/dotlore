@@ -15,7 +15,13 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::config::Root;
+use crate::config::{HomeLock, Root};
+
+/// The default trash cap, in MB.
+pub const DEFAULT_MAX_MB: u64 = 500;
+
+/// The lowest trash cap accepted, in MB, so a peer cannot push a tiny cap.
+pub const MIN_MAX_MB: u64 = 100;
 
 /// `[a-z0-9]+(-[a-z0-9]+)*`, the same rule `repo` and `engine` hold slugs
 /// to — also the shape that makes a slug safe as a single path component.
@@ -215,7 +221,7 @@ pub fn list(home: &Path, roots: &[Root], cap: u64) -> Result<Vec<TrashProject>> 
         if passes.is_empty() {
             continue;
         }
-        passes.sort_by(|a, b| pass_key(b).cmp(&pass_key(a)));
+        passes.sort_by(|a, b| pass_key(&b.day, &b.pass).cmp(&pass_key(&a.day, &a.pass)));
         projects.push(TrashProject {
             slug,
             root: root.map(|r| r.path.to_string_lossy().into_owned()),
@@ -298,9 +304,12 @@ pub(crate) fn files_under(pass_dir: &Path, rel: Option<&str>) -> Result<Vec<Stri
 /// day, then the day, then the time and `-N` suffix compared numerically.
 /// Both are validated digit strings (fixed-width HHMMSS, or unix secs and an
 /// N without leading zeros), so `(len, digits)` is numeric order.
-fn pass_key(p: &TrashPass) -> (bool, &str, (usize, &str), (usize, &str)) {
-    let (time, n) = p.pass.split_once('-').unwrap_or((&p.pass, ""));
-    (p.day != "undated", &p.day, (time.len(), time), (n.len(), n))
+fn pass_key<'a>(
+    day: &'a str,
+    pass: &'a str,
+) -> (bool, &'a str, (usize, &'a str), (usize, &'a str)) {
+    let (time, n) = pass.split_once('-').unwrap_or((pass, ""));
+    (day != "undated", day, (time.len(), time), (n.len(), n))
 }
 
 /// Compare a trash copy with `<root>/<rel>` without following any symlink.
@@ -346,7 +355,13 @@ pub fn delete(home: &Path, slug: &str, day: &str, pass: &str, rel: Option<&str>)
         Some(rel) => item_path(home, slug, day, pass, rel)?,
     };
     remove(&target)?;
-    let trash = home.join("trash");
+    prune_parents(&home.join("trash"), &target);
+    Ok(())
+}
+
+/// Remove the folders above `target` left empty, up to, but never
+/// including, `trash`.
+fn prune_parents(trash: &Path, target: &Path) {
     let mut cur = target.parent();
     while let Some(dir) = cur {
         if dir == trash || fs::remove_dir(dir).is_err() {
@@ -354,7 +369,110 @@ pub fn delete(home: &Path, slug: &str, day: &str, pass: &str, rel: Option<&str>)
         }
         cur = dir.parent();
     }
-    Ok(())
+}
+
+/// One pass folder of the trash, with the plain files [`walk`] finds in it.
+struct PassEntry {
+    slug: String,
+    day: String,
+    pass: String,
+    path: PathBuf,
+    bytes: u64,
+    files: usize,
+}
+
+/// Every pass in `<home>/trash` with a valid slug, day and pass name, zero-file
+/// passes included, oldest first (by [`pass_key`], then slug). Nothing is
+/// followed; a missing trash has no passes, a symlinked or non-folder one is
+/// refused.
+fn passes(home: &Path) -> Result<Vec<PassEntry>> {
+    let trash = home.join("trash");
+    match fs::symlink_metadata(&trash) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e).with_context(|| format!("stat {}", trash.display())),
+        Ok(md) if md.file_type().is_symlink() => bail!("refusing symlink {}", trash.display()),
+        Ok(md) if !md.is_dir() => bail!("not a folder: {}", trash.display()),
+        Ok(_) => {}
+    }
+    let mut out = Vec::new();
+    for (slug, slug_dir) in dirs(&trash)? {
+        if !valid_slug(&slug) {
+            continue;
+        }
+        for (day, day_dir) in dirs(&slug_dir)? {
+            if !valid_day(&day) {
+                continue;
+            }
+            for (pass, path) in dirs(&day_dir)? {
+                if !valid_pass(&day, &pass) {
+                    continue;
+                }
+                let mut found = Vec::new();
+                walk(&path, "", &mut found)?;
+                out.push(PassEntry {
+                    slug: slug.clone(),
+                    day: day.clone(),
+                    pass,
+                    path,
+                    bytes: found.iter().map(|f| f.1).sum(),
+                    files: found.len(),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| {
+        (pass_key(&a.day, &a.pass), &a.slug).cmp(&(pass_key(&b.day, &b.pass), &b.slug))
+    });
+    Ok(out)
+}
+
+/// Remove whole passes, oldest first across every project, until the trash
+/// holds at most `cap_bytes`. The newest pass holding a file is never
+/// removed, so the trash can stay over the cap; zero-file passes older than
+/// it go on the way. Returns the number of passes removed.
+///
+/// `_g` proves the caller holds the home lock; this does not take it.
+pub fn prune_to_cap(_g: &HomeLock, home: &Path, cap_bytes: u64) -> Result<usize> {
+    let trash = home.join("trash");
+    let all = passes(home)?;
+    let mut total: u64 = all.iter().map(|p| p.bytes).sum();
+    let Some(newest) = all.iter().rposition(|p| p.files > 0) else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    for p in &all[..newest] {
+        if total <= cap_bytes {
+            break;
+        }
+        remove(&p.path)?;
+        total = total.saturating_sub(p.bytes);
+        prune_parents(&trash, &p.path);
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+/// Delete every dated pass whose day is before `before` (`YYYY-MM-DD`, an
+/// untrusted id from the webview); `undated` passes are kept. Returns the
+/// number of passes removed.
+///
+/// Holds the home lock throughout, like [`delete`].
+pub fn delete_older_than(home: &Path, before: &str) -> Result<usize> {
+    let _lock = crate::config::lock(home)?;
+    if !valid_day(before) || before == "undated" {
+        bail!("invalid trash day {before:?}");
+    }
+    let trash = home.join("trash");
+    let mut removed = 0;
+    for p in passes(home)? {
+        // Fixed-width `YYYY-MM-DD` strings compare in date order.
+        if p.day != "undated" && p.day.as_str() < before {
+            remove(&p.path)?;
+            prune_parents(&trash, &p.path);
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// Remove everything under `<home>/trash`, keeping the folder itself. A
@@ -828,5 +946,236 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    /// Put an `n`-byte file `f` in each pass, given as `<slug>/<day>/<pass>`.
+    fn passes_of(trash: &Path, n: usize, passes: &[&str]) {
+        for p in passes {
+            put(&trash.join(p).join("f"), &vec![b'x'; n]);
+        }
+    }
+
+    #[test]
+    fn prune_to_cap_removes_oldest_passes_across_projects_until_under_cap() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let trash = home.join("trash");
+        passes_of(
+            &trash,
+            3,
+            &[
+                "b/2026-10-10/100000",
+                "a/2026-10-10/100000",
+                "b/2026-10-11/100000",
+                "a/2026-10-12/100000",
+                "b/2026-10-13/100000",
+            ],
+        );
+
+        // On a tie the slug decides: `a` goes before `b`.
+        let g = crate::config::lock(&home).unwrap();
+        assert_eq!(prune_to_cap(&g, &home, 12).unwrap(), 1);
+        assert!(!trash.join("a/2026-10-10/100000").exists());
+        assert!(trash.join("b/2026-10-10/100000/f").is_file());
+
+        // 12 bytes over a cap of 7: the two next oldest go, across projects.
+        assert_eq!(prune_to_cap(&g, &home, 7).unwrap(), 2);
+        for gone in [
+            "a/2026-10-10/100000",
+            "b/2026-10-10/100000",
+            "b/2026-10-11/100000",
+        ] {
+            assert!(!trash.join(gone).exists(), "{gone}");
+        }
+        assert!(trash.join("a/2026-10-12/100000/f").is_file());
+        assert!(trash.join("b/2026-10-13/100000/f").is_file());
+    }
+
+    #[test]
+    fn prune_to_cap_never_removes_the_newest_pass() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let trash = home.join("trash");
+        passes_of(&trash, 5, &["s/2026-10-12/100000", "s/2026-10-13/100000"]);
+
+        // Still over the cap once only the newest is left: it stays.
+        let g = crate::config::lock(&home).unwrap();
+        assert_eq!(prune_to_cap(&g, &home, 1).unwrap(), 1);
+        assert!(!trash.join("s/2026-10-12").exists());
+        assert!(trash.join("s/2026-10-13/100000/f").is_file());
+        assert_eq!(prune_to_cap(&g, &home, 0).unwrap(), 0);
+        assert!(trash.join("s/2026-10-13/100000/f").is_file());
+    }
+
+    #[test]
+    fn prune_to_cap_removes_undated_passes_first() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let trash = home.join("trash");
+        passes_of(
+            &trash,
+            3,
+            &[
+                "s/2026-10-12/000000",
+                "s/undated/1728828301",
+                "s/2026-10-13/000000",
+            ],
+        );
+
+        let g = crate::config::lock(&home).unwrap();
+        assert_eq!(prune_to_cap(&g, &home, 6).unwrap(), 1);
+        assert!(!trash.join("s/undated").exists());
+        assert!(trash.join("s/2026-10-12/000000/f").is_file());
+        assert!(trash.join("s/2026-10-13/000000/f").is_file());
+    }
+
+    #[test]
+    fn prune_to_cap_is_a_noop_under_the_cap_and_without_a_trash() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let trash = home.join("trash");
+        let g = crate::config::lock(&home).unwrap();
+        assert_eq!(prune_to_cap(&g, &home, 0).unwrap(), 0);
+        assert!(!trash.exists());
+
+        passes_of(&trash, 3, &["s/2026-10-12/100000", "s/2026-10-13/100000"]);
+        assert_eq!(prune_to_cap(&g, &home, 6).unwrap(), 0);
+        assert!(trash.join("s/2026-10-12/100000/f").is_file());
+        assert!(trash.join("s/2026-10-13/100000/f").is_file());
+    }
+
+    #[test]
+    fn prune_to_cap_removes_empty_day_and_slug_folders_but_keeps_trash() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let trash = home.join("trash");
+        passes_of(
+            &trash,
+            3,
+            &[
+                "a/2026-10-10/100000",
+                "b/2026-10-11/100000",
+                "b/2026-10-11/100001",
+                "b/2026-10-12/100000",
+            ],
+        );
+
+        let g = crate::config::lock(&home).unwrap();
+        assert_eq!(prune_to_cap(&g, &home, 6).unwrap(), 2);
+        assert!(!trash.join("a").exists());
+        assert!(trash.join("b/2026-10-11").is_dir());
+        assert!(!trash.join("b/2026-10-11/100000").exists());
+
+        // Everything but the newest pass goes; `trash` itself never does.
+        assert_eq!(prune_to_cap(&g, &home, 0).unwrap(), 1);
+        assert!(!trash.join("b/2026-10-11").exists());
+        assert!(trash.join("b/2026-10-12/100000/f").is_file());
+        assert!(trash.is_dir());
+    }
+
+    #[test]
+    fn prune_to_cap_ignores_foreign_names_and_symlinks() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let trash = home.join("trash");
+        let outside = td.path().join("outside");
+        put(&outside.join("sentinel.md"), b"keep");
+        passes_of(&trash, 3, &["s/2026-10-12/100000", "s/2026-10-13/142501"]);
+        // Would sort newest if it counted.
+        symlink(&outside, trash.join("s/2026-10-13/142503")).unwrap();
+        for stray in [
+            "Bad/2026-10-01/100000",
+            "s/2026-1-3/100000",
+            "s/2026-10-01/1000",
+        ] {
+            put(&trash.join(stray).join("f"), b"stray");
+        }
+
+        let g = crate::config::lock(&home).unwrap();
+        assert_eq!(prune_to_cap(&g, &home, 0).unwrap(), 1);
+        assert!(!trash.join("s/2026-10-12").exists());
+        assert!(trash.join("s/2026-10-13/142501/f").is_file());
+        assert!(fs::symlink_metadata(trash.join("s/2026-10-13/142503"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(outside.join("sentinel.md")).unwrap(), b"keep");
+        for stray in [
+            "Bad/2026-10-01/100000",
+            "s/2026-1-3/100000",
+            "s/2026-10-01/1000",
+        ] {
+            assert!(trash.join(stray).join("f").is_file(), "{stray}");
+        }
+    }
+
+    #[test]
+    fn prune_to_cap_refuses_a_symlinked_trash() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let outside = td.path().join("outside");
+        passes_of(&outside, 3, &["s/2026-10-12/100000", "s/2026-10-13/100000"]);
+        fs::create_dir_all(&home).unwrap();
+        symlink(&outside, home.join("trash")).unwrap();
+
+        let g = crate::config::lock(&home).unwrap();
+        assert!(prune_to_cap(&g, &home, 0).is_err());
+        assert!(outside.join("s/2026-10-12/100000/f").is_file());
+        assert!(outside.join("s/2026-10-13/100000/f").is_file());
+    }
+
+    #[test]
+    fn prune_to_cap_removes_empty_passes_on_the_way() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let trash = home.join("trash");
+        fs::create_dir_all(trash.join("s/2026-10-10/100000")).unwrap();
+        passes_of(&trash, 5, &["s/2026-10-11/100000", "s/2026-10-12/100000"]);
+
+        let g = crate::config::lock(&home).unwrap();
+        assert_eq!(prune_to_cap(&g, &home, 5).unwrap(), 2);
+        assert!(!trash.join("s/2026-10-10").exists());
+        assert!(!trash.join("s/2026-10-11").exists());
+        assert!(trash.join("s/2026-10-12/100000/f").is_file());
+    }
+
+    #[test]
+    fn delete_older_than_removes_only_dated_passes_before_the_cutoff() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let trash = home.join("trash");
+        passes_of(
+            &trash,
+            1,
+            &[
+                "a/2026-07-12/100000",
+                "b/2026-06-30/235959",
+                "a/2026-07-13/000000",
+                "a/2026-07-14/100000",
+                "b/undated/1728828301",
+            ],
+        );
+
+        assert_eq!(delete_older_than(&home, "2026-07-13").unwrap(), 2);
+        assert!(!trash.join("a/2026-07-12").exists());
+        assert!(!trash.join("b/2026-06-30").exists());
+        assert!(trash.join("a/2026-07-13/000000/f").is_file());
+        assert!(trash.join("a/2026-07-14/100000/f").is_file());
+        assert!(trash.join("b/undated/1728828301/f").is_file());
+        assert!(trash.is_dir());
+    }
+
+    #[test]
+    fn delete_older_than_rejects_an_invalid_or_undated_cutoff() {
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        let trash = home.join("trash");
+        passes_of(&trash, 1, &["s/2026-07-12/100000", "s/undated/1"]);
+
+        for before in ["undated", "..", "2026-1-3", "", "9999-99-99/.."] {
+            assert!(delete_older_than(&home, before).is_err(), "{before:?}");
+        }
+        assert!(trash.join("s/2026-07-12/100000/f").is_file());
+        assert!(trash.join("s/undated/1/f").is_file());
     }
 }

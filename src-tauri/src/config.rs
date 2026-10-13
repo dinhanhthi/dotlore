@@ -79,6 +79,9 @@ pub struct Config {
     /// Seed/add folder-total limit in MiB. `None` means 200. Enforced in T3.7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_seed_folder_mb: Option<u64>,
+    /// Synced trash size cap in MB; None means `trash::DEFAULT_MAX_MB`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trash_max_mb: Option<u64>,
     /// Sensitive-path patterns. `None` means use `project::SECRET_PATTERNS`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensitive_patterns: Option<Vec<String>>,
@@ -373,6 +376,27 @@ mod tests {
 
         let again = Config::load(home).unwrap();
         assert_eq!(again.settings_gens, cfg.settings_gens);
+    }
+
+    #[test]
+    fn trash_max_mb_roundtrips_and_an_old_config_loads() {
+        let td = TempDir::new().unwrap();
+        let home = td.path();
+
+        let mut cfg = Config::load(home).unwrap();
+        let body = fs::read_to_string(home.join("config.json")).unwrap();
+        assert!(!body.contains("trash_max_mb"), "{body}");
+
+        cfg.trash_max_mb = Some(800);
+        cfg.save(home).unwrap();
+        assert_eq!(Config::load(home).unwrap().trash_max_mb, Some(800));
+
+        fs::write(
+            home.join("config.json"),
+            br#"{"device_id":"ab","device_name":"m","provider_dir":null,"roots":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(Config::load(home).unwrap().trash_max_mb, None);
     }
 
     #[test]

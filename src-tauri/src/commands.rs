@@ -498,6 +498,19 @@ pub async fn empty_trash(state: State<'_, AppState>) -> Result<(), String> {
         .map_err(front_msg)?
 }
 
+/// Delete every dated pass before `before` (`YYYY-MM-DD`);
+/// `trash::delete_older_than` takes the home lock itself.
+#[tauri::command]
+pub async fn delete_trash_older_than(
+    state: State<'_, AppState>,
+    before: String,
+) -> Result<usize, String> {
+    let home = state.home.clone();
+    tauri::async_runtime::spawn_blocking(move || delete_trash_older_than_sync(&home, &before))
+        .await
+        .map_err(front_msg)?
+}
+
 fn cloud_folder_target(provider: &Path) -> PathBuf {
     let dotlore = engine::cloud_folder(provider);
     if dotlore.is_dir() {
@@ -1164,6 +1177,34 @@ pub async fn set_max_file_mb(
 }
 
 #[tauri::command]
+pub async fn trash_max_mb(state: State<'_, AppState>) -> Result<u64, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .trash_max_mb()
+    })
+    .await
+    .map_err(front_msg)
+}
+
+/// The engine prunes the trash under the home lock it takes itself.
+#[tauri::command]
+pub async fn set_trash_max_mb(state: State<'_, AppState>, mb: u64) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_trash_max_mb(mb)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+#[tauri::command]
 pub async fn max_seed_folder_mb(state: State<'_, AppState>) -> Result<u64, String> {
     let engine = state.shared_engine().map_err(front_msg)?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -1590,6 +1631,10 @@ fn delete_trash_sync(
     rel: Option<&str>,
 ) -> Result<(), String> {
     trash::delete(home, slug, day, pass, rel).map_err(front_err)
+}
+
+fn delete_trash_older_than_sync(home: &Path, before: &str) -> Result<usize, String> {
+    trash::delete_older_than(home, before).map_err(front_err)
 }
 
 fn list_linkable_unstarted(
@@ -2536,11 +2581,31 @@ mod tests {
             assert!(delete_trash_sync(&home, slug, day, pass, None).is_err());
             assert!(restore_trash_sync(&mut fx.engine, slug, day, pass, None, ask).is_err());
         }
+        for before in ["undated", "..", "2026-1-3", ""] {
+            assert!(delete_trash_older_than_sync(&home, before).is_err());
+        }
 
         assert_eq!(fs::read(&item).unwrap(), b"keep");
         assert_eq!(fs::read(&sentinel).unwrap(), b"outside the pass");
         assert!(!fx.root.path().join("a.md").exists());
         assert!(!fx.root.path().join("x").exists());
+    }
+
+    #[test]
+    fn delete_trash_older_than_removes_only_passes_before_the_cutoff() {
+        let fx = fixture();
+        let home = fx.engine.home.clone();
+        let old = home
+            .join("trash")
+            .join(&fx.slug)
+            .join("2026-01-01/120000/a.md");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, b"old").unwrap();
+        let new = trash_item(&fx, "120000", "a.md", b"new");
+
+        assert_eq!(delete_trash_older_than_sync(&home, "2026-06-01"), Ok(1));
+        assert!(!old.exists());
+        assert_eq!(fs::read(&new).unwrap(), b"new");
     }
 
     #[test]

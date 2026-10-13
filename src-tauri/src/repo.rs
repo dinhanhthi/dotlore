@@ -784,6 +784,7 @@ impl Repo {
             resolve_index,
             j: journal,
             blocked: Vec::new(),
+            wrote_trash: false,
         }
     }
 
@@ -840,6 +841,12 @@ pub struct Transaction {
     /// not clear on their own. Not journalled: it is re-derived from the
     /// filesystem and the target on every pass.
     blocked: Vec<PathBuf>,
+    /// Set when an [`Transaction::apply`] pass on this handle displaced a live
+    /// file into the trash, including the pass [`Transaction::resume`] runs
+    /// and a pass that fails part-way. Not journalled: a handle from
+    /// [`Repo::pending_tx`] starts clear. The engine uses it to decide whether
+    /// to prune the trash.
+    wrote_trash: bool,
 }
 
 impl Transaction {
@@ -866,6 +873,12 @@ impl Transaction {
     /// the ones a human has to clear.
     pub fn blocked(&self) -> &[PathBuf] {
         &self.blocked
+    }
+
+    /// Whether an [`Transaction::apply`] pass displaced a live file into the
+    /// trash; the engine uses it to decide whether to prune the trash.
+    pub fn wrote_trash(&self) -> bool {
+        self.wrote_trash
     }
 
     /// The entries this transaction will write to the live root.
@@ -977,7 +990,11 @@ impl Transaction {
                         &[(status, rel.clone())],
                         &snap,
                         &trash,
-                    )?;
+                    );
+                    // Before `?`: a write that fails after its trash copy
+                    // still displaced a file.
+                    self.wrote_trash |= trash.exists();
+                    let left = left?;
                     self.j.intent = None;
                     if left.is_empty() {
                         self.acknowledge(&rel)?;
@@ -2733,6 +2750,122 @@ mod tests {
             b"agent x\n"
         );
         assert_eq!(fs::read(times[0].join("CLAUDE.md")).unwrap(), b"plan v1\n");
+    }
+
+    /// The engine prunes the trash only after a cycle that wrote to it, so
+    /// `apply` reports whether any pass displaced a live file.
+    #[test]
+    fn apply_reports_whether_it_wrote_to_the_trash() {
+        let fx = fixture();
+        let cloud = fx.cloud();
+        let key = provider_key(&cloud);
+        fx.write("CLAUDE.md", b"plan v1\n");
+        fx.write("agents/x.md", b"agent x\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b
+            .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+            .unwrap();
+        tx.set_target(&b).unwrap();
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        assert!(!tx.wrote_trash(), "a bootstrap only adds files");
+        tx.finalize(&b).unwrap();
+
+        fs::remove_file(fx.root.path().join("agents/x.md")).unwrap();
+        fx.write("CLAUDE.md", b"plan v2\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b.begin_tx(&key, "HEAD", no_resolver).unwrap();
+        b.merge_remote(&tx, ID_A).unwrap();
+        tx.set_target(&b).unwrap();
+        assert!(!tx.wrote_trash());
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        assert!(
+            tx.wrote_trash(),
+            "a deletion and an overwrite displace files"
+        );
+        tx.finalize(&b).unwrap();
+    }
+
+    /// A bootstrapped B and A's next change to `CLAUDE.md` and `agents/x.md`,
+    /// ready for B to merge.
+    fn b_behind_a_on_two_files() -> (Fx, Repo, TempDir, TempDir, String) {
+        let fx = fixture();
+        let cloud = fx.cloud();
+        let key = provider_key(&cloud);
+        fx.write("CLAUDE.md", b"plan v1\n");
+        fx.write("agents/x.md", b"agent x\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b
+            .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+            .unwrap();
+        tx.set_target(&b).unwrap();
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+
+        fx.write("CLAUDE.md", b"plan v2\n");
+        fx.write("agents/x.md", b"agent x v2\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        (fx, b, bh, b_root, key)
+    }
+
+    /// The engine reads the flag after `resume` too: the fresh handle's own
+    /// apply pass sets it.
+    #[test]
+    fn a_resume_that_displaces_a_file_reports_it_wrote_to_the_trash() {
+        let (_fx, b, bh, b_root, key) = b_behind_a_on_two_files();
+        let live = b_root.path().join("CLAUDE.md");
+        let elsewhere = bh.path().join("elsewhere.md");
+        fs::write(&elsewhere, b"plan v1\n").unwrap();
+        fs::remove_file(&live).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &live).unwrap();
+
+        let mut tx = b.begin_tx(&key, "HEAD", no_resolver).unwrap();
+        b.merge_remote(&tx, ID_A).unwrap();
+        tx.set_target(&b).unwrap();
+        assert_eq!(
+            tx.apply(&b, bh.path()).unwrap(),
+            vec![PathBuf::from("CLAUDE.md")]
+        );
+        drop(tx);
+
+        fs::remove_file(&live).unwrap();
+        fs::write(&live, b"plan v1\n").unwrap();
+        let mut tx = b.pending_tx(no_resolver).unwrap().unwrap();
+        assert!(!tx.wrote_trash());
+        assert_eq!(tx.resume(&b, bh.path()).unwrap(), ResumeOutcome::Finished);
+        assert!(tx.wrote_trash(), "the resumed pass overwrote CLAUDE.md");
+    }
+
+    /// A pass that fails after displacing a file still reports the trash write.
+    #[test]
+    fn an_apply_that_fails_mid_pass_still_reports_the_trash_write() {
+        let (_fx, b, bh, b_root, key) = b_behind_a_on_two_files();
+        let mut tx = b.begin_tx(&key, "HEAD", no_resolver).unwrap();
+        b.merge_remote(&tx, ID_A).unwrap();
+        tx.set_target(&b).unwrap();
+
+        // The old agents/x.md reaches the trash, then its write fails.
+        let agents = b_root.path().join("agents");
+        fs::set_permissions(&agents, fs::Permissions::from_mode(0o555)).unwrap();
+        let res = tx.apply(&b, bh.path());
+        fs::set_permissions(&agents, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(res.is_err());
+        assert!(tx.wrote_trash());
     }
 
     /// When the hand edit and the remote edit touch the same line, the

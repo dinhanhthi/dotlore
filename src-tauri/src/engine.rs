@@ -18,6 +18,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -338,6 +339,9 @@ pub struct Engine {
     /// In memory only, so a second add cannot archive the staging repo while
     /// pattern seeding runs without the home lock.
     pending_adds: Vec<(String, PathBuf)>,
+    /// Set when a cycle's apply wrote trash copies; the next `settle` takes
+    /// it and prunes the trash to its cap under the lock it already holds.
+    trash_written: AtomicBool,
 }
 
 impl Engine {
@@ -354,6 +358,7 @@ impl Engine {
             cloud: cloud_at(&provider),
             cfg,
             pending_adds: Vec::new(),
+            trash_written: AtomicBool::new(false),
         })
     }
 
@@ -622,6 +627,7 @@ impl Engine {
     }
 
     fn sync_settings_locked(&mut self, g: &HomeLock, cloud: &Cloud) -> Result<bool> {
+        let trash_cap = self.trash_max_mb();
         let mut changed = false;
         for dev in cloud.settings_devices() {
             if dev == self.cfg.device_id {
@@ -640,6 +646,9 @@ impl Engine {
         }
         if changed {
             self.save(g)?;
+        }
+        if self.trash_max_mb() != trash_cap {
+            self.prune_trash_locked(g);
         }
         self.republish_settings(cloud)?;
         Ok(changed)
@@ -1251,6 +1260,41 @@ impl Engine {
         self.save_setting(&g, key, before)
     }
 
+    /// Effective trash size cap in MiB (`None` in config → 500).
+    pub fn trash_max_mb(&self) -> u64 {
+        self.cfg.trash_max_mb.unwrap_or(trash::DEFAULT_MAX_MB)
+    }
+
+    /// Store the trash cap and prune the trash down to it.
+    pub fn set_trash_max_mb(&mut self, mb: u64) -> Result<()> {
+        // Peers drop a cap under the floor on import, so it must never be stored.
+        if mb < trash::MIN_MAX_MB {
+            bail!(
+                "the trash size limit must be at least {} MB",
+                trash::MIN_MAX_MB
+            );
+        }
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let key = "trash_max_mb";
+        let before = settings::gen_of(&self.cfg, key);
+        if self.cfg.trash_max_mb == Some(mb) {
+            return Ok(());
+        }
+        self.cfg.trash_max_mb = Some(mb);
+        self.save_setting(&g, key, before)?;
+        self.prune_trash_locked(&g);
+        Ok(())
+    }
+
+    /// Prune the trash to its cap; the daemon runs this at startup.
+    pub fn prune_trash(&mut self) -> Result<()> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        self.prune_trash_locked(&g);
+        Ok(())
+    }
+
     pub fn device_name(&self) -> String {
         self.cfg.device_name.clone()
     }
@@ -1348,7 +1392,12 @@ impl Engine {
 
         // Finish whatever the last cycle left owing before reading versions.
         if let Some(mut tx) = repo.pending_tx(conflict::resolve_index)? {
-            match tx.resume(&repo, &self.home_dir)? {
+            let outcome = tx.resume(&repo, &self.home_dir);
+            // Read before `?`: `resume` runs an apply pass of its own.
+            if tx.wrote_trash() {
+                self.trash_written.store(true, Ordering::Relaxed);
+            }
+            match outcome? {
                 ResumeOutcome::Finished => {
                     repo.publish(&cloud)?;
                 }
@@ -1385,7 +1434,13 @@ impl Engine {
         let mut tx = repo.begin_tx(&key, "HEAD", conflict::resolve_index)?;
         conflict::resolve(&tx, &snapshot.live, selected_siblings, content)?;
         tx.set_target(&repo)?;
-        if !tx.apply(&repo, &self.home_dir)?.is_empty() {
+        let left = tx.apply(&repo, &self.home_dir);
+        // Read before `?`, so a pending or failed apply still counts (the
+        // flag is set even when a pass fails part-way).
+        if tx.wrote_trash() {
+            self.trash_written.store(true, Ordering::Relaxed);
+        }
+        if !left?.is_empty() {
             return Ok(ResolveOutcome::Pending);
         }
         tx.finalize(&repo)?;
@@ -1662,19 +1717,26 @@ impl Engine {
 
         let key = provider_key(cloud);
         let pending = match repo.pending_tx(conflict::resolve_index)? {
-            Some(mut tx) => match tx.resume(&repo, &self.home_dir)? {
-                // Nothing was applied and `main` never moved: redo the merges
-                // on this transaction. No `commit_local` — the journal's
-                // baseline is the one the live root still matches, and local
-                // edits are picked up by the apply's reconciliation or by the
-                // next cycle.
-                ResumeOutcome::Restart => Some(tx),
-                ResumeOutcome::Finished => {
-                    repo.publish(cloud)?;
-                    None
+            Some(mut tx) => {
+                let outcome = tx.resume(&repo, &self.home_dir);
+                // Read before `?`: `resume` runs an apply pass of its own.
+                if tx.wrote_trash() {
+                    self.trash_written.store(true, Ordering::Relaxed);
                 }
-                ResumeOutcome::Pending(_) => return Ok(stalled(&root.slug, &tx)),
-            },
+                match outcome? {
+                    // Nothing was applied and `main` never moved: redo the
+                    // merges on this transaction. No `commit_local` — the
+                    // journal's baseline is the one the live root still
+                    // matches, and local edits are picked up by the apply's
+                    // reconciliation or by the next cycle.
+                    ResumeOutcome::Restart => Some(tx),
+                    ResumeOutcome::Finished => {
+                        repo.publish(cloud)?;
+                        None
+                    }
+                    ResumeOutcome::Pending(_) => return Ok(stalled(&root.slug, &tx)),
+                }
+            }
             None => None,
         };
 
@@ -1716,7 +1778,13 @@ impl Engine {
             repo.merge_remote(&tx, d)?;
         }
         tx.set_target(&repo)?;
-        if !tx.apply(&repo, &self.home_dir)?.is_empty() {
+        let left = tx.apply(&repo, &self.home_dir);
+        // Read before `?`, so a pending or failed apply still counts (the
+        // flag is set even when a pass fails part-way).
+        if tx.wrote_trash() {
+            self.trash_written.store(true, Ordering::Relaxed);
+        }
+        if !left?.is_empty() {
             // Journal intact; nothing is published until the root agrees.
             return Ok(stalled(&root.slug, &tx));
         }
@@ -1761,6 +1829,15 @@ impl Engine {
         Ok(())
     }
 
+    /// Remove the oldest trash passes until the trash fits its cap. A failure
+    /// is logged, never returned: it must not fail a cycle or a setter.
+    fn prune_trash_locked(&self, g: &HomeLock) {
+        let cap = self.trash_max_mb().saturating_mul(1024 * 1024);
+        if let Err(e) = trash::prune_to_cap(g, &self.home, cap) {
+            eprintln!("dotlore: trash prune: {e:#}");
+        }
+    }
+
     fn root_cfg(&self, slug: &str) -> Result<Root> {
         self.cfg
             .roots
@@ -1800,7 +1877,12 @@ impl Engine {
 
     /// Clear `initializing` once — and only once — a cycle has actually
     /// applied and published.
+    ///
+    /// First, whatever the status, prune the trash if a cycle wrote to it.
     fn settle(&mut self, g: &HomeLock, slug: &str, status: &RootStatus) -> Result<()> {
+        if self.trash_written.swap(false, Ordering::Relaxed) {
+            self.prune_trash_locked(g);
+        }
         if !matches!(status, RootStatus::Synced | RootStatus::Conflicts(_)) {
             return Ok(());
         }
@@ -1966,6 +2048,7 @@ pub fn configure_provider(
             cloud: cloud_at(&src),
             cfg,
             pending_adds: Vec::new(),
+            trash_written: AtomicBool::new(false),
         };
         let src_cloud = e.cloud();
         for slug in e
@@ -1995,6 +2078,7 @@ pub fn configure_provider(
         cloud: cloud_at(&dest),
         cfg,
         pending_adds: Vec::new(),
+        trash_written: AtomicBool::new(false),
     };
     let dest_cloud = e.cloud();
     // The provider switch is already committed; settings are best-effort.
@@ -4900,6 +4984,8 @@ mod tests {
         check(&a, "max_file_mb");
         a.engine.set_max_seed_folder_mb(4).unwrap();
         check(&a, "max_seed_folder_mb");
+        a.engine.set_trash_max_mb(300).unwrap();
+        check(&a, "trash_max_mb");
     }
 
     #[test]
@@ -4986,9 +5072,12 @@ mod tests {
         let mut a = device(provider.path(), 'a');
         assert!(a.engine.set_max_file_mb(0).is_err());
         assert!(a.engine.set_max_seed_folder_mb(0).is_err());
+        assert!(a.engine.set_trash_max_mb(0).is_err());
+        assert!(a.engine.set_trash_max_mb(trash::MIN_MAX_MB - 1).is_err());
         let cfg = cfg_of(&a);
         assert_eq!(cfg.max_file_mb, None);
         assert_eq!(cfg.max_seed_folder_mb, None);
+        assert_eq!(cfg.trash_max_mb, None);
         assert!(cfg.settings_gens.is_empty());
     }
 
@@ -5024,6 +5113,169 @@ mod tests {
         let cfg = cfg_of(&a);
         assert_eq!(cfg.max_file_mb, Some(7));
         assert!(cfg.settings_gens["max_file_mb"] > 0);
+    }
+
+    // --- trash size cap -----------------------------------------------------
+
+    /// A sparse `mib` MiB file in trash pass `<day>/<pass>` of proj-claude:
+    /// its length counts toward the cap without using the disk.
+    fn big_pass(dev: &Dev, day: &str, pass: &str, mib: u64) -> PathBuf {
+        let dir = dev
+            .home
+            .path()
+            .join("trash/proj-claude")
+            .join(day)
+            .join(pass);
+        fs::create_dir_all(&dir).unwrap();
+        File::create(dir.join("big.bin"))
+            .unwrap()
+            .set_len(mib * 1024 * 1024)
+            .unwrap();
+        dir
+    }
+
+    /// Three 60 MiB passes, oldest first: 180 MiB, under the 500 MB default.
+    fn three_passes(dev: &Dev) -> [PathBuf; 3] {
+        [
+            big_pass(dev, "2026-01-01", "100000", 60),
+            big_pass(dev, "2026-01-02", "100000", 60),
+            big_pass(dev, "2026-01-03", "100000", 60),
+        ]
+    }
+
+    /// Set the cap in config.json only, bypassing the setter's own prune.
+    fn cap_in_config(dev: &mut Dev, mb: u64) {
+        let mut cfg = cfg_of(dev);
+        cfg.trash_max_mb = Some(mb);
+        cfg.save(dev.home.path()).unwrap();
+    }
+
+    #[test]
+    fn lowering_the_trash_cap_prunes_the_oldest_passes() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let [p1, p2, p3] = three_passes(&a);
+        assert_eq!(a.engine.trash_max_mb(), trash::DEFAULT_MAX_MB);
+
+        a.engine.set_trash_max_mb(100).unwrap();
+        assert_eq!(a.engine.trash_max_mb(), 100);
+        // 2 x 60 MiB is still over 100 MiB, so only the newest pass stays.
+        assert!(!p1.exists());
+        assert!(!p2.exists());
+        assert!(p3.join("big.bin").is_file());
+    }
+
+    #[test]
+    fn an_imported_trash_cap_prunes_the_local_trash() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        a.engine.set_trash_max_mb(100).unwrap();
+        let [p1, p2, p3] = three_passes(&b);
+
+        assert!(b.engine.sync_settings().unwrap());
+        assert_eq!(cfg_of(&b).trash_max_mb, Some(100));
+        assert!(!p1.exists());
+        assert!(!p2.exists());
+        assert!(p3.join("big.bin").is_file());
+    }
+
+    /// A on CLAUDE.md "one", B linked and in sync, both old 60 MiB passes
+    /// planted in B's trash and B's cap at 100 MB.
+    fn linked_pair_with_old_trash(provider: &Path) -> (Dev, Dev, [PathBuf; 2]) {
+        let mut a = device(provider, 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let mut b = device(provider, 'b');
+        let b_root = b.root.path().to_path_buf();
+        b.engine.link_root("proj-claude", &b_root).unwrap();
+        let old = [
+            big_pass(&b, "2026-01-01", "100000", 60),
+            big_pass(&b, "2026-01-02", "100000", 60),
+        ];
+        cap_in_config(&mut b, 100);
+        (a, b, old)
+    }
+
+    #[test]
+    fn a_cycle_that_writes_trash_prunes_to_the_cap() {
+        let provider = TempDir::new().unwrap();
+        let (mut a, mut b, [p1, p2]) = linked_pair_with_old_trash(provider.path());
+        write(&a, "CLAUDE.md", b"two\n");
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        // The overwrite keeps "one" in a new pass, putting B over the cap.
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(fs::read(b.root.path().join("CLAUDE.md")).unwrap(), b"two\n");
+        let trash = b.home.path().join("trash/proj-claude");
+        // 120 MiB plus the new pass: the oldest goes, then it fits.
+        assert!(!p1.exists());
+        assert!(p2.join("big.bin").is_file());
+        let kept = files_in(&trash);
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept.iter().any(|f| f.ends_with("/CLAUDE.md")), "{kept:?}");
+    }
+
+    #[test]
+    fn a_cycle_without_trash_writes_does_not_prune() {
+        let provider = TempDir::new().unwrap();
+        let (mut a, mut b, [p1, p2]) = linked_pair_with_old_trash(provider.path());
+        // An add-only change: nothing on B is overwritten or deleted.
+        write(&a, "notes.md", b"new\n");
+        a.engine
+            .track_entry("proj-claude", Path::new("notes.md"), None)
+            .unwrap();
+
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(fs::read(b.root.path().join("notes.md")).unwrap(), b"new\n");
+        // Over the cap, but no cycle wrote trash.
+        assert!(p1.join("big.bin").is_file());
+        assert!(p2.join("big.bin").is_file());
+    }
+
+    #[test]
+    fn a_resumed_apply_that_writes_trash_prunes_to_the_cap() {
+        let provider = TempDir::new().unwrap();
+        let (mut a, mut b, [p1, p2]) = linked_pair_with_old_trash(provider.path());
+        write(&a, "CLAUDE.md", b"two\n");
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        // B's CLAUDE.md is a symlink for now: the apply stalls on it.
+        let live = b.root.path().join("CLAUDE.md");
+        let elsewhere = b.home.path().join("elsewhere.md");
+        fs::write(&elsewhere, b"one\n").unwrap();
+        fs::remove_file(&live).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &live).unwrap();
+        let status = b.engine.sync_root("proj-claude").unwrap();
+        assert_ne!(status, RootStatus::Synced);
+        assert!(p1.join("big.bin").is_file(), "nothing was trashed yet");
+        assert!(p2.join("big.bin").is_file());
+
+        // The real file is back: the next cycle resumes and overwrites it.
+        fs::remove_file(&live).unwrap();
+        fs::write(&live, b"one\n").unwrap();
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(fs::read(&live).unwrap(), b"two\n");
+        assert!(!p1.exists());
+        assert!(p2.join("big.bin").is_file());
+        let kept = files_in(&b.home.path().join("trash/proj-claude"));
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept.iter().any(|f| f.ends_with("/CLAUDE.md")), "{kept:?}");
     }
 
     // --- restore_from_trash -------------------------------------------------
