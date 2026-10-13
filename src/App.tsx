@@ -24,6 +24,7 @@ import { FileViewer } from "@/components/main/FileViewer";
 import { NoticeToasts } from "@/components/notices/NoticeToasts";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { ProviderSetup } from "@/components/setup/ProviderSetup";
+import { TrashPanel } from "@/components/trash/TrashPanel";
 import { TrackConfirmDialog } from "@/components/tree/EntryPickerDialog";
 import { FileTree } from "@/components/tree/FileTree";
 import { Toaster } from "@/components/ui/toast";
@@ -116,6 +117,7 @@ function MainPanel() {
   if (view === "starred") return <AllProjects starredOnly />;
   if (view === "conflicts") return <AllProjects conflictsOnly />;
   if (view === "errors") return <ErrorsPanel />;
+  if (view === "trash") return <TrashPanel />;
   if (!selectedSlug || !selectedRel) return <EmptyState />;
   if (resolvingRel === selectedRel) {
     return (
