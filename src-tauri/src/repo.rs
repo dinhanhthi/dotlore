@@ -927,6 +927,7 @@ impl Transaction {
             // a bootstrap Link of a large root an O(n²) tree read. Recomputed
             // on every pass because `reconcile` moves `self.j.pre`.
             let mut expectations = repo.expected_bytes(self.j.pre.as_deref(), &self.unapplied())?;
+            let trash = trash_dir(&repo.home, &repo.slug, SystemTime::now());
             for (status, rel) in self.changes() {
                 if self.j.applied.contains(&rel) {
                     continue;
@@ -975,6 +976,7 @@ impl Transaction {
                         &repo.root,
                         &[(status, rel.clone())],
                         &snap,
+                        &trash,
                     )?;
                     self.j.intent = None;
                     if left.is_empty() {
@@ -1601,6 +1603,60 @@ fn home_tmp_dir(home: &Path) -> Result<PathBuf> {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
         .with_context(|| format!("securing {}", dir.display()))?;
     Ok(dir)
+}
+
+/// `<home>/trash/<slug>/<YYYY-MM-DD>/<HHMMSS>` in local time: where one apply
+/// pass keeps the live files it deletes or overwrites. It sits in the state
+/// dir, so it is never captured into a root and never published. A folder per
+/// second of each pass, not per day, so a file replaced by a directory of the
+/// same name later that day cannot collide with its earlier copy.
+fn trash_dir(home: &Path, slug: &str, now: SystemTime) -> PathBuf {
+    #[repr(C)]
+    struct Tm {
+        sec: i32,
+        min: i32,
+        hour: i32,
+        mday: i32,
+        mon: i32,
+        year: i32,
+        wday: i32,
+        yday: i32,
+        isdst: i32,
+        gmtoff: std::os::raw::c_long,
+        zone: *const std::os::raw::c_char,
+    }
+    extern "C" {
+        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    let secs = now
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut tm = Tm {
+        sec: 0,
+        min: 0,
+        hour: 0,
+        mday: 0,
+        mon: 0,
+        year: 0,
+        wday: 0,
+        yday: 0,
+        isdst: 0,
+        gmtoff: 0,
+        zone: std::ptr::null(),
+    };
+    // SAFETY: `localtime_r` is in libSystem and glibc, with `time_t` as i64
+    // and this `struct tm` layout on both 64-bit targets. It writes only `tm`.
+    let ok = !unsafe { localtime_r(&secs, &mut tm) }.is_null();
+    let (day, time) = if ok {
+        (
+            format!("{:04}-{:02}-{:02}", tm.year + 1900, tm.mon + 1, tm.mday),
+            format!("{:02}{:02}{:02}", tm.hour, tm.min, tm.sec),
+        )
+    } else {
+        ("undated".to_string(), secs.to_string())
+    };
+    home.join("trash").join(slug).join(day).join(time)
 }
 
 /// A name no other process can predict: 16 bytes of `/dev/urandom` as hex, the
@@ -2620,6 +2676,63 @@ mod tests {
         // The merged remote head stays an ancestor, so A is never re-merged.
         let theirs = b.git.rev(&remote_ref(&key, ID_A)).unwrap();
         assert!(b.git.is_ancestor(&theirs, "refs/heads/main"));
+    }
+
+    /// A peer's deletion and a peer's edit both reach the live root, and both
+    /// displaced files stay under `<home>/trash/<slug>/<date>/<time>/` so the
+    /// user can restore them even after the deletion syncs everywhere.
+    #[test]
+    fn applied_deletions_and_overwrites_keep_the_old_file_in_the_trash() {
+        let fx = fixture();
+        let cloud = fx.cloud();
+        let key = provider_key(&cloud);
+        fx.write("CLAUDE.md", b"plan v1\n");
+        fx.write("agents/x.md", b"agent x\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b
+            .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+            .unwrap();
+        tx.set_target(&b).unwrap();
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+        // A bootstrap only adds files: nothing was displaced.
+        assert!(!bh.path().join("trash").exists());
+
+        fs::remove_file(fx.root.path().join("agents/x.md")).unwrap();
+        fx.write("CLAUDE.md", b"plan v2\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b.begin_tx(&key, "HEAD", no_resolver).unwrap();
+        b.merge_remote(&tx, ID_A).unwrap();
+        tx.set_target(&b).unwrap();
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+
+        assert!(!b_root.path().join("agents/x.md").exists());
+        let days: Vec<_> = fs::read_dir(bh.path().join("trash/proj-claude"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(days.len(), 1);
+        let day = days[0].file_name().unwrap().to_str().unwrap().to_owned();
+        assert_eq!(day.len(), "2026-10-13".len(), "{day}");
+        let times: Vec<_> = fs::read_dir(&days[0])
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(times.len(), 1);
+        assert_eq!(
+            fs::read(times[0].join("agents/x.md")).unwrap(),
+            b"agent x\n"
+        );
+        assert_eq!(fs::read(times[0].join("CLAUDE.md")).unwrap(), b"plan v1\n");
     }
 
     /// When the hand edit and the remote edit touch the same line, the

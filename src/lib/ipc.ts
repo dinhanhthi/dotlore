@@ -276,6 +276,11 @@ export function openAppHome(): Promise<void> {
   return invoke("open_app_home");
 }
 
+/** Open the local trash: every file sync deleted or overwrote, by day. */
+export function openTrash(): Promise<void> {
+  return invoke("open_trash");
+}
+
 export function gitMissing(): Promise<boolean> {
   return invoke("git_missing");
 }

@@ -172,6 +172,7 @@ vi.mock("@/lib/ipc", () => ({
   loginItemEnabled: () => Promise.resolve(false),
   appHome: () => Promise.resolve("/Users/demo/Library/Application Support/dotlore"),
   openAppHome: () => Promise.resolve(),
+  openTrash: () => Promise.resolve(),
   setLoginItem: () => Promise.resolve(),
   patternCatalogs: () => Promise.resolve([]),
   setPatternCatalog: () => Promise.resolve(),
@@ -670,5 +671,11 @@ describe("SettingsGeneral", () => {
     const html = wrap(<SettingsGeneral />);
     expect(html).toContain("App data");
     expect(html).toContain('aria-label="Go to app data folder"');
+  });
+
+  it("offers a button to the deleted and replaced files", () => {
+    const html = wrap(<SettingsGeneral />);
+    expect(html).toContain("Deleted &amp; replaced files");
+    expect(html).toContain('aria-label="Go to deleted and replaced files"');
   });
 });

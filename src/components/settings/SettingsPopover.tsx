@@ -48,6 +48,7 @@ import {
   maxFileMb,
   maxSeedFolderMb,
   openAppHome,
+  openTrash,
   patternCatalogs,
   sensitivePatterns,
   setDefaultIgnore,
@@ -731,6 +732,35 @@ export function SettingsGeneral() {
             <FolderOpen className="size-4" aria-hidden />
           </TooltipTrigger>
           <TooltipContent>Go to app data folder</TooltipContent>
+        </Tooltip>
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-col">
+          <span className="text-sm">Deleted & replaced files</span>
+          <span className="text-xs text-muted-foreground">
+            Copies of every file sync removed or overwrote on this Mac, by day.
+            Never synced.
+          </span>
+        </div>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="secondary"
+                size="icon-sm"
+                className="shrink-0"
+                aria-label="Go to deleted and replaced files"
+                onClick={() => {
+                  void openTrash().catch(() => {
+                    // Folder could not be created or Finder is unavailable.
+                  });
+                }}
+              />
+            }
+          >
+            <FolderOpen className="size-4" aria-hidden />
+          </TooltipTrigger>
+          <TooltipContent>Go to deleted and replaced files</TooltipContent>
         </Tooltip>
       </div>
     </div>

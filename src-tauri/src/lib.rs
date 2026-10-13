@@ -88,6 +88,7 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::cloud_upload,
             commands::app_home,
             commands::open_app_home,
+            commands::open_trash,
             commands::git_missing,
             commands::sync_now,
             commands::set_provider,

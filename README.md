@@ -38,6 +38,12 @@ Each project gets a private staging git repo under `~/Library/Application Suppor
 
 Other devices fetch and merge those bundles with the system `git`. On overlapping edits the newer commit wins everywhere, and the other version is saved as `<stem>.conflict-<device>-<blob>.<ext>`. Nothing is lost and all devices converge.
 
+Before a sync deletes or overwrites a file in one of your folders, Dotlore copies the old version to a local trash that never syncs. Open it from Settings → General → "Deleted & replaced files" to restore a file:
+
+```
+~/Library/Application Support/dotlore/trash/<slug>/<YYYY-MM-DD>/<HHMMSS>/<path>
+```
+
 Each folder's include-list and ignore list travel inside its bundles. Settings (seed patterns, ignore defaults, sensitive patterns, size limits) are published as small write-once snapshots, so a new Mac picks them up without re-entering them:
 
 ```

@@ -398,6 +398,17 @@ pub fn open_app_home(state: State<'_, AppState>) -> Result<(), String> {
     open_folder(&state.home)
 }
 
+/// Open `<home>/trash`, where sync keeps every live file it deleted or
+/// overwrote, by root, day and time. Created first so the button works before
+/// anything has been displaced.
+#[tauri::command]
+pub fn open_trash(state: State<'_, AppState>) -> Result<(), String> {
+    let dir = state.home.join("trash");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    open_folder(&dir)
+}
+
 fn cloud_folder_target(provider: &Path) -> PathBuf {
     let dotlore = engine::cloud_folder(provider);
     if dotlore.is_dir() {

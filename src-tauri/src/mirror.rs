@@ -112,11 +112,16 @@ pub fn root_to_staging(
 /// (or sits under) a symlink and any whose staging source is missing or not a
 /// regular file. A missing expectation is an error: every write must be
 /// justified by one.
+///
+/// Every live file this deletes or overwrites is first copied to
+/// `<trash>/<rel>` (see [`keep_in_trash`]), and a failed copy aborts before the
+/// live file is touched: a sync never destroys the only local copy of a file.
 pub fn apply_to_root(
     staging: &Path,
     root: &Path,
     changes: &[(Status, PathBuf)],
     snap: &Snapshot,
+    trash: &Path,
 ) -> Result<Vec<PathBuf>> {
     let mut skipped = Vec::new();
     for (status, rel) in changes {
@@ -158,18 +163,74 @@ pub fn apply_to_root(
                 // skipped and reported, never an abort that would leave the
                 // root half-applied and re-fail on every retry.
                 match fs::symlink_metadata(&src) {
-                    Ok(md) if md.file_type().is_file() => write_atomic(&src, &target)?,
+                    Ok(md) if md.file_type().is_file() => {
+                        if let Some(old) = &current {
+                            keep_in_trash(trash, rel, old)?;
+                        }
+                        write_atomic(&src, &target)?
+                    }
                     _ => skipped.push(rel.clone()),
                 }
             }
-            Status::Deleted => match fs::remove_file(&target) {
-                Ok(()) => {}
-                Err(e) if e.kind() == ErrorKind::NotFound => {}
-                Err(e) => return Err(e).with_context(|| format!("removing {}", target.display())),
-            },
+            Status::Deleted => {
+                if let Some(old) = &current {
+                    keep_in_trash(trash, rel, old)?;
+                }
+                match fs::remove_file(&target) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(e).with_context(|| format!("removing {}", target.display()))
+                    }
+                }
+            }
         }
     }
     Ok(skipped)
+}
+
+/// Copy the live bytes about to be deleted or overwritten to `<trash>/<rel>`.
+///
+/// The bytes are the ones the expectation check just read, so the copy is
+/// exactly what the apply displaces. An existing copy is never replaced: a
+/// taken name gets `.1`, `.2`, ... before its extension. Copies are private
+/// (0600, or 0700 when executable), since roots hold secrets.
+fn keep_in_trash(trash: &Path, rel: &Path, old: &FileState) -> Result<()> {
+    let dest = trash.join(rel);
+    let dir = dest.parent().unwrap_or(trash);
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let stem = dest.file_stem().unwrap_or_default();
+    let ext = dest.extension();
+    let mode = if old.executable { 0o700 } else { 0o600 };
+    let mut n = 0u32;
+    loop {
+        let path = if n == 0 {
+            dest.clone()
+        } else {
+            let mut name = stem.to_os_string();
+            name.push(format!(".{n}"));
+            if let Some(ext) = ext {
+                name.push(".");
+                name.push(ext);
+            }
+            dir.join(name)
+        };
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                f.write_all(&old.bytes)
+                    .and_then(|()| f.sync_all())
+                    .with_context(|| format!("writing {}", path.display()))?;
+                return Ok(());
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
+        }
+    }
 }
 
 /// A NUL byte in the first 8000 bytes, the same heuristic git uses.
@@ -1111,6 +1172,7 @@ mod tests {
                 (Status::Modified, PathBuf::from("clean.md")),
             ],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1130,6 +1192,7 @@ mod tests {
             &root,
             &[(Status::Added, PathBuf::from("a.md"))],
             &Snapshot::new(),
+            &td.path().join("trash"),
         )
         .unwrap_err();
 
@@ -1163,6 +1226,7 @@ mod tests {
             &other,
             &[(Status::Added, PathBuf::from("hooks/run.sh"))],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1196,6 +1260,7 @@ mod tests {
             &other,
             &[(Status::Modified, PathBuf::from("x.md"))],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1225,6 +1290,7 @@ mod tests {
                 (Status::Added, PathBuf::from("a.conflict-dev2.md")),
             ],
             &Snapshot::new(),
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1305,6 +1371,7 @@ mod tests {
             &link,
             &[(Status::Added, PathBuf::from("a.md"))],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1335,6 +1402,7 @@ mod tests {
                 (Status::Added, PathBuf::from("b.md")),
             ],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1366,6 +1434,7 @@ mod tests {
             &root,
             &[(Status::Modified, PathBuf::from("settings.json"))],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1403,6 +1472,7 @@ mod tests {
             &root,
             &[(Status::Modified, PathBuf::from("notes.md"))],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1445,6 +1515,7 @@ mod tests {
                 (Status::Modified, PathBuf::from("notes.md")),
             ],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1480,6 +1551,7 @@ mod tests {
                 (Status::Added, PathBuf::from("b.md")),
             ],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1508,6 +1580,7 @@ mod tests {
                 (Status::Added, PathBuf::from("b.md")),
             ],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1564,6 +1637,7 @@ mod tests {
                 (Status::Deleted, PathBuf::from("absent.md")),
             ],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1574,6 +1648,139 @@ mod tests {
             b"locally edited"
         );
         assert_eq!(files(&root), vec!["drifted.md".to_string()]);
+        assert_eq!(
+            files(&td.path().join("trash")),
+            vec!["clean.md".to_string()]
+        );
+    }
+
+    /// Every live file an apply deletes or overwrites is copied to the trash
+    /// first, and a second copy of the same path never replaces the first.
+    /// Without this a wrong merge would leave no local copy to restore.
+    #[test]
+    fn displaced_live_files_are_kept_in_the_trash() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        let trash = td.path().join("trash");
+        put(&root.join("docs/gone.md"), "old gone");
+        put(&root.join("docs/edit.md"), "old edit");
+        put(&root.join("run.sh"), "old run");
+        chmod(&root.join("run.sh"), 0o755);
+        put(&staging.join("docs/edit.md"), "new edit");
+        put(&staging.join("run.sh"), "new run");
+        put(&staging.join("new.md"), "new");
+
+        let state = |b: &str, executable| {
+            Some(FileState {
+                bytes: b.as_bytes().to_vec(),
+                executable,
+            })
+        };
+        let mut snap = Snapshot::new();
+        snap.insert(PathBuf::from("docs/gone.md"), state("old gone", false));
+        snap.insert(PathBuf::from("docs/edit.md"), state("old edit", false));
+        snap.insert(PathBuf::from("run.sh"), state("old run", true));
+        snap.insert(PathBuf::from("new.md"), None);
+
+        let skipped = apply_to_root(
+            &staging,
+            &root,
+            &[
+                (Status::Deleted, PathBuf::from("docs/gone.md")),
+                (Status::Modified, PathBuf::from("docs/edit.md")),
+                (Status::Modified, PathBuf::from("run.sh")),
+                (Status::Added, PathBuf::from("new.md")),
+            ],
+            &snap,
+            &trash,
+        )
+        .unwrap();
+
+        assert!(skipped.is_empty());
+        assert!(!root.join("docs/gone.md").exists());
+        assert_eq!(fs::read(root.join("docs/edit.md")).unwrap(), b"new edit");
+        assert_eq!(fs::read(trash.join("docs/gone.md")).unwrap(), b"old gone");
+        assert_eq!(fs::read(trash.join("docs/edit.md")).unwrap(), b"old edit");
+        assert_eq!(fs::read(trash.join("run.sh")).unwrap(), b"old run");
+        assert_eq!(mode_of(&trash.join("run.sh")), 0o700);
+        assert_eq!(mode_of(&trash.join("docs/edit.md")), 0o600);
+        // `new.md` was absent, so there was nothing to keep.
+        assert_eq!(files(&trash).len(), 3);
+
+        put(&staging.join("docs/edit.md"), "newer edit");
+        snap.insert(PathBuf::from("docs/edit.md"), state("new edit", false));
+        let skipped = apply_to_root(
+            &staging,
+            &root,
+            &[(Status::Modified, PathBuf::from("docs/edit.md"))],
+            &snap,
+            &trash,
+        )
+        .unwrap();
+
+        assert!(skipped.is_empty());
+        assert_eq!(fs::read(trash.join("docs/edit.md")).unwrap(), b"old edit");
+        assert_eq!(fs::read(trash.join("docs/edit.1.md")).unwrap(), b"new edit");
+    }
+
+    /// A copy that cannot be kept aborts before the live file is touched:
+    /// deleting or overwriting it anyway could destroy the only local copy.
+    #[test]
+    fn a_failed_trash_copy_leaves_the_live_file_alone() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        let trash = td.path().join("trash");
+        // A regular file where the copy's parent directory belongs.
+        put(&trash.join("docs"), "in the way");
+        put(&root.join("docs/gone.md"), "old gone");
+        put(&root.join("docs/edit.md"), "old edit");
+        put(&staging.join("docs/edit.md"), "new edit");
+        let state = |b: &str| {
+            Some(FileState {
+                bytes: b.as_bytes().to_vec(),
+                executable: false,
+            })
+        };
+        let mut snap = Snapshot::new();
+        snap.insert(PathBuf::from("docs/gone.md"), state("old gone"));
+        snap.insert(PathBuf::from("docs/edit.md"), state("old edit"));
+
+        for change in [
+            (Status::Deleted, PathBuf::from("docs/gone.md")),
+            (Status::Modified, PathBuf::from("docs/edit.md")),
+        ] {
+            assert!(apply_to_root(&staging, &root, &[change], &snap, &trash).is_err());
+        }
+        assert_eq!(fs::read(root.join("docs/gone.md")).unwrap(), b"old gone");
+        assert_eq!(fs::read(root.join("docs/edit.md")).unwrap(), b"old edit");
+    }
+
+    /// A drifted path is not touched, so nothing of it lands in the trash.
+    #[test]
+    fn a_skipped_path_leaves_nothing_in_the_trash() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        put(&root.join("a.md"), "edited by hand");
+        let mut snap = Snapshot::new();
+        snap.insert(
+            PathBuf::from("a.md"),
+            Some(FileState {
+                bytes: b"old".to_vec(),
+                executable: false,
+            }),
+        );
+
+        let skipped = apply_to_root(
+            &staging,
+            &root,
+            &[(Status::Deleted, PathBuf::from("a.md"))],
+            &snap,
+            &td.path().join("trash"),
+        )
+        .unwrap();
+
+        assert_eq!(skipped, vec![PathBuf::from("a.md")]);
+        assert!(!td.path().join("trash").exists());
     }
 
     /// R1: the temp file is created with `O_EXCL`, so a symlink pre-planted at
@@ -1595,6 +1802,7 @@ mod tests {
             &root,
             &[(Status::Added, PathBuf::from("settings.json"))],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1629,6 +1837,7 @@ mod tests {
             &root,
             &[(Status::Added, PathBuf::from("a.md"))],
             &snap,
+            &td.path().join("trash"),
         )
         .unwrap();
 
@@ -1646,6 +1855,7 @@ mod tests {
             &root,
             &[(Status::Added, PathBuf::from("../escape.md"))],
             &Snapshot::new(),
+            &td.path().join("trash"),
         )
         .is_err());
     }
