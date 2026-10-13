@@ -18,9 +18,10 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cloud::{self, Cloud, Manifest};
 use crate::config::{self, Config, HomeLock, Root};
@@ -29,9 +30,10 @@ use crate::git::{self, Git};
 use crate::mirror::{self, FileState, Node};
 use crate::project::{self, Limits, SensitiveMatcher, Sensitivity, State};
 use crate::repo::{
-    provider_key, remote_ref, unique_id, FetchMode, Repo, ResumeOutcome, Transaction,
+    self, provider_key, remote_ref, unique_id, FetchMode, Repo, ResumeOutcome, Transaction,
 };
 use crate::settings;
+use crate::trash;
 
 /// Where one tracked root stands after a cycle.
 ///
@@ -270,6 +272,41 @@ pub enum ResolveOutcome {
     /// `RootStatus::Error` on the root, and that message names the remedy.
     /// Never a completed save.
     Pending,
+}
+
+/// How [`Engine::restore_from_trash`] treats a live file that differs.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum RestoreChoice {
+    /// Restore only when no live file differs; otherwise report them.
+    Ask,
+    /// Keep each differing live file in the trash, then overwrite it.
+    Replace,
+    /// Leave each differing live file alone and write a `.restored` sibling.
+    KeepBoth,
+}
+
+/// Outcome of [`Engine::restore_from_trash`].
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RestoreResult {
+    /// `Ask` only: these live files differ, and nothing was written.
+    Existing { rels: Vec<String> },
+    Done {
+        restored: Vec<RestoredFile>,
+        /// The live file already held these bytes.
+        unchanged: Vec<String>,
+        /// Protected names, symlinks on the path, targets that are not files.
+        skipped: Vec<String>,
+    },
+}
+
+/// One restored file: its rel in the trash pass, and the live rel written
+/// (a `.restored` sibling for `KeepBoth`).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct RestoredFile {
+    pub from: String,
+    pub to: String,
 }
 
 /// One include-list catalog and the lines that apply the next time a folder is added.
@@ -1356,6 +1393,89 @@ impl Engine {
         let status = root_status(&repo)?;
         self.settle(&g, slug, &status)?;
         Ok(ResolveOutcome::Applied(status))
+    }
+
+    /// Restore a trash pass, or the file or folder at `rel` inside it, into
+    /// the live root of `slug` on the user's request. Restored copies stay in
+    /// the trash; the next cycle publishes what was written.
+    ///
+    /// `Ask` writes nothing at all when any live file differs, and returns
+    /// those rels so the user can pick `Replace` or `KeepBoth` for the batch.
+    /// A removed project, an initializing root and a missing root folder are
+    /// refused. Every write goes through [`mirror::restore_to_root`], and its
+    /// first error aborts: a failed trash copy of a displaced file is never
+    /// swallowed.
+    pub fn restore_from_trash(
+        &mut self,
+        slug: &str,
+        day: &str,
+        pass: &str,
+        rel: Option<&str>,
+        choice: RestoreChoice,
+    ) -> Result<RestoreResult> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let Some(root) = self.cfg.roots.iter().find(|r| r.slug == slug).cloned() else {
+            bail!("{slug} was removed from Dotlore; its trash can no longer be restored");
+        };
+        if root.initializing {
+            bail!("cannot restore into {slug} yet; wait until this project finishes linking");
+        }
+        if !fs::symlink_metadata(&root.path).is_ok_and(|md| md.is_dir()) {
+            bail!("the project folder {} is missing", root.path.display());
+        }
+        let pass_dir = trash::pass_dir(&self.home, slug, day, pass)?;
+        if let Some(rel) = rel {
+            trash::item_path(&self.home, slug, day, pass, rel)?;
+        }
+        let rels = trash::files_under(&pass_dir, rel)?;
+        if rels.is_empty() {
+            bail!("nothing to restore in this trash item");
+        }
+
+        if choice == RestoreChoice::Ask {
+            let mut existing = Vec::new();
+            for rel in &rels {
+                let preview =
+                    mirror::restore_preview(&root.path, Path::new(rel), &pass_dir.join(rel))?;
+                if preview == mirror::Restored::Exists {
+                    existing.push(rel.clone());
+                }
+            }
+            if !existing.is_empty() {
+                return Ok(RestoreResult::Existing { rels: existing });
+            }
+        }
+        let on_existing = match choice {
+            RestoreChoice::Ask => mirror::OnExisting::Ask,
+            RestoreChoice::Replace => mirror::OnExisting::Replace,
+            RestoreChoice::KeepBoth => mirror::OnExisting::KeepBoth,
+        };
+        let displaced = repo::trash_dir(&self.home, slug, SystemTime::now());
+        let (mut restored, mut unchanged, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+        for rel in rels {
+            let src = pass_dir.join(&rel);
+            match mirror::restore_to_root(
+                &root.path,
+                Path::new(&rel),
+                &src,
+                &displaced,
+                on_existing,
+            )? {
+                mirror::Restored::Written(to) => restored.push(RestoredFile {
+                    to: to.to_string_lossy().into_owned(),
+                    from: rel,
+                }),
+                mirror::Restored::Same => unchanged.push(rel),
+                // `Exists` only if a live file changed after the `Ask` preview.
+                mirror::Restored::Skipped | mirror::Restored::Exists => skipped.push(rel),
+            }
+        }
+        Ok(RestoreResult::Done {
+            restored,
+            unchanged,
+            skipped,
+        })
     }
 
     // --- locked helpers ---------------------------------------------------
@@ -4904,5 +5024,289 @@ mod tests {
         let cfg = cfg_of(&a);
         assert_eq!(cfg.max_file_mb, Some(7));
         assert!(cfg.settings_gens["max_file_mb"] > 0);
+    }
+
+    // --- restore_from_trash -------------------------------------------------
+
+    const TRASH_PASS: &str = "trash/proj-claude/2026-10-13/120000";
+
+    /// Plant a 0600 trash copy, as `mirror::keep_in_trash` writes them.
+    fn plant(dev: &Dev, rel: &str, body: &[u8]) -> PathBuf {
+        let p = dev.home.path().join(TRASH_PASS).join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, body).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        p
+    }
+
+    fn restore(dev: &mut Dev, rel: Option<&str>, choice: RestoreChoice) -> Result<RestoreResult> {
+        dev.engine
+            .restore_from_trash("proj-claude", "2026-10-13", "120000", rel, choice)
+    }
+
+    /// Every plain file under `dir`, `/`-joined and sorted.
+    fn files_in(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let rel = p.strip_prefix(dir).unwrap();
+                    out.push(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn restore_from_trash_restores_a_pass_into_the_live_root() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/same.md", b"same\n");
+        add(&mut a);
+        plant(&a, "docs/gone.md", b"gone\n");
+        plant(&a, "docs/deep/x.md", b"x\n");
+        plant(&a, "docs/same.md", b"same\n");
+        plant(&a, "other.md", b"other\n");
+
+        // A folder inside the pass restores only what is under it.
+        let got = restore(&mut a, Some("docs/deep"), RestoreChoice::Ask).unwrap();
+        assert_eq!(
+            got,
+            RestoreResult::Done {
+                restored: vec![RestoredFile {
+                    from: "docs/deep/x.md".into(),
+                    to: "docs/deep/x.md".into(),
+                }],
+                unchanged: vec![],
+                skipped: vec![],
+            }
+        );
+        assert!(!a.root.path().join("docs/gone.md").exists());
+
+        // The whole pass; restored copies stay in the trash.
+        let got = restore(&mut a, None, RestoreChoice::Ask).unwrap();
+        let RestoreResult::Done {
+            restored,
+            unchanged,
+            skipped,
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        let tos: Vec<&str> = restored.iter().map(|r| r.to.as_str()).collect();
+        assert_eq!(tos, ["docs/gone.md", "other.md"]);
+        assert_eq!(unchanged, ["docs/deep/x.md", "docs/same.md"]);
+        assert!(skipped.is_empty());
+        let root = a.root.path();
+        assert_eq!(fs::read(root.join("docs/gone.md")).unwrap(), b"gone\n");
+        assert_eq!(fs::read(root.join("other.md")).unwrap(), b"other\n");
+        assert_eq!(
+            files_in(&a.home.path().join(TRASH_PASS)),
+            ["docs/deep/x.md", "docs/gone.md", "docs/same.md", "other.md"]
+        );
+
+        // An unknown item, or an empty pass, is an error.
+        assert!(restore(&mut a, Some("nope.md"), RestoreChoice::Ask).is_err());
+        assert!(restore(&mut a, Some("../x"), RestoreChoice::Ask).is_err());
+        fs::create_dir_all(a.home.path().join(TRASH_PASS).join("empty")).unwrap();
+        assert!(restore(&mut a, Some("empty"), RestoreChoice::Ask).is_err());
+    }
+
+    #[test]
+    fn restore_from_trash_ask_reports_existing_and_writes_nothing() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/differs.md", b"live\n");
+        add(&mut a);
+        plant(&a, "docs/differs.md", b"old\n");
+        plant(&a, "docs/missing.md", b"missing\n");
+
+        let got = restore(&mut a, None, RestoreChoice::Ask).unwrap();
+
+        assert_eq!(
+            got,
+            RestoreResult::Existing {
+                rels: vec!["docs/differs.md".into()],
+            }
+        );
+        assert!(!a.root.path().join("docs/missing.md").exists());
+        assert_eq!(
+            fs::read(a.root.path().join("docs/differs.md")).unwrap(),
+            b"live\n"
+        );
+        assert_eq!(
+            files_in(&a.home.path().join("trash")),
+            [
+                "proj-claude/2026-10-13/120000/docs/differs.md",
+                "proj-claude/2026-10-13/120000/docs/missing.md",
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_from_trash_replace_keeps_the_displaced_live_file() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"live\n");
+        add(&mut a);
+        plant(&a, "docs/a.md", b"old\n");
+
+        let got = restore(&mut a, Some("docs/a.md"), RestoreChoice::Replace).unwrap();
+
+        assert_eq!(
+            got,
+            RestoreResult::Done {
+                restored: vec![RestoredFile {
+                    from: "docs/a.md".into(),
+                    to: "docs/a.md".into(),
+                }],
+                unchanged: vec![],
+                skipped: vec![],
+            }
+        );
+        assert_eq!(fs::read(a.root.path().join("docs/a.md")).unwrap(), b"old\n");
+        // The displaced live file is in a new pass; the source stays too.
+        let trash = a.home.path().join("trash/proj-claude");
+        let kept: Vec<String> = files_in(&trash)
+            .into_iter()
+            .filter(|f| !f.starts_with("2026-10-13/120000/"))
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept[0].ends_with("/docs/a.md"), "{kept:?}");
+        let kept = trash.join(&kept[0]);
+        assert_eq!(fs::read(&kept).unwrap(), b"live\n");
+        assert_eq!(
+            fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(trash.join("2026-10-13/120000/docs/a.md").is_file());
+
+        // Keep both leaves the live file and writes a sibling.
+        let got = restore(&mut a, Some("docs/a.md"), RestoreChoice::Ask).unwrap();
+        assert!(matches!(got, RestoreResult::Done { ref unchanged, .. } if unchanged.len() == 1));
+        write(&a, "docs/a.md", b"newer\n");
+        let got = restore(&mut a, Some("docs/a.md"), RestoreChoice::KeepBoth).unwrap();
+        let RestoreResult::Done { restored, .. } = got else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(
+            restored,
+            [RestoredFile {
+                from: "docs/a.md".into(),
+                to: "docs/a.restored.md".into(),
+            }]
+        );
+        assert_eq!(
+            fs::read(a.root.path().join("docs/a.md")).unwrap(),
+            b"newer\n"
+        );
+    }
+
+    #[test]
+    fn restore_from_trash_refuses_a_removed_project() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        plant(&a, "gone.md", b"gone\n");
+        a.engine.remove_root("proj-claude").unwrap();
+
+        let err = restore(&mut a, None, RestoreChoice::Replace).unwrap_err();
+
+        assert!(err.to_string().contains("removed"), "{err:#}");
+        assert!(!a.root.path().join("gone.md").exists());
+    }
+
+    #[test]
+    fn restore_from_trash_refuses_a_missing_root_folder() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        plant(&a, "gone.md", b"gone\n");
+        let root = a.root.path().to_path_buf();
+        fs::remove_dir_all(&root).unwrap();
+
+        let err = restore(&mut a, None, RestoreChoice::Replace).unwrap_err();
+
+        assert!(err.to_string().contains("missing"), "{err:#}");
+        assert!(!root.exists(), "the project folder must not be recreated");
+    }
+
+    #[test]
+    fn restore_from_trash_refuses_an_initializing_root() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        plant(&a, "gone.md", b"gone\n");
+        let mut cfg = Config::load(a.home.path()).unwrap();
+        cfg.roots[0].initializing = true;
+        cfg.save(a.home.path()).unwrap();
+
+        let err = restore(&mut a, None, RestoreChoice::Replace).unwrap_err();
+
+        assert!(err.to_string().contains("linking"), "{err:#}");
+        assert!(!a.root.path().join("gone.md").exists());
+    }
+
+    #[test]
+    fn restored_file_is_published_on_the_next_cycle() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        add(&mut a);
+        plant(&a, "docs/notes.md", b"notes\n");
+
+        restore(&mut a, None, RestoreChoice::Ask).unwrap();
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        assert_eq!(
+            repo.git.ok(&["show", "HEAD:docs/notes.md"]).unwrap().trim(),
+            "notes"
+        );
+        assert_eq!(cloud_of(&a).list_bundles("proj-claude").len(), 2);
+    }
+
+    #[test]
+    fn restore_types_serialize_for_the_webview() {
+        let choice: RestoreChoice = serde_json::from_str(r#""keep_both""#).unwrap();
+        assert_eq!(choice, RestoreChoice::KeepBoth);
+        assert_eq!(
+            serde_json::to_string(&RestoreResult::Existing {
+                rels: vec!["a.md".into()]
+            })
+            .unwrap(),
+            r#"{"kind":"existing","rels":["a.md"]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&RestoreResult::Done {
+                restored: vec![RestoredFile {
+                    from: "a.md".into(),
+                    to: "a.restored.md".into()
+                }],
+                unchanged: vec![],
+                skipped: vec![],
+            })
+            .unwrap(),
+            r#"{"kind":"done","restored":[{"from":"a.md","to":"a.restored.md"}],"unchanged":[],"skipped":[]}"#
+        );
     }
 }

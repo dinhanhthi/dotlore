@@ -10,6 +10,7 @@ pub mod mirror;
 pub mod project;
 pub mod repo;
 pub mod settings;
+pub mod trash;
 
 mod about;
 mod alert;
@@ -89,6 +90,11 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::app_home,
             commands::open_app_home,
             commands::open_trash,
+            commands::list_trash,
+            commands::read_trash_file,
+            commands::restore_trash,
+            commands::delete_trash,
+            commands::empty_trash,
             commands::git_missing,
             commands::sync_now,
             commands::set_provider,

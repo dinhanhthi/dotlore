@@ -1610,7 +1610,7 @@ fn home_tmp_dir(home: &Path) -> Result<PathBuf> {
 /// dir, so it is never captured into a root and never published. A folder per
 /// second of each pass, not per day, so a file replaced by a directory of the
 /// same name later that day cannot collide with its earlier copy.
-fn trash_dir(home: &Path, slug: &str, now: SystemTime) -> PathBuf {
+pub(crate) fn trash_dir(home: &Path, slug: &str, now: SystemTime) -> PathBuf {
     #[repr(C)]
     struct Tm {
         sec: i32,

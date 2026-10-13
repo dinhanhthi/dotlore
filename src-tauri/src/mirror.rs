@@ -1,10 +1,11 @@
 //! Copying a tracked root into and out of its staging worktree.
 //!
 //! This is the only place that moves bytes between a live tracked root and its
-//! staging git worktree. Two rules shape everything here: nothing git-private
-//! (`.git`, `.dotloreignore`, `*.conflict-*`) ever reaches the root, and a root
-//! file is only overwritten when its current bytes and mode are exactly what
-//! the caller expected them to be.
+//! staging git worktree, and the only one that writes into a live root at all
+//! (a user restore from the trash included). Two rules shape everything here:
+//! nothing git-private (`.git`, `.dotloreignore`, `*.conflict-*`) ever reaches
+//! the root, and a root file is only overwritten when its current bytes and
+//! mode are exactly what the caller expected them to be.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, OsStr, OsString};
@@ -114,8 +115,9 @@ pub fn root_to_staging(
 /// justified by one.
 ///
 /// Every live file this deletes or overwrites is first copied to
-/// `<trash>/<rel>` (see [`keep_in_trash`]), and a failed copy aborts before the
-/// live file is touched: a sync never destroys the only local copy of a file.
+/// `<trash>/<rel>`, or `<trash>-N/<rel>` when that is taken (see
+/// [`keep_in_trash`]), and a failed copy aborts before the live file is
+/// touched: a sync never destroys the only local copy of a file.
 pub fn apply_to_root(
     staging: &Path,
     root: &Path,
@@ -193,28 +195,23 @@ pub fn apply_to_root(
 ///
 /// The bytes are the ones the expectation check just read, so the copy is
 /// exactly what the apply displaces. An existing copy is never replaced: a
-/// taken name gets `.1`, `.2`, ... before its extension. Copies are private
-/// (0600, or 0700 when executable), since roots hold secrets.
+/// taken name goes to the next sibling pass folder, `<trash>-1/<rel>`,
+/// `<trash>-2/<rel>`, ..., so every copy keeps its exact rel. Copies are
+/// private (0600, or 0700 when executable), since roots hold secrets.
 fn keep_in_trash(trash: &Path, rel: &Path, old: &FileState) -> Result<()> {
-    let dest = trash.join(rel);
-    let dir = dest.parent().unwrap_or(trash);
-    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let stem = dest.file_stem().unwrap_or_default();
-    let ext = dest.extension();
     let mode = if old.executable { 0o700 } else { 0o600 };
     let mut n = 0u32;
     loop {
-        let path = if n == 0 {
-            dest.clone()
+        let pass = if n == 0 {
+            trash.to_path_buf()
         } else {
-            let mut name = stem.to_os_string();
-            name.push(format!(".{n}"));
-            if let Some(ext) = ext {
-                name.push(".");
-                name.push(ext);
-            }
-            dir.join(name)
+            let mut name = trash.file_name().unwrap_or_default().to_os_string();
+            name.push(format!("-{n}"));
+            trash.with_file_name(name)
         };
+        let path = pass.join(rel);
+        let dir = path.parent().unwrap_or(&pass);
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -230,6 +227,179 @@ fn keep_in_trash(trash: &Path, rel: &Path, old: &FileState) -> Result<()> {
             Err(e) if e.kind() == ErrorKind::AlreadyExists => n += 1,
             Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
         }
+    }
+}
+
+/// What [`restore_to_root`] does when a different live file is in the way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OnExisting {
+    /// Write nothing and report [`Restored::Exists`], so the user can choose.
+    Ask,
+    /// Keep the live file in the trash first, then overwrite it.
+    Replace,
+    /// Leave the live file alone and write a `.restored` sibling.
+    KeepBoth,
+}
+
+/// The outcome of one [`restore_to_root`].
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Restored {
+    /// The rel actually written, relative to the root.
+    Written(PathBuf),
+    /// The live file already holds these bytes and exec bit.
+    Same,
+    /// A different live file exists and `on_existing` was `Ask`.
+    Exists,
+    /// A protected name, a symlink on the path, or a target that is not ours.
+    Skipped,
+}
+
+/// Restore one trash copy `src` into the live root at `rel`, on the user's
+/// request.
+///
+/// This is the only write into a live root that is not a sync apply, so it
+/// keeps every guard [`apply_to_root`] has: an unsafe `rel` is an error, a
+/// staging-private name is never written (it would be mirrored on towards the
+/// cloud), and a symlink on the path, a directory, or an unstatable target is
+/// skipped rather than written through. `src` must be a regular file, so a
+/// symlink planted in the trash is never read through. Trash copies are
+/// 0600/0700, so only their exec bit carries over: a new file gets the same
+/// 0644/0755 a sync-created one would.
+///
+/// A live file holding the same bytes is left alone. A different one is
+/// never lost: `Ask` writes nothing, `Replace` first keeps it in `displaced`
+/// (see [`keep_in_trash`]; a failed copy aborts before the live file is
+/// touched), and `KeepBoth` writes a new `.restored` sibling instead.
+pub(crate) fn restore_to_root(
+    root: &Path,
+    rel: &Path,
+    src: &Path,
+    displaced: &Path,
+    on_existing: OnExisting,
+) -> Result<Restored> {
+    let (current, restored) = match restore_check(root, rel, src)? {
+        Check::Done(out) => return Ok(out),
+        Check::Missing => {
+            write_atomic(src, &root.join(rel))?;
+            return Ok(Restored::Written(rel.to_path_buf()));
+        }
+        Check::Differs { current, restored } => (current, restored),
+    };
+    match on_existing {
+        OnExisting::Ask => Ok(Restored::Exists),
+        OnExisting::Replace => {
+            keep_in_trash(displaced, rel, &current)?;
+            write_atomic(src, &root.join(rel))?;
+            Ok(Restored::Written(rel.to_path_buf()))
+        }
+        OnExisting::KeepBoth => write_restored_sibling(root, rel, &restored),
+    }
+}
+
+/// What [`restore_to_root`] with `OnExisting::Ask` would return, writing
+/// nothing: `Written(rel)` here means "would be written". Lets a batch
+/// restore find every `Exists` before it writes a single file.
+pub(crate) fn restore_preview(root: &Path, rel: &Path, src: &Path) -> Result<Restored> {
+    Ok(match restore_check(root, rel, src)? {
+        Check::Done(out) => out,
+        Check::Missing => Restored::Written(rel.to_path_buf()),
+        Check::Differs { .. } => Restored::Exists,
+    })
+}
+
+/// Where a restore stands before anything is written.
+enum Check {
+    /// Nothing to write: `Skipped` or `Same`.
+    Done(Restored),
+    /// No live file at `rel`.
+    Missing,
+    /// A live file with other bytes or exec bit.
+    Differs {
+        current: FileState,
+        restored: FileState,
+    },
+}
+
+/// Every guard of [`restore_to_root`], none of its writes.
+fn restore_check(root: &Path, rel: &Path, src: &Path) -> Result<Check> {
+    if !plain_rel(rel) {
+        bail!("unsafe restore path: {}", rel.display());
+    }
+    if protected(rel) {
+        return Ok(Check::Done(Restored::Skipped));
+    }
+    let md = fs::symlink_metadata(src).with_context(|| format!("reading {}", src.display()))?;
+    if !md.file_type().is_file() {
+        bail!("{} is not a regular file", src.display());
+    }
+    let target = root.join(rel);
+    if symlink_on_path(root, &target) {
+        return Ok(Check::Done(Restored::Skipped));
+    }
+    let restored = FileState {
+        bytes: fs::read(src).with_context(|| format!("reading {}", src.display()))?,
+        executable: is_exec(md.permissions().mode()),
+    };
+    Ok(match current_state(&target)? {
+        None => Check::Done(Restored::Skipped),
+        Some(None) => Check::Missing,
+        Some(Some(current)) if current == restored => Check::Done(Restored::Same),
+        Some(Some(current)) => Check::Differs { current, restored },
+    })
+}
+
+/// Write `state` to a new `<stem>.restored.<ext>`, `<stem>.restored.1.<ext>`,
+/// ... next to `rel`, never touching `rel` itself. `create_new` (`O_EXCL`)
+/// treats any existing name, a planted symlink included, as taken.
+fn write_restored_sibling(root: &Path, rel: &Path, state: &FileState) -> Result<Restored> {
+    let name = Path::new(rel.file_name().unwrap_or_default());
+    let stem = name.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = name
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let mode = mode_for(state.executable);
+    let mut n = 0u32;
+    loop {
+        let num = if n == 0 {
+            String::new()
+        } else {
+            format!(".{n}")
+        };
+        let sibling = rel.with_file_name(format!("{stem}.restored{num}{ext}"));
+        // Every numbered name shares the stem and extension, so a protected
+        // first candidate means they all are.
+        if protected(&sibling) {
+            return Ok(Restored::Skipped);
+        }
+        let path = root.join(&sibling);
+        if symlink_on_path(root, path.parent().unwrap_or(root)) {
+            return Ok(Restored::Skipped);
+        }
+        let mut f = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                n += 1;
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("creating {}", path.display())),
+        };
+        // `mode` was masked by the umask at open; `fchmod` on the handle.
+        let res = f
+            .set_permissions(fs::Permissions::from_mode(mode))
+            .and_then(|()| f.write_all(&state.bytes))
+            .and_then(|()| f.sync_all());
+        if let Err(e) = res {
+            drop(f);
+            let _ = fs::remove_file(&path);
+            return Err(e).with_context(|| format!("writing {}", path.display()));
+        }
+        return Ok(Restored::Written(sibling));
     }
 }
 
@@ -1720,7 +1890,54 @@ mod tests {
 
         assert!(skipped.is_empty());
         assert_eq!(fs::read(trash.join("docs/edit.md")).unwrap(), b"old edit");
-        assert_eq!(fs::read(trash.join("docs/edit.1.md")).unwrap(), b"new edit");
+        // The second copy keeps its exact rel, in a sibling pass folder.
+        assert_eq!(
+            fs::read(td.path().join("trash-1/docs/edit.md")).unwrap(),
+            b"new edit"
+        );
+        assert!(!trash.join("docs/edit.1.md").exists());
+    }
+
+    /// Each further copy of a path in one pass goes to the next free sibling
+    /// pass folder, and the earlier copies are never replaced.
+    #[test]
+    fn a_third_copy_in_the_same_pass_goes_to_dash_two() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        let trash = td.path().join("trash");
+        put(&root.join("docs/edit.md"), "v0");
+        let mut snap = Snapshot::new();
+        for (old, new) in [("v0", "v1"), ("v1", "v2"), ("v2", "v3")] {
+            put(&staging.join("docs/edit.md"), new);
+            snap.insert(
+                PathBuf::from("docs/edit.md"),
+                Some(FileState {
+                    bytes: old.as_bytes().to_vec(),
+                    executable: false,
+                }),
+            );
+            let skipped = apply_to_root(
+                &staging,
+                &root,
+                &[(Status::Modified, PathBuf::from("docs/edit.md"))],
+                &snap,
+                &trash,
+            )
+            .unwrap();
+            assert!(skipped.is_empty());
+        }
+
+        assert_eq!(fs::read(trash.join("docs/edit.md")).unwrap(), b"v0");
+        assert_eq!(
+            fs::read(td.path().join("trash-1/docs/edit.md")).unwrap(),
+            b"v1"
+        );
+        assert_eq!(
+            fs::read(td.path().join("trash-2/docs/edit.md")).unwrap(),
+            b"v2"
+        );
+        assert_eq!(mode_of(&td.path().join("trash-2/docs/edit.md")), 0o600);
+        assert_eq!(fs::read(root.join("docs/edit.md")).unwrap(), b"v3");
     }
 
     /// A copy that cannot be kept aborts before the live file is touched:
@@ -2285,5 +2502,260 @@ mod tests {
             rep.skipped_too_large,
             vec![(PathBuf::from("big.md"), b"too-big!!".len() as u64)]
         );
+    }
+
+    // --- restore_to_root ----------------------------------------------------
+
+    /// A root, a 0600 trash copy at `<td>/trash/<rel>` holding `body`, and the
+    /// displaced pass folder a replaced live file is kept in.
+    fn restore_dirs(td: &TempDir, rel: &str, body: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let (root, _) = dirs(td);
+        let src = td.path().join("trash").join(rel);
+        put(&src, body);
+        chmod(&src, 0o600);
+        (root, src, td.path().join("displaced"))
+    }
+
+    #[test]
+    fn restore_writes_a_missing_file_with_parents() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "docs/deep/a.md", "kept");
+
+        let out = restore_to_root(
+            &root,
+            Path::new("docs/deep/a.md"),
+            &src,
+            &displaced,
+            OnExisting::Ask,
+        )
+        .unwrap();
+
+        assert_eq!(out, Restored::Written(PathBuf::from("docs/deep/a.md")));
+        assert_eq!(fs::read(root.join("docs/deep/a.md")).unwrap(), b"kept");
+        assert!(!displaced.exists());
+    }
+
+    #[test]
+    fn restore_asks_when_a_different_live_file_exists() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "a.md", "old");
+        put(&root.join("a.md"), "live");
+
+        let out =
+            restore_to_root(&root, Path::new("a.md"), &src, &displaced, OnExisting::Ask).unwrap();
+
+        assert_eq!(out, Restored::Exists);
+        assert_eq!(fs::read(root.join("a.md")).unwrap(), b"live");
+        assert_eq!(files(&root), vec!["a.md".to_string()]);
+        assert!(!displaced.exists());
+    }
+
+    #[test]
+    fn restore_replace_trashes_the_live_file_first_then_overwrites() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "docs/a.md", "old");
+        put(&root.join("docs/a.md"), "live");
+
+        let out = restore_to_root(
+            &root,
+            Path::new("docs/a.md"),
+            &src,
+            &displaced,
+            OnExisting::Replace,
+        )
+        .unwrap();
+
+        assert_eq!(out, Restored::Written(PathBuf::from("docs/a.md")));
+        assert_eq!(fs::read(root.join("docs/a.md")).unwrap(), b"old");
+        assert_eq!(fs::read(displaced.join("docs/a.md")).unwrap(), b"live");
+        assert_eq!(mode_of(&displaced.join("docs/a.md")), 0o600);
+    }
+
+    #[test]
+    fn restore_replace_aborts_before_the_live_file_when_the_trash_copy_fails() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "docs/a.md", "old");
+        put(&root.join("docs/a.md"), "live");
+        // A regular file where the displaced pass needs a directory.
+        put(&displaced.join("docs"), "in the way");
+
+        let res = restore_to_root(
+            &root,
+            Path::new("docs/a.md"),
+            &src,
+            &displaced,
+            OnExisting::Replace,
+        );
+
+        assert!(res.is_err());
+        assert_eq!(fs::read(root.join("docs/a.md")).unwrap(), b"live");
+    }
+
+    #[test]
+    fn restore_keep_both_writes_a_restored_sibling_numbered_if_taken() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "docs/a.md", "old");
+        put(&root.join("docs/a.md"), "live");
+        let rel = Path::new("docs/a.md");
+
+        let first = restore_to_root(&root, rel, &src, &displaced, OnExisting::KeepBoth).unwrap();
+        let second = restore_to_root(&root, rel, &src, &displaced, OnExisting::KeepBoth).unwrap();
+
+        assert_eq!(
+            first,
+            Restored::Written(PathBuf::from("docs/a.restored.md"))
+        );
+        assert_eq!(
+            second,
+            Restored::Written(PathBuf::from("docs/a.restored.1.md"))
+        );
+        assert_eq!(fs::read(root.join("docs/a.md")).unwrap(), b"live");
+        assert_eq!(fs::read(root.join("docs/a.restored.md")).unwrap(), b"old");
+        assert_eq!(fs::read(root.join("docs/a.restored.1.md")).unwrap(), b"old");
+        assert_eq!(mode_of(&root.join("docs/a.restored.md")), 0o644);
+        assert!(!displaced.exists());
+
+        // No extension, and a dotfile: the suffix goes on the whole name.
+        for (name, sibling) in [
+            ("Makefile", "Makefile.restored"),
+            (".envrc", ".envrc.restored"),
+        ] {
+            let src = td.path().join("trash").join(name);
+            put(&src, "old");
+            put(&root.join(name), "live");
+            let out = restore_to_root(
+                &root,
+                Path::new(name),
+                &src,
+                &displaced,
+                OnExisting::KeepBoth,
+            )
+            .unwrap();
+            assert_eq!(out, Restored::Written(PathBuf::from(sibling)));
+            assert_eq!(fs::read(root.join(name)).unwrap(), b"live");
+        }
+    }
+
+    #[test]
+    fn restore_keep_both_never_follows_a_planted_sibling_symlink() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "a.md", "old");
+        put(&root.join("a.md"), "live");
+        let outside = td.path().join("outside.md");
+        put(&outside, "outside");
+        symlink(&outside, root.join("a.restored.md")).unwrap();
+
+        let out = restore_to_root(
+            &root,
+            Path::new("a.md"),
+            &src,
+            &displaced,
+            OnExisting::KeepBoth,
+        )
+        .unwrap();
+
+        assert_eq!(out, Restored::Written(PathBuf::from("a.restored.1.md")));
+        assert_eq!(fs::read(&outside).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn restore_same_bytes_is_a_no_op() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "a.md", "same");
+        put(&root.join("a.md"), "same");
+
+        for on_existing in [OnExisting::Ask, OnExisting::Replace, OnExisting::KeepBoth] {
+            let out =
+                restore_to_root(&root, Path::new("a.md"), &src, &displaced, on_existing).unwrap();
+            assert_eq!(out, Restored::Same);
+        }
+        assert_eq!(files(&root), vec!["a.md".to_string()]);
+        assert!(!displaced.exists());
+    }
+
+    #[test]
+    fn restore_never_follows_a_symlinked_root_or_ancestor() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "docs/a.md", "old");
+        let outside = td.path().join("outside");
+        put(&outside.join("keep.md"), "user data");
+        symlink(&outside, root.join("docs")).unwrap();
+        let link = td.path().join("link");
+        symlink(&outside, &link).unwrap();
+
+        for on_existing in [OnExisting::Ask, OnExisting::Replace, OnExisting::KeepBoth] {
+            let rel = Path::new("docs/a.md");
+            let out = restore_to_root(&root, rel, &src, &displaced, on_existing).unwrap();
+            assert_eq!(out, Restored::Skipped);
+            let out =
+                restore_to_root(&link, Path::new("a.md"), &src, &displaced, on_existing).unwrap();
+            assert_eq!(out, Restored::Skipped);
+        }
+        assert_eq!(files(&outside), vec!["keep.md".to_string()]);
+        assert!(!displaced.exists());
+    }
+
+    #[test]
+    fn restore_skips_protected_names() {
+        let td = TempDir::new().unwrap();
+        let (root, _, displaced) = restore_dirs(&td, "a.md", "old");
+
+        for rel in [
+            ".dotloreproject",
+            ".dotloreignore",
+            "docs/a.conflict-dev1.md",
+            ".git/config",
+            "a.md.dotlore-tmp",
+        ] {
+            let src = td.path().join("trash").join(rel);
+            put(&src, "old");
+            let out = restore_to_root(&root, Path::new(rel), &src, &displaced, OnExisting::Replace)
+                .unwrap();
+            assert_eq!(out, Restored::Skipped, "{rel}");
+        }
+        assert!(files(&root).is_empty());
+    }
+
+    #[test]
+    fn restore_rejects_a_non_regular_source() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "a.md", "old");
+        for rel in ["../a.md", "/a.md", ""] {
+            let res = restore_to_root(&root, Path::new(rel), &src, &displaced, OnExisting::Ask);
+            assert!(res.is_err(), "{rel}");
+        }
+
+        let link = td.path().join("trash/link.md");
+        symlink(&src, &link).unwrap();
+        let dir = td.path().join("trash/dir.md");
+        fs::create_dir_all(&dir).unwrap();
+        for bad in [&link, &dir] {
+            let err = restore_to_root(&root, Path::new("a.md"), bad, &displaced, OnExisting::Ask)
+                .unwrap_err();
+            assert!(err.to_string().contains("not a regular file"), "{err}");
+        }
+        assert!(files(&root).is_empty());
+    }
+
+    #[test]
+    fn restore_gives_the_written_file_a_normal_mode() {
+        let td = TempDir::new().unwrap();
+        let (root, src, displaced) = restore_dirs(&td, "a.md", "text");
+        let run = td.path().join("trash/run.sh");
+        put(&run, "#!/bin/sh");
+        chmod(&run, 0o700);
+
+        restore_to_root(&root, Path::new("a.md"), &src, &displaced, OnExisting::Ask).unwrap();
+        restore_to_root(
+            &root,
+            Path::new("run.sh"),
+            &run,
+            &displaced,
+            OnExisting::Ask,
+        )
+        .unwrap();
+
+        assert_eq!(mode_of(&root.join("a.md")), 0o644);
+        assert_eq!(mode_of(&root.join("run.sh")), 0o755);
     }
 }
