@@ -4,7 +4,7 @@
   <p>Sync your AI stuff and keep it away from your main codebase.</p>
   <p>
     <a href="https://github.com/dinhanhthi/dotlore/releases/latest/download/Dotlore-universal.dmg">Download</a> ·
-    <a href="https://dotlore.dinhanhthi.com">Website</a> ·
+    <a href="https://dotlore.dinh.work">Website</a> ·
     <a href="https://www.youtube.com/watch?v=WACPvu10plc">Intro video</a> ·
     <a href="https://github.com/dinhanhthi/dotlore">GitHub</a> ·
     <a href="https://github.com/dinhanhthi/dotlore/releases">Releases</a> ·
@@ -126,7 +126,7 @@ The signing key is required because the build also produces signed updater artif
 
 ## 🌐 Website
 
-The landing page at [dotlore.dinhanhthi.com](https://dotlore.dinhanhthi.com) is static HTML in [`website/`](website/), deployed on every push to `main`.
+The landing page at [dotlore.dinh.work](https://dotlore.dinh.work) is static HTML in [`website/`](website/), deployed on every push to `main`.
 
 ## 🤝 Contributing
 
