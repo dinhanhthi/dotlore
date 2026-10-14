@@ -50,6 +50,7 @@ import {
 } from "@/lib/ipc";
 import { type LeaveTarget, shouldPromptLeave } from "@/lib/leave-guard";
 import {
+  applyCycle,
   applyRootDiscovery,
   emptyRootsState,
   emptyTrackedStats,
@@ -275,7 +276,7 @@ export function App() {
     });
 
     const unlistenCycle = listenCycle((cycling) => {
-      setState((current) => ({ ...current, cycling }));
+      setState((current) => applyCycle(current, cycling));
       // A cycle can untrack, add or resize files; the footer and cards show these totals.
       if (!cycling) void refreshTrackedCounts();
     });

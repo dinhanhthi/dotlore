@@ -199,4 +199,10 @@ export type RestoreResult =
       restored: { from: string; to: string }[];
       unchanged: string[];
       skipped: string[];
+      /** Keep both copies outside the include-list, now tracked entries. */
+      tracked: string[];
+      /** Keep both copies outside the include-list left untracked: sensitive, or the user untracked that path. */
+      kept_local: string[];
+      /** Adding the copies to the include-list failed after the files were written. */
+      track_error: string | null;
     };

@@ -9,6 +9,7 @@ import type { FileContent, RootRow, TrashProject } from "@/lib/types";
 import {
   confirmCopy,
   menuChoices,
+  restoreIncomplete,
   restoreNotice,
   TrashView,
   type TrashViewProps,
@@ -196,8 +197,8 @@ describe("TrashView", () => {
     const html = render({ projects: [] });
     expect(html).toContain("The trash is empty");
     expect(html).toContain("when a sync deletes or overwrites a file");
-    expect(button(html, "Empty trash")).toMatch(/\sdisabled(=""|\s|>)/);
-    expect(button(render(), "Empty trash")).not.toMatch(/\sdisabled(=""|\s|>)/);
+    expect(button(html, "Clean up")).toMatch(/\sdisabled(=""|\s|>)/);
+    expect(button(render(), "Clean up")).not.toMatch(/\sdisabled(=""|\s|>)/);
   });
 
   it("a failed listing shows an error with a retry, not the empty state", () => {
@@ -207,7 +208,7 @@ describe("TrashView", () => {
     expect(html).toContain('aria-label="Try again"');
     expect(html).not.toContain("The trash is empty");
     expect(html).not.toContain("when a sync deletes or overwrites a file");
-    expect(button(html, "Empty trash")).toMatch(/\sdisabled(=""|\s|>)/);
+    expect(button(html, "Clean up")).toMatch(/\sdisabled(=""|\s|>)/);
   });
 
   it("removed project offers Delete and Reveal but no Restore", () => {
@@ -243,6 +244,12 @@ describe("TrashView", () => {
     expect(html).toContain('aria-label="Restore"');
   });
 
+  it("a search box sits above the tree, and not on an empty trash", () => {
+    expect(render()).toContain('aria-label="Search trash"');
+    expect(render()).toContain('placeholder="Search trash"');
+    expect(render({ projects: [] })).not.toContain('aria-label="Search trash"');
+  });
+
   it("header shows the trash size and the cap", () => {
     expect(render()).toContain("Uses 20 bytes of 500 MB");
     const unknown = render({ capMb: null });
@@ -274,11 +281,13 @@ describe("TrashView", () => {
         </TooltipProvider>,
       );
     expect(html).toContain("Empty the trash?");
-    expect(ariaLabels(html).filter((label) => label === "Empty trash")).toHaveLength(3);
+    expect(ariaLabels(html).filter((label) => label === "Clean up")).toHaveLength(2);
+    expect(ariaLabels(html).filter((label) => label === "Empty trash")).toHaveLength(1);
     const labels = ariaLabels(html);
     const tips = tooltipTexts(html);
     expect(labels).toEqual(
       expect.arrayContaining([
+        "Clean up",
         "Empty trash",
         "Restore",
         "Delete",
@@ -303,7 +312,7 @@ function pass(day: string, bytes: number[]): TrashProject["passes"][number] {
   };
 }
 
-describe("empty trash menu", () => {
+describe("clean up menu", () => {
   const now = new Date(2026, 9, 13, 15, 0, 0);
   const spread: TrashProject[] = [
     {
@@ -373,6 +382,22 @@ describe("restoreNotice", () => {
     restored: Array.from({ length: restored }, (_, i) => ({ from: `f${i}`, to: `f${i}` })),
     unchanged,
     skipped,
+    tracked: [],
+    kept_local: [],
+    track_error: null,
+  });
+
+  it("keep both says a copy it did not add stays on this Mac", () => {
+    expect(
+      restoreNotice({
+        ...done(0, [], []),
+        restored: [{ from: "credentials.json", to: "credentials.restored.json" }],
+        kept_local: ["credentials.restored.json"],
+      }),
+    ).toBe(
+      "Saved credentials.json as credentials.restored.json. " +
+        "Kept credentials.restored.json on this Mac only; track it in the project to sync it.",
+    );
   });
 
   it("restore notice is null for a clean success and mentions skipped files", () => {
@@ -382,6 +407,72 @@ describe("restoreNotice", () => {
     expect(notice).toContain("Restored 1 file.");
     expect(notice).toContain("Skipped 2: docs/a.md, docs/b.md");
     expect(restoreNotice(done(0, [], []))).toBe("Nothing to restore.");
+  });
+
+  it("keep both names each restored copy and the copies added to the project", () => {
+    const copy = (from: string, to: string) => ({ from, to });
+    expect(
+      restoreNotice({
+        ...done(0, [], []),
+        restored: [copy("CLAUDE.md", "CLAUDE.restored.md")],
+        tracked: ["CLAUDE.restored.md"],
+      }),
+    ).toBe(
+      "Saved CLAUDE.md as CLAUDE.restored.md. Added CLAUDE.restored.md to the project so it syncs.",
+    );
+    expect(
+      restoreNotice({ ...done(0, [], []), restored: [copy("docs/a.md", "docs/a.restored.md")] }),
+    ).toBe("Saved docs/a.md as docs/a.restored.md.");
+    const many = ["a", "b", "c", "d"].map((name) => copy(`${name}.md`, `${name}.restored.md`));
+    expect(
+      restoreNotice({
+        ...done(0, [], ["x.md"]),
+        restored: [copy("f.md", "f.md"), ...many],
+        tracked: ["a.restored.md", "b.restored.md"],
+      }),
+    ).toBe(
+      "Restored 5 files. Saved a.md as a.restored.md, b.md as b.restored.md, c.md as c.restored.md, … " +
+        "Added a.restored.md, b.restored.md to the project so they sync. Skipped 1: x.md",
+    );
+  });
+
+  it("a tracking failure names the written copies and never claims they sync", () => {
+    const notice = restoreNotice({
+      ...done(0, [], []),
+      restored: [{ from: "CLAUDE.md", to: "CLAUDE.restored.md" }],
+      track_error: "reading .dotloreproject",
+    });
+    expect(notice).toBe(
+      "Saved CLAUDE.md as CLAUDE.restored.md. " +
+        "Could not add CLAUDE.restored.md to the project: reading .dotloreproject",
+    );
+    expect(notice).not.toContain("so it syncs");
+    expect(restoreNotice({ ...done(1, [], []), track_error: "no staging repo" })).toBe(
+      "Could not update the project: no staging repo",
+    );
+  });
+});
+
+describe("restoreIncomplete", () => {
+  const done = (restored: number, unchanged: string[], skipped: string[]) => ({
+    kind: "done" as const,
+    restored: Array.from({ length: restored }, (_, i) => ({ from: `f${i}`, to: `f${i}.restored` })),
+    unchanged,
+    skipped,
+    tracked: [],
+    kept_local: [],
+    track_error: null,
+  });
+
+  it("a clean keep both is a success notice, skipped or nothing restored is not", () => {
+    expect(restoreIncomplete(done(1, [], []))).toBe(false);
+    expect(restoreIncomplete(done(0, ["a.md"], []))).toBe(false);
+    expect(restoreIncomplete(done(1, [], ["b.md"]))).toBe(true);
+    expect(restoreIncomplete(done(0, [], []))).toBe(true);
+  });
+
+  it("a tracking failure is incomplete", () => {
+    expect(restoreIncomplete({ ...done(1, [], []), track_error: "boom" })).toBe(true);
   });
 });
 

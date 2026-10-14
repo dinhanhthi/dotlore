@@ -56,6 +56,8 @@ export type RootsState = {
   loadingRoots: boolean;
   /** A daemon cycle is in flight; IPC commands may wait on it. */
   cycling: boolean;
+  /** Bumped each time a cycle ends, so open views reload what it changed. */
+  cycleGen: number;
 };
 
 export type RootsContextValue = RootsState & {
@@ -106,7 +108,13 @@ export const emptyRootsState: RootsState = {
   seeding: [],
   loadingRoots: false,
   cycling: false,
+  cycleGen: 0,
 };
+
+/** Record a cycle start or end; an end bumps `cycleGen`. */
+export function applyCycle(state: RootsState, cycling: boolean): RootsState {
+  return { ...state, cycling, cycleGen: cycling ? state.cycleGen : state.cycleGen + 1 };
+}
 
 /** Unresolved conflicts in one root. */
 export function conflictCount(row: RootRow): number {

@@ -357,19 +357,35 @@ function restoreTrash(args: Record<string, unknown>): RestoreResult {
   }
   const restored: { from: string; to: string }[] = [];
   const unchanged: string[] = [];
+  const tracked: string[] = [];
   for (const file of files) {
     if (file.status === "same") {
       unchanged.push(file.rel);
     } else if (file.status === "differs" && choice === "keep_both") {
       // The live file is left alone, so it still differs from this copy.
-      restored.push({ from: file.rel, to: restoredRel(file.rel) });
+      const to = restoredRel(file.rel);
+      restored.push({ from: file.rel, to });
+      const content = store.trashContents[trashKey(target.slug, target.day, target.pass, file.rel)];
+      const files = store.files[target.slug] ?? (store.files[target.slug] = {});
+      files[to] = {
+        text: content?.text ?? null,
+        binary: content?.binary ?? false,
+        too_large: content?.too_large ?? false,
+        bytes: file.bytes,
+      };
+      const entries = store.entries[target.slug] ?? (store.entries[target.slug] = []);
+      if (!coveredBy(to, entries, store.excludes[target.slug] ?? [])) {
+        entries.push({ key: to, kind: "file", covering: [] });
+        store.entries[target.slug] = withCovering(entries);
+        tracked.push(to);
+      }
     } else {
       restored.push({ from: file.rel, to: file.rel });
       file.status = "same";
     }
   }
   emitStatus();
-  return { kind: "done", restored, unchanged, skipped: [] };
+  return { kind: "done", restored, unchanged, skipped: [], tracked, kept_local: [], track_error: null };
 }
 
 function deleteTrash(args: Record<string, unknown>): void {

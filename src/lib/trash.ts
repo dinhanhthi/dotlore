@@ -1,4 +1,4 @@
-import { buildTree, type TreeNode } from "./tree";
+import { buildTree, filterTree, type TreeNode } from "./tree";
 import type { TrashFile, TrashPass, TrashProject, TrashStatus } from "./types";
 
 const MONTHS = [
@@ -56,6 +56,31 @@ export function trashTree(files: TrashFile[]): {
   );
   const statusByRel = new Map(files.map((file) => [file.rel, file.status]));
   return { nodes, statusByRel };
+}
+
+function fileRels(nodes: TreeNode[], into: Set<string>): Set<string> {
+  for (const node of nodes) {
+    if (node.kind === "file") into.add(node.path);
+    else fileRels(node.children, into);
+  }
+  return into;
+}
+
+/**
+ * Keep the files `filterTree` matches by name or path (case-insensitive);
+ * passes and projects left with none are dropped. An empty query returns
+ * `projects` itself.
+ */
+export function filterTrash(projects: TrashProject[], query: string): TrashProject[] {
+  if (!query.trim()) return projects;
+  return projects.flatMap((project) => {
+    const passes = project.passes.flatMap((pass) => {
+      const keep = fileRels(filterTree(trashTree(pass.files).nodes, query), new Set());
+      const files = pass.files.filter((file) => keep.has(file.rel));
+      return files.length > 0 ? [{ ...pass, files }] : [];
+    });
+    return passes.length > 0 ? [{ ...project, passes }] : [];
+  });
 }
 
 /** `null` → every file; a file rel → that file; a folder rel → every file below it. */

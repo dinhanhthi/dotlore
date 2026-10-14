@@ -18,6 +18,8 @@ export type TrashSelection = {
 
 type TrashTreeProps = {
   projects: TrashProject[];
+  /** A search is active: every row stays open and clicks never fold. */
+  filtering: boolean;
   nameOf: (slug: string) => string;
   selection: TrashSelection | null;
   onSelect: (selection: TrashSelection) => void;
@@ -82,15 +84,16 @@ function Row({
   );
 }
 
-export function TrashTree({ projects, nameOf, selection, onSelect }: TrashTreeProps) {
+export function TrashTree({ projects, filtering, nameOf, selection, onSelect }: TrashTreeProps) {
   /** Everything starts open; this holds the rows the user folded. */
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
   function isOpen(key: string): boolean {
-    return !collapsed.has(key);
+    return filtering || !collapsed.has(key);
   }
 
   function setOpen(key: string, open: boolean) {
+    if (filtering) return;
     setCollapsed((current) => {
       if (open !== current.has(key)) return current;
       const next = new Set(current);
@@ -130,7 +133,7 @@ export function TrashTree({ projects, nameOf, selection, onSelect }: TrashTreePr
         return (
           <li key={node.path}>
             <Row depth={depth} selected={sameItem(selection, item)} onClick={() => onSelect(item)}>
-              <span className="min-w-0 flex-1 truncate text-sm">{node.name}</span>
+              <span className="whitespace-nowrap text-sm">{node.name}</span>
               {status !== null ? (
                 <Badge variant="secondary" className="shrink-0 font-normal">
                   {statusLabel(status)}
@@ -150,7 +153,7 @@ export function TrashTree({ projects, nameOf, selection, onSelect }: TrashTreePr
             expanded={open}
             onClick={() => chooseBranch(key, item)}
           >
-            <span className="min-w-0 flex-1 truncate text-sm">{node.name}</span>
+            <span className="whitespace-nowrap text-sm">{node.name}</span>
           </Row>
           {open ? (
             <ul className="flex flex-col gap-0.5">
@@ -163,14 +166,14 @@ export function TrashTree({ projects, nameOf, selection, onSelect }: TrashTreePr
   }
 
   return (
-    <ul className="flex flex-col gap-0.5">
+    <ul className="flex w-max min-w-full flex-col gap-0.5">
       {projects.map((project) => {
         const key = `p:${project.slug}`;
         const open = isOpen(key);
         return (
           <li key={project.slug}>
             <Row depth={0} expanded={open} onClick={() => setOpen(key, !open)}>
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+              <span className="whitespace-nowrap text-sm font-medium">
                 {nameOf(project.slug)}
               </span>
               {project.root === null ? (
@@ -198,7 +201,7 @@ export function TrashTree({ projects, nameOf, selection, onSelect }: TrashTreePr
                         expanded={passOpen}
                         onClick={() => chooseBranch(passKey, item)}
                       >
-                        <span className="min-w-0 flex-1 truncate text-sm">
+                        <span className="whitespace-nowrap text-sm">
                           {passLabel(pass.day, pass.pass)}
                         </span>
                         <span className="shrink-0 tabular-nums text-xs text-muted-foreground">

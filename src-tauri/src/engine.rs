@@ -299,6 +299,16 @@ pub enum RestoreResult {
         unchanged: Vec<String>,
         /// Protected names, symlinks on the path, targets that are not files.
         skipped: Vec<String>,
+        /// `KeepBoth` copies outside the include-list, now tracked entries.
+        /// Empty when adding them failed; see `track_error`.
+        tracked: Vec<String>,
+        /// `KeepBoth` copies outside the include-list left untracked because
+        /// the copy or its original matches a sensitive pattern, or the user
+        /// untracked that path before; the user tracks them explicitly.
+        kept_local: Vec<String>,
+        /// Adding the copies to the include-list failed after the files were
+        /// written; nothing was added.
+        track_error: Option<String>,
     },
 }
 
@@ -1452,7 +1462,10 @@ impl Engine {
 
     /// Restore a trash pass, or the file or folder at `rel` inside it, into
     /// the live root of `slug` on the user's request. Restored copies stay in
-    /// the trash; the next cycle publishes what was written.
+    /// the trash; the next cycle publishes what was written. A `KeepBoth`
+    /// copy the include-list does not cover becomes a tracked entry, and a
+    /// cycle runs at once. If that step fails, the result is still `Done`,
+    /// with `tracked` empty and the error in `track_error`.
     ///
     /// `Ask` writes nothing at all when any live file differs, and returns
     /// those rels so the user can pick `Replace` or `KeepBoth` for the batch.
@@ -1526,11 +1539,89 @@ impl Engine {
                 mirror::Restored::Skipped | mirror::Restored::Exists => skipped.push(rel),
             }
         }
+        // The files are written: a tracking failure is reported, never
+        // returned, or the user would retry and get a second `.restored` copy.
+        let (tracked, kept_local, track_error) =
+            match self.track_restored_copies(&g, &root, &restored) {
+                Ok((tracked, kept_local)) => (tracked, kept_local, None),
+                Err(e) => (Vec::new(), Vec::new(), Some(format!("{e:#}"))),
+            };
         Ok(RestoreResult::Done {
             restored,
             unchanged,
             skipped,
+            tracked,
+            kept_local,
+            track_error,
         })
+    }
+
+    /// Add each `KeepBoth` copy the include-list does not cover as a tracked
+    /// file entry, then run a cycle so it syncs. Runs under the caller's
+    /// lock; returns the rels it added and the copies it left untracked
+    /// (sensitive, or under a `Removed` record), so a secret is never
+    /// published without the confirmation [`Engine::track_entry`] asks for.
+    ///
+    /// Every fallible step runs before or at `project::write`: the cycle
+    /// reports through its status, and `settle` can only fail saving the
+    /// config for an initializing root, which `restore_from_trash` refuses.
+    /// So an error means nothing was added.
+    fn track_restored_copies(
+        &mut self,
+        g: &HomeLock,
+        root: &Root,
+        restored: &[RestoredFile],
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        if restored.iter().all(|r| r.to == r.from) {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let repo = self.repo_for(root)?;
+        let mut file = repo.project_file()?;
+        let entries = file.tracked();
+        let matcher = self.sensitive_matcher();
+        let secret = |rel: &str| matcher.classify(Path::new(rel)) == Some(Sensitivity::Secret);
+        // A copy of a secret is still one: the `.restored` rename stops
+        // exact-name patterns such as `auth.json` from matching the copy.
+        // An explicit untrack of the copy's path or a parent folder stands.
+        let untracked = |rel: &str| {
+            Path::new(rel).ancestors().any(|p| {
+                let key = p.to_string_lossy();
+                [key.to_string(), format!("{key}/")].iter().any(|k| {
+                    file.entries
+                        .get(k)
+                        .is_some_and(|rec| rec.state == State::Removed)
+                })
+            })
+        };
+        let (kept, added): (Vec<&RestoredFile>, Vec<&RestoredFile>) = restored
+            .iter()
+            .filter(|r| r.to != r.from && !entries.contains_rel(Path::new(&r.to)))
+            .partition(|r| secret(&r.from) || secret(&r.to) || untracked(&r.to));
+        let kept_local: Vec<String> = kept.into_iter().map(|r| r.to.clone()).collect();
+        let tracked: Vec<String> = added.into_iter().map(|r| r.to.clone()).collect();
+        if tracked.is_empty() {
+            return Ok((tracked, kept_local));
+        }
+        let gen = file
+            .entries
+            .values()
+            .map(|e| e.gen)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        for rel in &tracked {
+            file.entries.insert(
+                rel.clone(),
+                project::EntryRecord {
+                    gen,
+                    state: State::Tracked,
+                },
+            );
+        }
+        project::write(&repo.staging, &file)?;
+        let status = self.run_cycle(&self.cloud(), root, FetchMode::Normal);
+        self.settle(g, &root.slug, &status)?;
+        Ok((tracked, kept_local))
     }
 
     // --- locked helpers ---------------------------------------------------
@@ -5338,6 +5429,9 @@ mod tests {
                 }],
                 unchanged: vec![],
                 skipped: vec![],
+                tracked: vec![],
+                kept_local: Vec::new(),
+                track_error: None,
             }
         );
         assert!(!a.root.path().join("docs/gone.md").exists());
@@ -5348,14 +5442,20 @@ mod tests {
             restored,
             unchanged,
             skipped,
+            tracked,
+            kept_local,
+            track_error,
         } = got
         else {
             panic!("expected Done, got {got:?}");
         };
+        assert!(kept_local.is_empty());
         let tos: Vec<&str> = restored.iter().map(|r| r.to.as_str()).collect();
         assert_eq!(tos, ["docs/gone.md", "other.md"]);
         assert_eq!(unchanged, ["docs/deep/x.md", "docs/same.md"]);
         assert!(skipped.is_empty());
+        assert!(tracked.is_empty());
+        assert_eq!(track_error, None);
         let root = a.root.path();
         assert_eq!(fs::read(root.join("docs/gone.md")).unwrap(), b"gone\n");
         assert_eq!(fs::read(root.join("other.md")).unwrap(), b"other\n");
@@ -5423,6 +5523,9 @@ mod tests {
                 }],
                 unchanged: vec![],
                 skipped: vec![],
+                tracked: vec![],
+                kept_local: Vec::new(),
+                track_error: None,
             }
         );
         assert_eq!(fs::read(a.root.path().join("docs/a.md")).unwrap(), b"old\n");
@@ -5461,6 +5564,299 @@ mod tests {
             fs::read(a.root.path().join("docs/a.md")).unwrap(),
             b"newer\n"
         );
+    }
+
+    #[test]
+    fn keep_both_tracks_a_restored_copy_outside_the_include_list() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"live\n");
+        write(&a, "docs/a.md", b"live a\n");
+        add(&mut a);
+        plant(&a, "CLAUDE.md", b"old\n");
+
+        let got = restore(&mut a, Some("CLAUDE.md"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            restored, tracked, ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(
+            restored,
+            [RestoredFile {
+                from: "CLAUDE.md".into(),
+                to: "CLAUDE.restored.md".into(),
+            }]
+        );
+        assert_eq!(tracked, ["CLAUDE.restored.md"]);
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let file = repo.project_file().unwrap();
+        assert_eq!(file.entries["CLAUDE.restored.md"].state, State::Tracked);
+        // The restore ran a cycle, so the copy is already staged.
+        assert_eq!(
+            repo.git
+                .ok(&["show", "HEAD:CLAUDE.restored.md"])
+                .unwrap()
+                .trim(),
+            "old"
+        );
+        assert!(rels(&a.engine.tracked_files("proj-claude").unwrap())
+            .contains(&"CLAUDE.restored.md".to_string()));
+    }
+
+    #[test]
+    fn keep_both_reports_a_tracking_failure_and_keeps_the_written_copy() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"live\n");
+        add(&mut a);
+        plant(&a, "CLAUDE.md", b"old\n");
+        // An unreadable staging `.dotloreproject` breaks only the tracking step.
+        let project = a.home.path().join("repos/proj-claude/.dotloreproject");
+        fs::remove_file(&project).unwrap();
+        fs::create_dir(&project).unwrap();
+
+        let got = restore(&mut a, Some("CLAUDE.md"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            restored,
+            tracked,
+            track_error,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(
+            restored,
+            [RestoredFile {
+                from: "CLAUDE.md".into(),
+                to: "CLAUDE.restored.md".into(),
+            }]
+        );
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert!(track_error.is_some());
+        let root = a.root.path();
+        assert_eq!(fs::read(root.join("CLAUDE.restored.md")).unwrap(), b"old\n");
+        assert_eq!(fs::read(root.join("CLAUDE.md")).unwrap(), b"live\n");
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_sensitive_copy() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "credentials.json", b"live\n");
+        add(&mut a);
+        plant(&a, "credentials.json", b"old\n");
+
+        let got = restore(&mut a, Some("credentials.json"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            tracked,
+            kept_local,
+            track_error,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["credentials.restored.json"]);
+        assert_eq!(track_error, None);
+        let root = a.root.path();
+        assert_eq!(
+            fs::read(root.join("credentials.restored.json")).unwrap(),
+            b"old\n"
+        );
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let entries = repo.project_file().unwrap().tracked();
+        assert!(!entries.contains_rel(Path::new("credentials.restored.json")));
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_copy_of_an_exact_name_secret() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "auth.json", b"live\n");
+        add(&mut a);
+        plant(&a, "auth.json", b"old\n");
+
+        let got = restore(&mut a, Some("auth.json"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            tracked,
+            kept_local,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["auth.restored.json"]);
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let entries = repo.project_file().unwrap().tracked();
+        assert!(!entries.contains_rel(Path::new("auth.restored.json")));
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_copy_the_user_untracked() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"live\n");
+        add(&mut a);
+        plant(&a, "CLAUDE.md", b"old\n");
+        restore(&mut a, Some("CLAUDE.md"), RestoreChoice::KeepBoth).unwrap();
+        a.engine
+            .untrack_entry("proj-claude", Path::new("CLAUDE.restored.md"))
+            .unwrap();
+        fs::remove_file(a.root.path().join("CLAUDE.restored.md")).unwrap();
+
+        let got = restore(&mut a, Some("CLAUDE.md"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            restored,
+            tracked,
+            kept_local,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(restored[0].to, "CLAUDE.restored.md");
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["CLAUDE.restored.md"]);
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let file = repo.project_file().unwrap();
+        assert_eq!(file.entries["CLAUDE.restored.md"].state, State::Removed);
+    }
+
+    fn kept_local_after_untrack(untracked: &str, rel: &str) -> (Vec<String>, Vec<String>, State) {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, rel, b"live\n");
+        add(&mut a);
+        a.engine
+            .untrack_entry("proj-claude", Path::new(untracked))
+            .unwrap();
+        plant(&a, rel, b"old\n");
+
+        let got = restore(&mut a, Some(rel), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            tracked,
+            kept_local,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let state = repo.project_file().unwrap().entries[&format!("{untracked}/")].state;
+        (tracked, kept_local, state)
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_copy_inside_an_untracked_folder() {
+        let (tracked, kept_local, state) = kept_local_after_untrack("docs", "docs/a.md");
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["docs/a.restored.md"]);
+        assert_eq!(state, State::Removed);
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_copy_inside_a_hole_of_a_tracked_folder() {
+        let (tracked, kept_local, state) =
+            kept_local_after_untrack("docs/private", "docs/private/x.md");
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["docs/private/x.restored.md"]);
+        assert_eq!(state, State::Removed);
+    }
+
+    #[test]
+    fn a_restore_without_a_restored_copy_never_reads_the_project_file() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"live\n");
+        add(&mut a);
+        plant(&a, "CLAUDE.md", b"old\n");
+        let project = a.home.path().join("repos/proj-claude/.dotloreproject");
+        fs::remove_file(&project).unwrap();
+        fs::create_dir(&project).unwrap();
+
+        let got = restore(&mut a, Some("CLAUDE.md"), RestoreChoice::Replace).unwrap();
+
+        let RestoreResult::Done { track_error, .. } = got else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(track_error, None);
+        assert_eq!(fs::read(a.root.path().join("CLAUDE.md")).unwrap(), b"old\n");
+    }
+
+    #[test]
+    fn keep_both_under_a_tracked_folder_adds_no_entry() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"live\n");
+        add(&mut a);
+        plant(&a, "docs/a.md", b"old\n");
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let before = repo.project_file().unwrap();
+
+        let got = restore(&mut a, Some("docs/a.md"), RestoreChoice::KeepBoth).unwrap();
+
+        assert!(
+            matches!(got, RestoreResult::Done { ref tracked, ref restored, .. }
+                if tracked.is_empty() && restored[0].to == "docs/a.restored.md"),
+            "{got:?}"
+        );
+        assert_eq!(repo.project_file().unwrap(), before);
+    }
+
+    #[test]
+    fn restore_without_a_restored_copy_adds_no_entry() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        plant(&a, "other.md", b"other\n");
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let before = repo.project_file().unwrap();
+
+        let got = restore(&mut a, None, RestoreChoice::KeepBoth).unwrap();
+
+        assert!(
+            matches!(got, RestoreResult::Done { ref tracked, ref restored, .. }
+                if tracked.is_empty() && restored[0].to == "other.md"),
+            "{got:?}"
+        );
+        assert_eq!(repo.project_file().unwrap(), before);
     }
 
     #[test]
@@ -5556,9 +5952,12 @@ mod tests {
                 }],
                 unchanged: vec![],
                 skipped: vec![],
+                tracked: vec![],
+                kept_local: Vec::new(),
+                track_error: None,
             })
             .unwrap(),
-            r#"{"kind":"done","restored":[{"from":"a.md","to":"a.restored.md"}],"unchanged":[],"skipped":[]}"#
+            r#"{"kind":"done","restored":[{"from":"a.md","to":"a.restored.md"}],"unchanged":[],"skipped":[],"tracked":[],"kept_local":[],"track_error":null}"#
         );
     }
 }

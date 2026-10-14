@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState, type ComponentProps, type ReactNode }
 
 import { RevealInFinderButton } from "@/components/layout/RevealInFinderButton";
 import { FilePane } from "@/components/main/FileViewer";
+import { SearchBar } from "@/components/sidebar/SearchBar";
 import { formatBytes } from "@/components/tree/entries";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "@/components/ui/toast";
 import {
   Tooltip,
   TooltipContent,
@@ -36,6 +38,7 @@ import {
   canRestore,
   cutoffDay,
   filesUnder,
+  filterTrash,
   olderThan,
   passLabel,
   trashTotals,
@@ -89,7 +92,7 @@ export type AgeChoice = {
   disabled: boolean;
 };
 
-/** The "Empty trash" menu's age choices; one with nothing to delete is disabled. */
+/** The "Clean up" menu's age choices; one with nothing to delete is disabled. */
 export function menuChoices(projects: TrashProject[], now: Date): AgeChoice[] {
   return AGES.map(({ label, months }) => {
     const before = cutoffDay(now, months);
@@ -134,19 +137,58 @@ export function confirmCopy(confirm: Confirm | null, projects: TrashProject[] | 
   };
 }
 
+/** The first 3 items joined by ", ", then ", …" when there are more. */
+function firstThree(items: string[]): string {
+  return items.slice(0, 3).join(", ") + (items.length > 3 ? ", …" : "");
+}
+
+/**
+ * A restore that skipped files, restored nothing or could not add its copies
+ * to the project; its notice is shown as an error.
+ */
+export function restoreIncomplete(result: Extract<RestoreResult, { kind: "done" }>): boolean {
+  return (
+    result.skipped.length > 0 ||
+    (result.restored.length === 0 && result.unchanged.length === 0) ||
+    result.track_error !== null
+  );
+}
+
 /** What a finished restore must tell the user, or `null` for a clean success. */
 export function restoreNotice(result: Extract<RestoreResult, { kind: "done" }>): string | null {
   const clean = result.skipped.length === 0;
-  if (clean && (result.restored.length > 0 || result.unchanged.length > 0)) return null;
+  const renamed = result.restored.filter((file) => file.to !== file.from);
   const parts: string[] = [];
-  if (result.restored.length > 0) parts.push(`Restored ${plural(result.restored.length, "file")}.`);
+  if (!clean && result.restored.length > 0) {
+    parts.push(`Restored ${plural(result.restored.length, "file")}.`);
+  }
+  if (renamed.length > 0) {
+    const saved = firstThree(renamed.map((file) => `${file.from} as ${file.to}`));
+    parts.push(`Saved ${saved}${renamed.length > 3 ? "" : "."}`);
+  }
+  if (result.tracked.length > 0) {
+    const verb = result.tracked.length === 1 ? "it syncs" : "they sync";
+    parts.push(`Added ${firstThree(result.tracked)} to the project so ${verb}.`);
+  }
+  if (result.kept_local.length > 0) {
+    const them = result.kept_local.length === 1 ? "it" : "them";
+    parts.push(
+      `Kept ${firstThree(result.kept_local)} on this Mac only; track ${them} in the project to sync ${them}.`,
+    );
+  }
+  if (result.track_error !== null) {
+    const copies = firstThree(renamed.map((file) => file.to));
+    const what = renamed.length > 0 ? `add ${copies} to` : "update";
+    parts.push(`Could not ${what} the project: ${result.track_error}`);
+  }
+  if (clean && (result.restored.length > 0 || result.unchanged.length > 0)) {
+    return parts.length > 0 ? parts.join(" ") : null;
+  }
   if (result.unchanged.length > 0) {
     parts.push(`${plural(result.unchanged.length, "file")} already matched the project.`);
   }
   if (result.skipped.length > 0) {
-    const names = result.skipped.slice(0, 3).join(", ");
-    const rest = result.skipped.length > 3 ? ", …" : "";
-    parts.push(`Skipped ${result.skipped.length}: ${names}${rest}`);
+    parts.push(`Skipped ${result.skipped.length}: ${firstThree(result.skipped)}`);
   }
   return parts.length > 0 ? parts.join(" ") : "Nothing to restore.";
 }
@@ -264,16 +306,16 @@ function EmptyTrashMenu({
                   variant="outline"
                   size="sm"
                   disabled={disabled}
-                  aria-label="Empty trash"
+                  aria-label="Clean up"
                 />
               }
             />
           }
         >
-          Empty trash
+          Clean up
           <ChevronDown aria-hidden />
         </TooltipTrigger>
-        <TooltipContent>Empty trash</TooltipContent>
+        <TooltipContent>Clean up</TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="end" sideOffset={6}>
         {choices.map((choice) => (
@@ -310,9 +352,12 @@ export function TrashView({
   now,
 }: TrashViewProps) {
   const { roots } = useRoots();
+  const [query, setQuery] = useState("");
   const nameOf = (slug: string) => roots.find((row) => row.slug === slug)?.name ?? slug;
   const empty = projects !== null && projects.length === 0;
   const located = projects ? locate(projects, selection) : null;
+  const filtering = query.trim().length > 0;
+  const visible = projects ? filterTrash(projects, query) : [];
 
   let detail: ReactNode;
   if (!selection || !located) {
@@ -341,7 +386,7 @@ export function TrashView({
     );
     if (selection.kind === "file" && rel !== null) {
       detail = (
-        <div className="flex h-full min-h-0 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">
           {removedNote ? (
             <div className="shrink-0 border-b border-border px-4 py-2">{removedNote}</div>
           ) : null}
@@ -354,7 +399,7 @@ export function TrashView({
       const count = filesUnder(pass.files, rel).length;
       const path = rel === null ? pass.path : composeLivePath(pass.path, rel);
       detail = (
-        <ScrollArea className="h-full">
+        <ScrollArea className="min-h-0 flex-1">
           <div className="p-6">
             <div className="flex flex-col gap-3 rounded-2xl bg-card px-4 py-3.5 ring-1 ring-foreground/20 dark:ring-foreground/10">
               <div className="flex min-w-0 items-start gap-3">
@@ -384,17 +429,19 @@ export function TrashView({
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex shrink-0 items-start gap-4 border-b border-border px-6 py-4">
         <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <h1 className="font-heading text-base font-medium text-foreground">Trash</h1>
+          <div className="flex items-baseline gap-3">
+            <h1 className="font-heading text-base font-medium text-foreground">Trash</h1>
+            {projects !== null ? (
+              <span className="text-xs text-muted-foreground">
+                Uses {formatBytes(trashTotals(projects).bytes)}
+                {capMb !== null ? ` of ${capMb} MB` : ""}
+              </span>
+            ) : null}
+          </div>
           <p className="flex items-center gap-2 text-sm text-foreground">
             <Info aria-hidden className="size-4 shrink-0 text-muted-foreground" />
             <span>{NOTICE}</span>
           </p>
-          {projects !== null ? (
-            <p className="text-xs text-muted-foreground">
-              Uses {formatBytes(trashTotals(projects).bytes)}
-              {capMb !== null ? ` of ${capMb} MB` : ""}
-            </p>
-          ) : null}
         </div>
         <EmptyTrashMenu
           projects={projects}
@@ -428,17 +475,38 @@ export function TrashView({
         </Centered>
       ) : (
         <div className="flex min-h-0 flex-1">
-          <ScrollArea className="w-72 shrink-0 border-r border-border">
-            <div className="p-2">
-              <TrashTree
-                projects={projects}
-                nameOf={nameOf}
-                selection={selection}
-                onSelect={onSelect}
+          <div className="flex w-72 shrink-0 flex-col border-r border-border">
+            <div className="flex shrink-0 items-center border-b border-border px-2 py-2">
+              <SearchBar
+                value={query}
+                onChange={setQuery}
+                placeholder="Search trash"
+                label="Search trash"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && query) {
+                    event.preventDefault();
+                    setQuery("");
+                  }
+                }}
               />
             </div>
-          </ScrollArea>
-          <div className="min-w-0 flex-1">{detail}</div>
+            {visible.length === 0 ? (
+              <p className="px-4 py-3.5 text-sm text-muted-foreground">No matching files</p>
+            ) : (
+              <ScrollArea horizontal className="min-h-0 flex-1">
+                <div className="w-max min-w-full p-2">
+                  <TrashTree
+                    projects={visible}
+                    filtering={filtering}
+                    nameOf={nameOf}
+                    selection={selection}
+                    onSelect={onSelect}
+                  />
+                </div>
+              </ScrollArea>
+            )}
+          </div>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">{detail}</div>
         </div>
       )}
     </div>
@@ -451,7 +519,7 @@ function targetOf(selection: TrashSelection): Target {
 }
 
 export function TrashPanel() {
-  const { locked, refreshRoots, setBanner } = useRoots();
+  const { locked, refreshRoots, setBanner, cycleGen } = useRoots();
   const [projects, setProjects] = useState<TrashProject[] | null>(null);
   const [selection, setSelection] = useState<TrashSelection | null>(null);
   const [content, setContent] = useState<FileContent | null>(null);
@@ -475,9 +543,10 @@ export function TrashPanel() {
     }
   }, []);
 
+  // A cycle can write new trash copies; `reload` keeps a selection that still exists.
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, cycleGen]);
 
   useEffect(() => {
     void trashMaxMb()
@@ -522,7 +591,10 @@ export function TrashPanel() {
         return;
       }
       const notice = restoreNotice(result);
-      if (notice !== null) setBanner(notice);
+      if (notice !== null) {
+        if (restoreIncomplete(result)) setBanner(notice);
+        else toast.add({ title: notice, type: "success", timeout: 8000 });
+      }
       await reload();
       await refreshRoots();
     } catch {

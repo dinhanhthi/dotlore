@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyCycle,
   applyRootDiscovery,
+  emptyRootsState,
   errorTotal,
   hasError,
   looksLikeAgent,
@@ -201,5 +203,15 @@ describe("errorTotal", () => {
     expect(errorTotal([], [])).toBe(0);
     expect(errorTotal([], failures)).toBe(2);
     expect(errorTotal([linkedRow({ status: { kind: "Error", detail: "boom" } })], failures)).toBe(3);
+  });
+});
+
+describe("applyCycle", () => {
+  it("counts every cycle that ends so views can reload", () => {
+    const started = applyCycle(emptyRootsState, true);
+    expect(started).toMatchObject({ cycling: true, cycleGen: 0 });
+    const ended = applyCycle(started, false);
+    expect(ended).toMatchObject({ cycling: false, cycleGen: 1 });
+    expect(applyCycle(applyCycle(ended, true), false).cycleGen).toBe(2);
   });
 });

@@ -4,6 +4,7 @@ import {
   canRestore,
   cutoffDay,
   filesUnder,
+  filterTrash,
   olderThan,
   passLabel,
   statusLabel,
@@ -121,5 +122,45 @@ describe("olderThan", () => {
   it("counts dated passes before the cutoff, not undated or the cutoff day", () => {
     expect(olderThan(projects, "2026-09-13")).toEqual({ passes: 2, files: 3, bytes: 31 });
     expect(olderThan(projects, "2026-08-01")).toEqual({ passes: 0, files: 0, bytes: 0 });
+  });
+});
+
+describe("filterTrash", () => {
+  const nested: TrashProject[] = [
+    {
+      slug: "a",
+      root: "/Users/me/a",
+      passes: [
+        pass("2026-10-01", [file("docs/Guide/intro.md"), file("docs/other.md"), file("CLAUDE.md")]),
+        pass("2026-10-02", [file("notes.md")]),
+      ],
+    },
+    { slug: "b", root: null, passes: [pass("2026-10-03", [file("misc.txt")])] },
+  ];
+
+  it("an empty query keeps every project", () => {
+    expect(filterTrash(nested, "")).toBe(nested);
+    expect(filterTrash(nested, "  ")).toBe(nested);
+  });
+
+  it("keeps files whose name or path matches, case-insensitively, and drops empty passes and projects", () => {
+    const got = filterTrash(nested, "INTRO");
+    expect(got.map((project) => project.slug)).toEqual(["a"]);
+    expect(got[0]?.passes.map((item) => item.day)).toEqual(["2026-10-01"]);
+    expect(got[0]?.passes[0]?.files.map((item) => item.rel)).toEqual(["docs/Guide/intro.md"]);
+  });
+
+  it("a matching folder keeps every file below it", () => {
+    const got = filterTrash(nested, "guide");
+    expect(got[0]?.passes[0]?.files.map((item) => item.rel)).toEqual(["docs/Guide/intro.md"]);
+    const docs = filterTrash(nested, "docs");
+    expect(docs[0]?.passes[0]?.files.map((item) => item.rel)).toEqual([
+      "docs/Guide/intro.md",
+      "docs/other.md",
+    ]);
+  });
+
+  it("no match leaves no project", () => {
+    expect(filterTrash(nested, "nothing-here")).toEqual([]);
   });
 });
