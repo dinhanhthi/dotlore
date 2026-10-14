@@ -579,7 +579,7 @@ export function SettingsSync({
   const folder = providerDir === null ? "No folder" : tildePath(providerDir);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col divide-y divide-border/60 *:py-4 *:first:pt-0 *:last:pb-0">
       <section className="flex flex-col gap-2">
         <div className="rounded-2xl bg-muted/40 p-3 ring-1 ring-foreground/5">
           <div className="flex items-center justify-between gap-3">
@@ -696,7 +696,7 @@ export function SettingsGeneral() {
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col divide-y divide-border/60 *:py-4 *:first:pt-0 *:last:pb-0">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm">Appearance</span>
         <div className="flex rounded-4xl border border-border p-0.5">
