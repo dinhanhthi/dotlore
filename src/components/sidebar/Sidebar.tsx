@@ -8,6 +8,7 @@ import {
   Plus,
   RefreshCw,
   Star,
+  Trash2,
   TriangleAlert,
 } from "lucide-react";
 
@@ -248,6 +249,7 @@ export function Sidebar() {
     showStarred,
     showConflicts,
     showErrors,
+    showTrash,
     toggleStar,
     refreshRoots,
     locked,
@@ -536,6 +538,14 @@ export function Sidebar() {
             onClick={showConflicts}
           />
         )}
+        <SidebarItem
+          label="Trash"
+          selected={view === "trash"}
+          leading={
+            <Trash2 aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+          }
+          onClick={showTrash}
+        />
         <SidebarSection
           id="agents"
           title="Agents"

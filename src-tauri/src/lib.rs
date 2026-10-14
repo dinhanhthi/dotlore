@@ -10,6 +10,7 @@ pub mod mirror;
 pub mod project;
 pub mod repo;
 pub mod settings;
+pub mod trash;
 
 mod about;
 mod alert;
@@ -88,6 +89,13 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::cloud_upload,
             commands::app_home,
             commands::open_app_home,
+            commands::open_trash,
+            commands::list_trash,
+            commands::read_trash_file,
+            commands::restore_trash,
+            commands::delete_trash,
+            commands::empty_trash,
+            commands::delete_trash_older_than,
             commands::git_missing,
             commands::sync_now,
             commands::set_provider,
@@ -120,6 +128,8 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::set_max_file_mb,
             commands::max_seed_folder_mb,
             commands::set_max_seed_folder_mb,
+            commands::trash_max_mb,
+            commands::set_trash_max_mb,
             commands::list_cloud_mounts,
             commands::icloud_dir,
             commands::login_item_enabled,

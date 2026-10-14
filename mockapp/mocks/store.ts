@@ -12,14 +12,18 @@ import {
 import type {
   ConflictView,
   EntryView,
+  FileContent,
   LinkableRow,
   PickerRow,
   ResolutionDto,
   RootRow,
+  TrashProject,
+  TrashStatus,
 } from "@/lib/types";
 
 export const DEFAULT_MAX_FILE_MB = 50;
 export const DEFAULT_MAX_SEED_FOLDER_MB = 200;
+export const DEFAULT_TRASH_MAX_MB = 500;
 
 /** Built-in project seed patterns shown in Settings until the user edits them. */
 export const DEFAULT_PATTERNS = [
@@ -61,7 +65,127 @@ export type MockState = {
   sensitivePatterns: string[];
   maxFileMb: number;
   maxSeedFolderMb: number;
+  trashMaxMb: number;
+  trash: TrashProject[];
+  /** Trash file previews keyed by `trashKey(slug, day, pass, rel)`. */
+  trashContents: Record<string, FileContent>;
 };
+
+/** The mock state dir; the trash lives under `<APP_HOME>/trash`. */
+export const APP_HOME = "/Users/demo/Library/Application Support/dotlore";
+
+export function trashKey(slug: string, day: string, pass: string, rel: string): string {
+  return `${slug}/${day}/${pass}/${rel}`;
+}
+
+function textContent(text: string): FileContent {
+  return {
+    text,
+    binary: false,
+    too_large: false,
+    bytes_len: new TextEncoder().encode(text).length,
+  };
+}
+
+type TrashSeedFile = { rel: string; status: TrashStatus | null; content: FileContent };
+
+type TrashSeed = {
+  slug: string;
+  root: string | null;
+  passes: { day: string; pass: string; files: TrashSeedFile[] }[];
+};
+
+/** One live project (`dotlore`, with a `-1` sibling pass) and one removed project. */
+const TRASH_SEED: TrashSeed[] = [
+  {
+    slug: "dotlore",
+    root: "/Users/demo/git/dotlore",
+    passes: [
+      {
+        day: "2026-10-13",
+        pass: "142501-1",
+        files: [
+          {
+            rel: "assets/logo.png",
+            status: "not_in_project",
+            content: { text: null, binary: true, too_large: false, bytes_len: 18_432 },
+          },
+          {
+            rel: "docs/notes.md",
+            status: "differs",
+            content: textContent("# Notes\n\n- Ship the trash view\n- Older wording\n"),
+          },
+        ],
+      },
+      {
+        day: "2026-10-13",
+        pass: "142501",
+        files: [
+          {
+            rel: ".claude/settings.json",
+            status: "unknown",
+            content: textContent('{\n  "model": "opus"\n}\n'),
+          },
+          {
+            rel: "CLAUDE.md",
+            status: "differs",
+            content: textContent("# CLAUDE.md\n\nOlder guidance kept by a sync overwrite.\n"),
+          },
+          {
+            rel: "docs/plans/trash-manager/README.md",
+            status: "same",
+            content: textContent("# Trash manager\n\nBrowse and restore trash copies.\n"),
+          },
+          {
+            rel: "docs/plans/trash-manager/phase-1.md",
+            status: "not_in_project",
+            content: textContent("# Phase 1\n\nA plan doc another Mac deleted.\n"),
+          },
+        ],
+      },
+    ],
+  },
+  {
+    slug: "old-project",
+    root: null,
+    passes: [
+      {
+        day: "2026-10-02",
+        pass: "091530",
+        files: [
+          {
+            rel: "CLAUDE.md",
+            status: null,
+            content: textContent("# old-project\n\nA project removed from Dotlore.\n"),
+          },
+          {
+            rel: "data/dump.bin",
+            status: null,
+            content: { text: null, binary: true, too_large: true, bytes_len: 64_000_000 },
+          },
+        ],
+      },
+    ],
+  },
+];
+
+function demoTrash(): Pick<MockState, "trash" | "trashContents"> {
+  const trashContents: Record<string, FileContent> = {};
+  const trash = TRASH_SEED.map(({ slug, root, passes }) => ({
+    slug,
+    root,
+    passes: passes.map(({ day, pass, files }) => ({
+      day,
+      pass,
+      path: `${APP_HOME}/trash/${slug}/${day}/${pass}`,
+      files: files.map(({ rel, status, content }) => {
+        trashContents[trashKey(slug, day, pass, rel)] = { ...content };
+        return { rel, bytes: content.bytes_len, status };
+      }),
+    })),
+  }));
+  return { trash, trashContents };
+}
 
 export function entriesFromFiles(
   files: Record<string, Record<string, FileRecord>>,
@@ -122,6 +246,8 @@ export function emptyPopulated(): MockState {
     sensitivePatterns: [...SECRET_PATTERNS],
     maxFileMb: DEFAULT_MAX_FILE_MB,
     maxSeedFolderMb: DEFAULT_MAX_SEED_FOLDER_MB,
+    trashMaxMb: DEFAULT_TRASH_MAX_MB,
+    ...demoTrash(),
   };
 }
 
@@ -172,6 +298,14 @@ export function resetStore(next?: Partial<MockState>): void {
     next && "maxSeedFolderMb" in next
       ? (next.maxSeedFolderMb ?? DEFAULT_MAX_SEED_FOLDER_MB)
       : seed.maxSeedFolderMb;
+  store.trashMaxMb =
+    next && "trashMaxMb" in next
+      ? (next.trashMaxMb ?? DEFAULT_TRASH_MAX_MB)
+      : seed.trashMaxMb;
+  store.trash = next?.trash ? clone(next.trash) : seed.trash;
+  store.trashContents = next?.trashContents
+    ? clone(next.trashContents)
+    : seed.trashContents;
 }
 
 export function icloudPath(): string {

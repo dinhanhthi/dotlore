@@ -4,7 +4,13 @@ import { getWorkSnapshot, subscribeWork, type ErrorLogEntry } from "./ipc";
 
 import type { LinkableRow, RootRow } from "./types";
 
-export type AppView = "root" | "all" | "starred" | "conflicts" | "errors";
+export type AppView =
+  | "root"
+  | "all"
+  | "starred"
+  | "conflicts"
+  | "errors"
+  | "trash";
 
 export type FocusRequest = {
   slug: string;
@@ -50,6 +56,8 @@ export type RootsState = {
   loadingRoots: boolean;
   /** A daemon cycle is in flight; IPC commands may wait on it. */
   cycling: boolean;
+  /** Bumped each time a cycle ends, so open views reload what it changed. */
+  cycleGen: number;
 };
 
 export type RootsContextValue = RootsState & {
@@ -67,6 +75,7 @@ export type RootsContextValue = RootsState & {
   showStarred: () => void;
   showConflicts: () => void;
   showErrors: () => void;
+  showTrash: () => void;
   toggleStar: (slug: string) => void;
   /** Set `providerDir` immediately so onboarding unmounts, then refresh roots. */
   applyProvider: (dir: string) => void;
@@ -99,7 +108,13 @@ export const emptyRootsState: RootsState = {
   seeding: [],
   loadingRoots: false,
   cycling: false,
+  cycleGen: 0,
 };
+
+/** Record a cycle start or end; an end bumps `cycleGen`. */
+export function applyCycle(state: RootsState, cycling: boolean): RootsState {
+  return { ...state, cycling, cycleGen: cycling ? state.cycleGen : state.cycleGen + 1 };
+}
 
 /** Unresolved conflicts in one root. */
 export function conflictCount(row: RootRow): number {

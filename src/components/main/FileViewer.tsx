@@ -134,31 +134,16 @@ function WordWrapButton({
   );
 }
 
-export function FileViewer({ slug, rel }: FileViewerProps) {
-  const { roots } = useRoots();
-  const root = roots.find((row) => row.slug === slug) ?? null;
+type FilePaneProps = {
+  rel: string;
+  /** `null` while loading. */
+  content: FileContent | null;
+  error: string | null;
+  actions: ReactNode;
+};
 
-  const [content, setContent] = useState<FileContent | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export function FilePane({ rel, content, error, actions }: FilePaneProps) {
   const [wrap, setWrap] = useState(readWordWrap);
-
-  useEffect(() => {
-    let cancelled = false;
-    setContent(null);
-    setError(null);
-    void readFile(slug, rel)
-      .then((file) => {
-        if (!cancelled) setContent(file);
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) setError(errorMessage(cause));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [slug, rel]);
-
-  const livePath = root ? composeLivePath(root.path, rel) : null;
 
   let body: ReactNode;
   if (error) {
@@ -198,11 +183,46 @@ export function FileViewer({ slug, rel }: FileViewerProps) {
               });
             }}
           />
-          <FileHeaderActions path={livePath} />
+          {actions}
         </div>
       </header>
       {body}
     </div>
+  );
+}
+
+export function FileViewer({ slug, rel }: FileViewerProps) {
+  const { roots } = useRoots();
+  const root = roots.find((row) => row.slug === slug) ?? null;
+
+  const [content, setContent] = useState<FileContent | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setContent(null);
+    setError(null);
+    void readFile(slug, rel)
+      .then((file) => {
+        if (!cancelled) setContent(file);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(errorMessage(cause));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slug, rel]);
+
+  const livePath = root ? composeLivePath(root.path, rel) : null;
+
+  return (
+    <FilePane
+      rel={rel}
+      content={content}
+      error={error}
+      actions={<FileHeaderActions path={livePath} />}
+    />
   );
 }
 

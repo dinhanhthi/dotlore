@@ -24,6 +24,7 @@ import { FileViewer } from "@/components/main/FileViewer";
 import { NoticeToasts } from "@/components/notices/NoticeToasts";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { ProviderSetup } from "@/components/setup/ProviderSetup";
+import { TrashPanel } from "@/components/trash/TrashPanel";
 import { TrackConfirmDialog } from "@/components/tree/EntryPickerDialog";
 import { FileTree } from "@/components/tree/FileTree";
 import { Toaster } from "@/components/ui/toast";
@@ -49,6 +50,7 @@ import {
 } from "@/lib/ipc";
 import { type LeaveTarget, shouldPromptLeave } from "@/lib/leave-guard";
 import {
+  applyCycle,
   applyRootDiscovery,
   emptyRootsState,
   emptyTrackedStats,
@@ -116,6 +118,7 @@ function MainPanel() {
   if (view === "starred") return <AllProjects starredOnly />;
   if (view === "conflicts") return <AllProjects conflictsOnly />;
   if (view === "errors") return <ErrorsPanel />;
+  if (view === "trash") return <TrashPanel />;
   if (!selectedSlug || !selectedRel) return <EmptyState />;
   if (resolvingRel === selectedRel) {
     return (
@@ -273,7 +276,7 @@ export function App() {
     });
 
     const unlistenCycle = listenCycle((cycling) => {
-      setState((current) => ({ ...current, cycling }));
+      setState((current) => applyCycle(current, cycling));
       // A cycle can untrack, add or resize files; the footer and cards show these totals.
       if (!cycling) void refreshTrackedCounts();
     });
@@ -415,6 +418,16 @@ export function App() {
     );
   }, [guardLeave]);
 
+  const showTrash = useCallback(() => {
+    guardLeave(() =>
+      setState((current) => ({
+        ...current,
+        view: "trash",
+        resolvingRel: null,
+      })),
+    );
+  }, [guardLeave]);
+
   const toggleStar = useCallback((slug: string) => {
     const starredSlugs = toggleStarred(slug);
     setState((current) => ({ ...current, starredSlugs }));
@@ -511,6 +524,7 @@ export function App() {
       showStarred,
       showConflicts,
       showErrors,
+      showTrash,
       toggleStar,
       applyProvider,
       refreshRoots,
@@ -534,6 +548,7 @@ export function App() {
       showStarred,
       showConflicts,
       showErrors,
+      showTrash,
       toggleStar,
       applyProvider,
       refreshRoots,

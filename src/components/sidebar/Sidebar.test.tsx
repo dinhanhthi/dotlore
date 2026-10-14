@@ -101,6 +101,7 @@ function renderSidebar(overrides: Partial<RootsContextValue> = {}) {
     showStarred: () => {},
     showConflicts: () => {},
     showErrors: () => {},
+    showTrash: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots,
@@ -145,6 +146,25 @@ describe("Sidebar Errors row", () => {
     expect(html).toContain(">Errors<");
     expect(html).toMatch(/>Errors<[\s\S]*?>2</);
     expect(html.indexOf(">Starred<")).toBeLessThan(html.indexOf(">Errors<"));
+  });
+});
+
+describe("Sidebar Trash row", () => {
+  /** Class list of the row that holds `label`. */
+  function rowClass(html: string, label: string): string | undefined {
+    const end = html.indexOf(`>${label}</span>`);
+    if (end < 0) return undefined;
+    const before = html.slice(0, end);
+    return before.slice(before.lastIndexOf("<div")).match(/class="([^"]*)"/)?.[1];
+  }
+
+  it("Sidebar shows a Trash item that is selected in the trash view", () => {
+    const trash = rowClass(renderSidebar({ view: "trash" }).html, "Trash");
+    expect(trash).toBeDefined();
+    expect(trash?.split(" ")).toContain("bg-sidebar-accent");
+    const other = rowClass(renderSidebar({ view: "all" }).html, "Trash");
+    expect(other).toBeDefined();
+    expect(other?.split(" ")).not.toContain("bg-sidebar-accent");
   });
 });
 

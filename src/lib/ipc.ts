@@ -13,10 +13,13 @@ import type {
   PickerRow,
   ResolutionDto,
   ResolveResultDto,
+  RestoreChoice,
+  RestoreResult,
   RootRow,
   StatusPayload,
   TrackedFile,
   TrackResultDto,
+  TrashProject,
   UploadState,
 } from "./types";
 
@@ -274,6 +277,60 @@ export function appHome(): Promise<string> {
 
 export function openAppHome(): Promise<void> {
   return invoke("open_app_home");
+}
+
+/** Open the local trash: every file sync deleted or overwrote, by day. */
+export function openTrash(): Promise<void> {
+  return invoke("open_trash");
+}
+
+export function listTrash(): Promise<TrashProject[]> {
+  return invoke("list_trash");
+}
+
+export function readTrashFile(
+  slug: string,
+  day: string,
+  pass: string,
+  rel: string,
+): Promise<FileContent> {
+  return invoke("read_trash_file", { slug, day, pass, rel });
+}
+
+/** Restore one file, or the whole pass when `rel` is null. */
+export function restoreTrash(
+  slug: string,
+  day: string,
+  pass: string,
+  rel: string | null,
+  choice: RestoreChoice,
+): Promise<RestoreResult | typeof BLOCKED> {
+  return runTask("Restoring…", () =>
+    invoke<RestoreResult>("restore_trash", { slug, day, pass, rel, choice }),
+  );
+}
+
+/** Delete one trash copy, or the whole pass when `rel` is null. */
+export function deleteTrash(
+  slug: string,
+  day: string,
+  pass: string,
+  rel: string | null,
+): Promise<void | typeof BLOCKED> {
+  return runTask("Deleting…", () =>
+    invoke<void>("delete_trash", { slug, day, pass, rel }),
+  );
+}
+
+export function emptyTrash(): Promise<void | typeof BLOCKED> {
+  return runTask("Emptying trash…", () => invoke<void>("empty_trash"));
+}
+
+/** Delete every dated trash pass before `before` (`YYYY-MM-DD`); resolves to a count. */
+export function deleteTrashOlderThan(before: string): Promise<number | typeof BLOCKED> {
+  return runTask("Deleting…", () =>
+    invoke<number>("delete_trash_older_than", { before }),
+  );
 }
 
 export function gitMissing(): Promise<boolean> {
@@ -613,6 +670,15 @@ export function maxSeedFolderMb(): Promise<number> {
 
 export function setMaxSeedFolderMb(mb: number): Promise<void> {
   return run(() => invoke("set_max_seed_folder_mb", { mb }));
+}
+
+export function trashMaxMb(): Promise<number> {
+  return invoke("trash_max_mb");
+}
+
+/** Rejected below 100 MB by the backend. */
+export function setTrashMaxMb(mb: number): Promise<void> {
+  return run(() => invoke("set_trash_max_mb", { mb }));
 }
 
 export function icloudDir(): Promise<string> {

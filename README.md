@@ -38,7 +38,17 @@ Each project gets a private staging git repo under `~/Library/Application Suppor
 
 Other devices fetch and merge those bundles with the system `git`. On overlapping edits the newer commit wins everywhere, and the other version is saved as `<stem>.conflict-<device>-<blob>.<ext>`. Nothing is lost and all devices converge.
 
-Each folder's include-list and ignore list travel inside its bundles. Settings (seed patterns, ignore defaults, sensitive patterns, size limits) are published as small write-once snapshots, so a new Mac picks them up without re-entering them:
+Before a sync deletes or overwrites a file in one of your folders, Dotlore copies the old version to a local trash on this Mac. The trash is never synced.
+
+Open "Trash" in the sidebar to browse it by project and sync time, preview a file, and compare it with the project: "Not in project", "Differs from project", or "Same as project". Restore a file, a folder, or a whole sync back into its project. If the project already has a different file there, choose Replace (the current file goes to the trash first) or Keep both (writes `<name>.restored.<ext>` and adds it to the project when the include-list does not already cover it, unless it or the file it copies looks sensitive, such as `auth.json`, or you untracked that path before; such a copy stays on this Mac until you track it). Restored files sync to your other Macs like any edit. The trash is capped at 500 MB by default (Settings → Sync → "Trash size limit", minimum 100 MB, synced to your other Macs). When it grows past the cap, Dotlore removes the oldest syncs first, across all projects, and always keeps the newest. The Trash page shows "Uses X of Y MB", and its "Clean up" menu deletes copies older than 1 month, 3 months, 6 months or 1 year, or everything; each choice asks for confirmation. The age choices never delete copies with no date; "Everything" and the size limit do (the size limit removes them first). Projects removed from Dotlore can be previewed, revealed in Finder, and deleted, but not restored.
+
+```
+~/Library/Application Support/dotlore/trash/<slug>/<YYYY-MM-DD>/<HHMMSS>[-N]/<path>
+```
+
+A `-N` folder holds extra copies made in the same second. Settings → General → "Deleted & replaced files" still opens the trash folder in Finder.
+
+Each folder's include-list and ignore list travel inside its bundles. Settings (seed patterns, ignore defaults, sensitive patterns, size limits, trash size limit) are published as small write-once snapshots, so a new Mac picks them up without re-entering them:
 
 ```
 <cloud>/dotlore/_settings/<device-id>/000001.json

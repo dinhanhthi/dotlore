@@ -3,9 +3,9 @@
 //! Synced keys: `patterns.<catalog>` for every builtin catalog id
 //! (`patterns.projects` is `Config::default_patterns`, every other id is
 //! `Config::agent_patterns[id]`), `default_ignore`, `sensitive_patterns`,
-//! `max_file_mb` and `max_seed_folder_mb`. Device fields stay local. A
-//! [`Snapshot`] maps each key to a [`Field`]: a generation plus the raw config
-//! value as JSON, where `null` means the builtin.
+//! `max_file_mb`, `max_seed_folder_mb` and `trash_max_mb`. Device fields stay
+//! local. A [`Snapshot`] maps each key to a [`Field`]: a generation plus the
+//! raw config value as JSON, where `null` means the builtin.
 //!
 //! [`apply`] merges per key: the higher gen wins; an equal gen is broken by the
 //! greater canonical value bytes, `null` lowest, so every device converges
@@ -17,6 +17,13 @@
 //! Snapshots come from other devices through the cloud folder and are
 //! untrusted: size-capped before parsing, unknown keys dropped, and every
 //! value validated the way the engine setters validate before it is stored.
+//! The trash cap `trash_max_mb` has a floor of [`crate::trash::MIN_MAX_MB`]
+//! (100 MB): a lower value is dropped, so a peer cannot push a tiny cap.
+//!
+//! An older app does not know `trash_max_mb`: it drops the key on apply and
+//! never publishes it, but drops the field from its own config.json while
+//! keeping its gen; after an upgrade that device publishes `{gen, null}`,
+//! which loses to a peer's equal-gen value, so it imports the value back.
 //!
 //! Trust boundary: the merge assumes every writer of the cloud folder is one
 //! of the user's own devices, as bundles already do. A writer that is not can
@@ -78,6 +85,7 @@ enum Slot<'a> {
     Sensitive,
     MaxFile,
     MaxSeedFolder,
+    TrashMax,
 }
 
 /// Catalog ids in dropdown order, as `engine::catalog_ids` lists them.
@@ -98,6 +106,7 @@ pub fn keys() -> Vec<String> {
                 "sensitive_patterns",
                 "max_file_mb",
                 "max_seed_folder_mb",
+                "trash_max_mb",
             ]
             .map(str::to_string),
         )
@@ -113,6 +122,7 @@ fn slot(key: &str) -> Option<Slot<'_>> {
         "sensitive_patterns" => Some(Slot::Sensitive),
         "max_file_mb" => Some(Slot::MaxFile),
         "max_seed_folder_mb" => Some(Slot::MaxSeedFolder),
+        "trash_max_mb" => Some(Slot::TrashMax),
         _ => None,
     }
 }
@@ -126,6 +136,7 @@ fn raw_value(cfg: &Config, slot: Slot) -> Value {
         Slot::Sensitive => serde_json::to_value(&cfg.sensitive_patterns),
         Slot::MaxFile => serde_json::to_value(cfg.max_file_mb),
         Slot::MaxSeedFolder => serde_json::to_value(cfg.max_seed_folder_mb),
+        Slot::TrashMax => serde_json::to_value(cfg.trash_max_mb),
     };
     v.expect("config fields always serialize")
 }
@@ -276,6 +287,10 @@ fn normalized(slot: Slot, value: &Value) -> Option<Value> {
             let mb: u64 = serde_json::from_value(value.clone()).ok()?;
             serde_json::to_value((mb >= 1).then_some(mb)?)
         }
+        Slot::TrashMax => {
+            let mb: u64 = serde_json::from_value(value.clone()).ok()?;
+            serde_json::to_value((mb >= crate::trash::MIN_MAX_MB).then_some(mb)?)
+        }
     };
     v.ok()
 }
@@ -301,6 +316,7 @@ fn store(cfg: &mut Config, slot: Slot, value: Value) {
         Slot::MaxSeedFolder => {
             cfg.max_seed_folder_mb = serde_json::from_value(value).ok().flatten()
         }
+        Slot::TrashMax => cfg.trash_max_mb = serde_json::from_value(value).ok().flatten(),
     }
 }
 
@@ -498,6 +514,38 @@ mod tests {
         let ok = snap(&[("max_seed_folder_mb", field(3, json!(1)))]);
         assert!(apply(&mut cfg, &ok));
         assert_eq!(cfg.max_seed_folder_mb, Some(1));
+    }
+
+    #[test]
+    fn a_trash_cap_below_the_floor_is_rejected() {
+        let mut cfg = Config::default();
+        for bad in [json!(0), json!(99), json!(150.5)] {
+            let remote = snap(&[("trash_max_mb", field(3, bad))]);
+            assert!(!apply(&mut cfg, &remote));
+        }
+        assert_eq!(cfg.trash_max_mb, None);
+        assert!(cfg.settings_gens.is_empty());
+        let floor = snap(&[("trash_max_mb", field(3, json!(100)))]);
+        assert!(apply(&mut cfg, &floor));
+        assert_eq!(cfg.trash_max_mb, Some(100));
+        let higher = snap(&[("trash_max_mb", field(4, json!(500)))]);
+        assert!(apply(&mut cfg, &higher));
+        assert_eq!(cfg.trash_max_mb, Some(500));
+    }
+
+    #[test]
+    fn trash_max_mb_is_synced_and_published() {
+        let mut cfg = Config::default();
+        let remote = snap(&[("trash_max_mb", field(2, json!(800)))]);
+        assert!(apply(&mut cfg, &remote));
+        assert_eq!(cfg.trash_max_mb, Some(800));
+        assert_eq!(cfg.settings_gens["trash_max_mb"], 2);
+        assert_eq!(local(&cfg).fields["trash_max_mb"], field(2, json!(800)));
+
+        let before = gen_of(&cfg, "trash_max_mb");
+        cfg.trash_max_mb = None;
+        bump(&mut cfg, "trash_max_mb", before);
+        assert_eq!(local(&cfg).fields["trash_max_mb"], field(3, Value::Null));
     }
 
     #[test]

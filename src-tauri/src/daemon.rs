@@ -144,6 +144,15 @@ pub fn run(
     let mut filtering = filters;
     on_status(status);
     on_cycle(false);
+    // A trash left over the cap by an older build or a lowered cap shrinks
+    // once at startup; later prunes follow trash writes and cap changes.
+    if let Err(e) = engine
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .prune_trash()
+    {
+        eprintln!("dotlore: trash prune: {e:#}");
+    }
     let mut next_poll = Instant::now() + POLL;
 
     loop {
@@ -685,6 +694,36 @@ mod tests {
 
         cycle(&engine, &mut |_| {}).0.unwrap();
         assert_eq!(Config::load(home.path()).unwrap().max_file_mb, Some(7));
+    }
+
+    #[test]
+    fn run_prunes_the_trash_at_startup() {
+        let home = TempDir::new().unwrap();
+        let provider = TempDir::new().unwrap();
+        let mut cfg = Config::load(home.path()).unwrap();
+        cfg.trash_max_mb = Some(100);
+        cfg.save(home.path()).unwrap();
+        let engine = engine_at(home.path(), provider.path());
+        let days = ["2026-01-01", "2026-01-02", "2026-01-03"];
+        for day in days {
+            let dir = home.path().join("trash/a").join(day).join("120000");
+            fs::create_dir_all(&dir).unwrap();
+            // Sparse: 3 x 60 MiB is over the 100 MB cap without the disk cost.
+            fs::File::create(dir.join("big"))
+                .unwrap()
+                .set_len(60 * 1024 * 1024)
+                .unwrap();
+        }
+
+        let (tx, rx) = mpsc::channel();
+        tx.send(Event::Control(Cmd::Quit)).unwrap();
+        run(engine, tx, rx, |_| {}, |_| {}, |_| {});
+
+        let left: Vec<bool> = days
+            .iter()
+            .map(|day| home.path().join("trash/a").join(day).exists())
+            .collect();
+        assert_eq!(left, [false, false, true]);
     }
 
     #[test]

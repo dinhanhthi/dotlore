@@ -290,6 +290,7 @@ export function FileTree() {
     seeding,
     locked,
     resolvingRel,
+    cycleGen,
   } = useRoots();
   const syncing = useSyncing();
   const taskLabel = useTaskLabel();
@@ -401,7 +402,8 @@ export function FileTree() {
       const next = await loadTree();
       commitTree(started, next);
     })();
-  }, [loadTree, commitTree, statusKey, selectedSlug, root?.linked, seedingItem]);
+    // `cycleGen`: a cycle can change files while the status stays Synced.
+  }, [loadTree, commitTree, statusKey, cycleGen, selectedSlug, root?.linked, seedingItem]);
 
   const currentTree = { slug: selectedSlug, linked: !!root?.linked };
   const treeReady =

@@ -18,9 +18,11 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cloud::{self, Cloud, Manifest};
 use crate::config::{self, Config, HomeLock, Root};
@@ -29,9 +31,10 @@ use crate::git::{self, Git};
 use crate::mirror::{self, FileState, Node};
 use crate::project::{self, Limits, SensitiveMatcher, Sensitivity, State};
 use crate::repo::{
-    provider_key, remote_ref, unique_id, FetchMode, Repo, ResumeOutcome, Transaction,
+    self, provider_key, remote_ref, unique_id, FetchMode, Repo, ResumeOutcome, Transaction,
 };
 use crate::settings;
+use crate::trash;
 
 /// Where one tracked root stands after a cycle.
 ///
@@ -272,6 +275,51 @@ pub enum ResolveOutcome {
     Pending,
 }
 
+/// How [`Engine::restore_from_trash`] treats a live file that differs.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum RestoreChoice {
+    /// Restore only when no live file differs; otherwise report them.
+    Ask,
+    /// Keep each differing live file in the trash, then overwrite it.
+    Replace,
+    /// Leave each differing live file alone and write a `.restored` sibling.
+    KeepBoth,
+}
+
+/// Outcome of [`Engine::restore_from_trash`].
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RestoreResult {
+    /// `Ask` only: these live files differ, and nothing was written.
+    Existing { rels: Vec<String> },
+    Done {
+        restored: Vec<RestoredFile>,
+        /// The live file already held these bytes.
+        unchanged: Vec<String>,
+        /// Protected names, symlinks on the path, targets that are not files.
+        skipped: Vec<String>,
+        /// `KeepBoth` copies outside the include-list, now tracked entries.
+        /// Empty when adding them failed; see `track_error`.
+        tracked: Vec<String>,
+        /// `KeepBoth` copies outside the include-list left untracked because
+        /// the copy or its original matches a sensitive pattern, or the user
+        /// untracked that path before; the user tracks them explicitly.
+        kept_local: Vec<String>,
+        /// Adding the copies to the include-list failed after the files were
+        /// written; nothing was added.
+        track_error: Option<String>,
+    },
+}
+
+/// One restored file: its rel in the trash pass, and the live rel written
+/// (a `.restored` sibling for `KeepBoth`).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct RestoredFile {
+    pub from: String,
+    pub to: String,
+}
+
 /// One include-list catalog and the lines that apply the next time a folder is added.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PatternCatalog {
@@ -301,6 +349,9 @@ pub struct Engine {
     /// In memory only, so a second add cannot archive the staging repo while
     /// pattern seeding runs without the home lock.
     pending_adds: Vec<(String, PathBuf)>,
+    /// Set when a cycle's apply wrote trash copies; the next `settle` takes
+    /// it and prunes the trash to its cap under the lock it already holds.
+    trash_written: AtomicBool,
 }
 
 impl Engine {
@@ -317,6 +368,7 @@ impl Engine {
             cloud: cloud_at(&provider),
             cfg,
             pending_adds: Vec::new(),
+            trash_written: AtomicBool::new(false),
         })
     }
 
@@ -585,6 +637,7 @@ impl Engine {
     }
 
     fn sync_settings_locked(&mut self, g: &HomeLock, cloud: &Cloud) -> Result<bool> {
+        let trash_cap = self.trash_max_mb();
         let mut changed = false;
         for dev in cloud.settings_devices() {
             if dev == self.cfg.device_id {
@@ -603,6 +656,9 @@ impl Engine {
         }
         if changed {
             self.save(g)?;
+        }
+        if self.trash_max_mb() != trash_cap {
+            self.prune_trash_locked(g);
         }
         self.republish_settings(cloud)?;
         Ok(changed)
@@ -1214,6 +1270,41 @@ impl Engine {
         self.save_setting(&g, key, before)
     }
 
+    /// Effective trash size cap in MiB (`None` in config → 500).
+    pub fn trash_max_mb(&self) -> u64 {
+        self.cfg.trash_max_mb.unwrap_or(trash::DEFAULT_MAX_MB)
+    }
+
+    /// Store the trash cap and prune the trash down to it.
+    pub fn set_trash_max_mb(&mut self, mb: u64) -> Result<()> {
+        // Peers drop a cap under the floor on import, so it must never be stored.
+        if mb < trash::MIN_MAX_MB {
+            bail!(
+                "the trash size limit must be at least {} MB",
+                trash::MIN_MAX_MB
+            );
+        }
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let key = "trash_max_mb";
+        let before = settings::gen_of(&self.cfg, key);
+        if self.cfg.trash_max_mb == Some(mb) {
+            return Ok(());
+        }
+        self.cfg.trash_max_mb = Some(mb);
+        self.save_setting(&g, key, before)?;
+        self.prune_trash_locked(&g);
+        Ok(())
+    }
+
+    /// Prune the trash to its cap; the daemon runs this at startup.
+    pub fn prune_trash(&mut self) -> Result<()> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        self.prune_trash_locked(&g);
+        Ok(())
+    }
+
     pub fn device_name(&self) -> String {
         self.cfg.device_name.clone()
     }
@@ -1311,7 +1402,12 @@ impl Engine {
 
         // Finish whatever the last cycle left owing before reading versions.
         if let Some(mut tx) = repo.pending_tx(conflict::resolve_index)? {
-            match tx.resume(&repo, &self.home_dir)? {
+            let outcome = tx.resume(&repo, &self.home_dir);
+            // Read before `?`: `resume` runs an apply pass of its own.
+            if tx.wrote_trash() {
+                self.trash_written.store(true, Ordering::Relaxed);
+            }
+            match outcome? {
                 ResumeOutcome::Finished => {
                     repo.publish(&cloud)?;
                 }
@@ -1348,7 +1444,13 @@ impl Engine {
         let mut tx = repo.begin_tx(&key, "HEAD", conflict::resolve_index)?;
         conflict::resolve(&tx, &snapshot.live, selected_siblings, content)?;
         tx.set_target(&repo)?;
-        if !tx.apply(&repo, &self.home_dir)?.is_empty() {
+        let left = tx.apply(&repo, &self.home_dir);
+        // Read before `?`, so a pending or failed apply still counts (the
+        // flag is set even when a pass fails part-way).
+        if tx.wrote_trash() {
+            self.trash_written.store(true, Ordering::Relaxed);
+        }
+        if !left?.is_empty() {
             return Ok(ResolveOutcome::Pending);
         }
         tx.finalize(&repo)?;
@@ -1356,6 +1458,170 @@ impl Engine {
         let status = root_status(&repo)?;
         self.settle(&g, slug, &status)?;
         Ok(ResolveOutcome::Applied(status))
+    }
+
+    /// Restore a trash pass, or the file or folder at `rel` inside it, into
+    /// the live root of `slug` on the user's request. Restored copies stay in
+    /// the trash; the next cycle publishes what was written. A `KeepBoth`
+    /// copy the include-list does not cover becomes a tracked entry, and a
+    /// cycle runs at once. If that step fails, the result is still `Done`,
+    /// with `tracked` empty and the error in `track_error`.
+    ///
+    /// `Ask` writes nothing at all when any live file differs, and returns
+    /// those rels so the user can pick `Replace` or `KeepBoth` for the batch.
+    /// A removed project, an initializing root and a missing root folder are
+    /// refused. Every write goes through [`mirror::restore_to_root`], and its
+    /// first error aborts: a failed trash copy of a displaced file is never
+    /// swallowed.
+    pub fn restore_from_trash(
+        &mut self,
+        slug: &str,
+        day: &str,
+        pass: &str,
+        rel: Option<&str>,
+        choice: RestoreChoice,
+    ) -> Result<RestoreResult> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let Some(root) = self.cfg.roots.iter().find(|r| r.slug == slug).cloned() else {
+            bail!("{slug} was removed from Dotlore; its trash can no longer be restored");
+        };
+        if root.initializing {
+            bail!("cannot restore into {slug} yet; wait until this project finishes linking");
+        }
+        if !fs::symlink_metadata(&root.path).is_ok_and(|md| md.is_dir()) {
+            bail!("the project folder {} is missing", root.path.display());
+        }
+        let pass_dir = trash::pass_dir(&self.home, slug, day, pass)?;
+        if let Some(rel) = rel {
+            trash::item_path(&self.home, slug, day, pass, rel)?;
+        }
+        let rels = trash::files_under(&pass_dir, rel)?;
+        if rels.is_empty() {
+            bail!("nothing to restore in this trash item");
+        }
+
+        if choice == RestoreChoice::Ask {
+            let mut existing = Vec::new();
+            for rel in &rels {
+                let preview =
+                    mirror::restore_preview(&root.path, Path::new(rel), &pass_dir.join(rel))?;
+                if preview == mirror::Restored::Exists {
+                    existing.push(rel.clone());
+                }
+            }
+            if !existing.is_empty() {
+                return Ok(RestoreResult::Existing { rels: existing });
+            }
+        }
+        let on_existing = match choice {
+            RestoreChoice::Ask => mirror::OnExisting::Ask,
+            RestoreChoice::Replace => mirror::OnExisting::Replace,
+            RestoreChoice::KeepBoth => mirror::OnExisting::KeepBoth,
+        };
+        let displaced = repo::trash_dir(&self.home, slug, SystemTime::now());
+        let (mut restored, mut unchanged, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+        for rel in rels {
+            let src = pass_dir.join(&rel);
+            match mirror::restore_to_root(
+                &root.path,
+                Path::new(&rel),
+                &src,
+                &displaced,
+                on_existing,
+            )? {
+                mirror::Restored::Written(to) => restored.push(RestoredFile {
+                    to: to.to_string_lossy().into_owned(),
+                    from: rel,
+                }),
+                mirror::Restored::Same => unchanged.push(rel),
+                // `Exists` only if a live file changed after the `Ask` preview.
+                mirror::Restored::Skipped | mirror::Restored::Exists => skipped.push(rel),
+            }
+        }
+        // The files are written: a tracking failure is reported, never
+        // returned, or the user would retry and get a second `.restored` copy.
+        let (tracked, kept_local, track_error) =
+            match self.track_restored_copies(&g, &root, &restored) {
+                Ok((tracked, kept_local)) => (tracked, kept_local, None),
+                Err(e) => (Vec::new(), Vec::new(), Some(format!("{e:#}"))),
+            };
+        Ok(RestoreResult::Done {
+            restored,
+            unchanged,
+            skipped,
+            tracked,
+            kept_local,
+            track_error,
+        })
+    }
+
+    /// Add each `KeepBoth` copy the include-list does not cover as a tracked
+    /// file entry, then run a cycle so it syncs. Runs under the caller's
+    /// lock; returns the rels it added and the copies it left untracked
+    /// (sensitive, or under a `Removed` record), so a secret is never
+    /// published without the confirmation [`Engine::track_entry`] asks for.
+    ///
+    /// Every fallible step runs before or at `project::write`: the cycle
+    /// reports through its status, and `settle` can only fail saving the
+    /// config for an initializing root, which `restore_from_trash` refuses.
+    /// So an error means nothing was added.
+    fn track_restored_copies(
+        &mut self,
+        g: &HomeLock,
+        root: &Root,
+        restored: &[RestoredFile],
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        if restored.iter().all(|r| r.to == r.from) {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let repo = self.repo_for(root)?;
+        let mut file = repo.project_file()?;
+        let entries = file.tracked();
+        let matcher = self.sensitive_matcher();
+        let secret = |rel: &str| matcher.classify(Path::new(rel)) == Some(Sensitivity::Secret);
+        // A copy of a secret is still one: the `.restored` rename stops
+        // exact-name patterns such as `auth.json` from matching the copy.
+        // An explicit untrack of the copy's path or a parent folder stands.
+        let untracked = |rel: &str| {
+            Path::new(rel).ancestors().any(|p| {
+                let key = p.to_string_lossy();
+                [key.to_string(), format!("{key}/")].iter().any(|k| {
+                    file.entries
+                        .get(k)
+                        .is_some_and(|rec| rec.state == State::Removed)
+                })
+            })
+        };
+        let (kept, added): (Vec<&RestoredFile>, Vec<&RestoredFile>) = restored
+            .iter()
+            .filter(|r| r.to != r.from && !entries.contains_rel(Path::new(&r.to)))
+            .partition(|r| secret(&r.from) || secret(&r.to) || untracked(&r.to));
+        let kept_local: Vec<String> = kept.into_iter().map(|r| r.to.clone()).collect();
+        let tracked: Vec<String> = added.into_iter().map(|r| r.to.clone()).collect();
+        if tracked.is_empty() {
+            return Ok((tracked, kept_local));
+        }
+        let gen = file
+            .entries
+            .values()
+            .map(|e| e.gen)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        for rel in &tracked {
+            file.entries.insert(
+                rel.clone(),
+                project::EntryRecord {
+                    gen,
+                    state: State::Tracked,
+                },
+            );
+        }
+        project::write(&repo.staging, &file)?;
+        let status = self.run_cycle(&self.cloud(), root, FetchMode::Normal);
+        self.settle(g, &root.slug, &status)?;
+        Ok((tracked, kept_local))
     }
 
     // --- locked helpers ---------------------------------------------------
@@ -1542,19 +1808,26 @@ impl Engine {
 
         let key = provider_key(cloud);
         let pending = match repo.pending_tx(conflict::resolve_index)? {
-            Some(mut tx) => match tx.resume(&repo, &self.home_dir)? {
-                // Nothing was applied and `main` never moved: redo the merges
-                // on this transaction. No `commit_local` — the journal's
-                // baseline is the one the live root still matches, and local
-                // edits are picked up by the apply's reconciliation or by the
-                // next cycle.
-                ResumeOutcome::Restart => Some(tx),
-                ResumeOutcome::Finished => {
-                    repo.publish(cloud)?;
-                    None
+            Some(mut tx) => {
+                let outcome = tx.resume(&repo, &self.home_dir);
+                // Read before `?`: `resume` runs an apply pass of its own.
+                if tx.wrote_trash() {
+                    self.trash_written.store(true, Ordering::Relaxed);
                 }
-                ResumeOutcome::Pending(_) => return Ok(stalled(&root.slug, &tx)),
-            },
+                match outcome? {
+                    // Nothing was applied and `main` never moved: redo the
+                    // merges on this transaction. No `commit_local` — the
+                    // journal's baseline is the one the live root still
+                    // matches, and local edits are picked up by the apply's
+                    // reconciliation or by the next cycle.
+                    ResumeOutcome::Restart => Some(tx),
+                    ResumeOutcome::Finished => {
+                        repo.publish(cloud)?;
+                        None
+                    }
+                    ResumeOutcome::Pending(_) => return Ok(stalled(&root.slug, &tx)),
+                }
+            }
             None => None,
         };
 
@@ -1596,7 +1869,13 @@ impl Engine {
             repo.merge_remote(&tx, d)?;
         }
         tx.set_target(&repo)?;
-        if !tx.apply(&repo, &self.home_dir)?.is_empty() {
+        let left = tx.apply(&repo, &self.home_dir);
+        // Read before `?`, so a pending or failed apply still counts (the
+        // flag is set even when a pass fails part-way).
+        if tx.wrote_trash() {
+            self.trash_written.store(true, Ordering::Relaxed);
+        }
+        if !left?.is_empty() {
             // Journal intact; nothing is published until the root agrees.
             return Ok(stalled(&root.slug, &tx));
         }
@@ -1641,6 +1920,15 @@ impl Engine {
         Ok(())
     }
 
+    /// Remove the oldest trash passes until the trash fits its cap. A failure
+    /// is logged, never returned: it must not fail a cycle or a setter.
+    fn prune_trash_locked(&self, g: &HomeLock) {
+        let cap = self.trash_max_mb().saturating_mul(1024 * 1024);
+        if let Err(e) = trash::prune_to_cap(g, &self.home, cap) {
+            eprintln!("dotlore: trash prune: {e:#}");
+        }
+    }
+
     fn root_cfg(&self, slug: &str) -> Result<Root> {
         self.cfg
             .roots
@@ -1680,7 +1968,12 @@ impl Engine {
 
     /// Clear `initializing` once — and only once — a cycle has actually
     /// applied and published.
+    ///
+    /// First, whatever the status, prune the trash if a cycle wrote to it.
     fn settle(&mut self, g: &HomeLock, slug: &str, status: &RootStatus) -> Result<()> {
+        if self.trash_written.swap(false, Ordering::Relaxed) {
+            self.prune_trash_locked(g);
+        }
         if !matches!(status, RootStatus::Synced | RootStatus::Conflicts(_)) {
             return Ok(());
         }
@@ -1846,6 +2139,7 @@ pub fn configure_provider(
             cloud: cloud_at(&src),
             cfg,
             pending_adds: Vec::new(),
+            trash_written: AtomicBool::new(false),
         };
         let src_cloud = e.cloud();
         for slug in e
@@ -1875,6 +2169,7 @@ pub fn configure_provider(
         cloud: cloud_at(&dest),
         cfg,
         pending_adds: Vec::new(),
+        trash_written: AtomicBool::new(false),
     };
     let dest_cloud = e.cloud();
     // The provider switch is already committed; settings are best-effort.
@@ -4780,6 +5075,8 @@ mod tests {
         check(&a, "max_file_mb");
         a.engine.set_max_seed_folder_mb(4).unwrap();
         check(&a, "max_seed_folder_mb");
+        a.engine.set_trash_max_mb(300).unwrap();
+        check(&a, "trash_max_mb");
     }
 
     #[test]
@@ -4866,9 +5163,12 @@ mod tests {
         let mut a = device(provider.path(), 'a');
         assert!(a.engine.set_max_file_mb(0).is_err());
         assert!(a.engine.set_max_seed_folder_mb(0).is_err());
+        assert!(a.engine.set_trash_max_mb(0).is_err());
+        assert!(a.engine.set_trash_max_mb(trash::MIN_MAX_MB - 1).is_err());
         let cfg = cfg_of(&a);
         assert_eq!(cfg.max_file_mb, None);
         assert_eq!(cfg.max_seed_folder_mb, None);
+        assert_eq!(cfg.trash_max_mb, None);
         assert!(cfg.settings_gens.is_empty());
     }
 
@@ -4904,5 +5204,760 @@ mod tests {
         let cfg = cfg_of(&a);
         assert_eq!(cfg.max_file_mb, Some(7));
         assert!(cfg.settings_gens["max_file_mb"] > 0);
+    }
+
+    // --- trash size cap -----------------------------------------------------
+
+    /// A sparse `mib` MiB file in trash pass `<day>/<pass>` of proj-claude:
+    /// its length counts toward the cap without using the disk.
+    fn big_pass(dev: &Dev, day: &str, pass: &str, mib: u64) -> PathBuf {
+        let dir = dev
+            .home
+            .path()
+            .join("trash/proj-claude")
+            .join(day)
+            .join(pass);
+        fs::create_dir_all(&dir).unwrap();
+        File::create(dir.join("big.bin"))
+            .unwrap()
+            .set_len(mib * 1024 * 1024)
+            .unwrap();
+        dir
+    }
+
+    /// Three 60 MiB passes, oldest first: 180 MiB, under the 500 MB default.
+    fn three_passes(dev: &Dev) -> [PathBuf; 3] {
+        [
+            big_pass(dev, "2026-01-01", "100000", 60),
+            big_pass(dev, "2026-01-02", "100000", 60),
+            big_pass(dev, "2026-01-03", "100000", 60),
+        ]
+    }
+
+    /// Set the cap in config.json only, bypassing the setter's own prune.
+    fn cap_in_config(dev: &mut Dev, mb: u64) {
+        let mut cfg = cfg_of(dev);
+        cfg.trash_max_mb = Some(mb);
+        cfg.save(dev.home.path()).unwrap();
+    }
+
+    #[test]
+    fn lowering_the_trash_cap_prunes_the_oldest_passes() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let [p1, p2, p3] = three_passes(&a);
+        assert_eq!(a.engine.trash_max_mb(), trash::DEFAULT_MAX_MB);
+
+        a.engine.set_trash_max_mb(100).unwrap();
+        assert_eq!(a.engine.trash_max_mb(), 100);
+        // 2 x 60 MiB is still over 100 MiB, so only the newest pass stays.
+        assert!(!p1.exists());
+        assert!(!p2.exists());
+        assert!(p3.join("big.bin").is_file());
+    }
+
+    #[test]
+    fn an_imported_trash_cap_prunes_the_local_trash() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let mut b = device(provider.path(), 'b');
+        a.engine.set_trash_max_mb(100).unwrap();
+        let [p1, p2, p3] = three_passes(&b);
+
+        assert!(b.engine.sync_settings().unwrap());
+        assert_eq!(cfg_of(&b).trash_max_mb, Some(100));
+        assert!(!p1.exists());
+        assert!(!p2.exists());
+        assert!(p3.join("big.bin").is_file());
+    }
+
+    /// A on CLAUDE.md "one", B linked and in sync, both old 60 MiB passes
+    /// planted in B's trash and B's cap at 100 MB.
+    fn linked_pair_with_old_trash(provider: &Path) -> (Dev, Dev, [PathBuf; 2]) {
+        let mut a = device(provider, 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let mut b = device(provider, 'b');
+        let b_root = b.root.path().to_path_buf();
+        b.engine.link_root("proj-claude", &b_root).unwrap();
+        let old = [
+            big_pass(&b, "2026-01-01", "100000", 60),
+            big_pass(&b, "2026-01-02", "100000", 60),
+        ];
+        cap_in_config(&mut b, 100);
+        (a, b, old)
+    }
+
+    #[test]
+    fn a_cycle_that_writes_trash_prunes_to_the_cap() {
+        let provider = TempDir::new().unwrap();
+        let (mut a, mut b, [p1, p2]) = linked_pair_with_old_trash(provider.path());
+        write(&a, "CLAUDE.md", b"two\n");
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        // The overwrite keeps "one" in a new pass, putting B over the cap.
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(fs::read(b.root.path().join("CLAUDE.md")).unwrap(), b"two\n");
+        let trash = b.home.path().join("trash/proj-claude");
+        // 120 MiB plus the new pass: the oldest goes, then it fits.
+        assert!(!p1.exists());
+        assert!(p2.join("big.bin").is_file());
+        let kept = files_in(&trash);
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept.iter().any(|f| f.ends_with("/CLAUDE.md")), "{kept:?}");
+    }
+
+    #[test]
+    fn a_cycle_without_trash_writes_does_not_prune() {
+        let provider = TempDir::new().unwrap();
+        let (mut a, mut b, [p1, p2]) = linked_pair_with_old_trash(provider.path());
+        // An add-only change: nothing on B is overwritten or deleted.
+        write(&a, "notes.md", b"new\n");
+        a.engine
+            .track_entry("proj-claude", Path::new("notes.md"), None)
+            .unwrap();
+
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(fs::read(b.root.path().join("notes.md")).unwrap(), b"new\n");
+        // Over the cap, but no cycle wrote trash.
+        assert!(p1.join("big.bin").is_file());
+        assert!(p2.join("big.bin").is_file());
+    }
+
+    #[test]
+    fn a_resumed_apply_that_writes_trash_prunes_to_the_cap() {
+        let provider = TempDir::new().unwrap();
+        let (mut a, mut b, [p1, p2]) = linked_pair_with_old_trash(provider.path());
+        write(&a, "CLAUDE.md", b"two\n");
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        // B's CLAUDE.md is a symlink for now: the apply stalls on it.
+        let live = b.root.path().join("CLAUDE.md");
+        let elsewhere = b.home.path().join("elsewhere.md");
+        fs::write(&elsewhere, b"one\n").unwrap();
+        fs::remove_file(&live).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &live).unwrap();
+        let status = b.engine.sync_root("proj-claude").unwrap();
+        assert_ne!(status, RootStatus::Synced);
+        assert!(p1.join("big.bin").is_file(), "nothing was trashed yet");
+        assert!(p2.join("big.bin").is_file());
+
+        // The real file is back: the next cycle resumes and overwrites it.
+        fs::remove_file(&live).unwrap();
+        fs::write(&live, b"one\n").unwrap();
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(fs::read(&live).unwrap(), b"two\n");
+        assert!(!p1.exists());
+        assert!(p2.join("big.bin").is_file());
+        let kept = files_in(&b.home.path().join("trash/proj-claude"));
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept.iter().any(|f| f.ends_with("/CLAUDE.md")), "{kept:?}");
+    }
+
+    // --- restore_from_trash -------------------------------------------------
+
+    const TRASH_PASS: &str = "trash/proj-claude/2026-10-13/120000";
+
+    /// Plant a 0600 trash copy, as `mirror::keep_in_trash` writes them.
+    fn plant(dev: &Dev, rel: &str, body: &[u8]) -> PathBuf {
+        let p = dev.home.path().join(TRASH_PASS).join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, body).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        p
+    }
+
+    fn restore(dev: &mut Dev, rel: Option<&str>, choice: RestoreChoice) -> Result<RestoreResult> {
+        dev.engine
+            .restore_from_trash("proj-claude", "2026-10-13", "120000", rel, choice)
+    }
+
+    /// Every plain file under `dir`, `/`-joined and sorted.
+    fn files_in(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else {
+                    let rel = p.strip_prefix(dir).unwrap();
+                    out.push(rel.to_string_lossy().into_owned());
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn restore_from_trash_restores_a_pass_into_the_live_root() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/same.md", b"same\n");
+        add(&mut a);
+        plant(&a, "docs/gone.md", b"gone\n");
+        plant(&a, "docs/deep/x.md", b"x\n");
+        plant(&a, "docs/same.md", b"same\n");
+        plant(&a, "other.md", b"other\n");
+
+        // A folder inside the pass restores only what is under it.
+        let got = restore(&mut a, Some("docs/deep"), RestoreChoice::Ask).unwrap();
+        assert_eq!(
+            got,
+            RestoreResult::Done {
+                restored: vec![RestoredFile {
+                    from: "docs/deep/x.md".into(),
+                    to: "docs/deep/x.md".into(),
+                }],
+                unchanged: vec![],
+                skipped: vec![],
+                tracked: vec![],
+                kept_local: Vec::new(),
+                track_error: None,
+            }
+        );
+        assert!(!a.root.path().join("docs/gone.md").exists());
+
+        // The whole pass; restored copies stay in the trash.
+        let got = restore(&mut a, None, RestoreChoice::Ask).unwrap();
+        let RestoreResult::Done {
+            restored,
+            unchanged,
+            skipped,
+            tracked,
+            kept_local,
+            track_error,
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert!(kept_local.is_empty());
+        let tos: Vec<&str> = restored.iter().map(|r| r.to.as_str()).collect();
+        assert_eq!(tos, ["docs/gone.md", "other.md"]);
+        assert_eq!(unchanged, ["docs/deep/x.md", "docs/same.md"]);
+        assert!(skipped.is_empty());
+        assert!(tracked.is_empty());
+        assert_eq!(track_error, None);
+        let root = a.root.path();
+        assert_eq!(fs::read(root.join("docs/gone.md")).unwrap(), b"gone\n");
+        assert_eq!(fs::read(root.join("other.md")).unwrap(), b"other\n");
+        assert_eq!(
+            files_in(&a.home.path().join(TRASH_PASS)),
+            ["docs/deep/x.md", "docs/gone.md", "docs/same.md", "other.md"]
+        );
+
+        // An unknown item, or an empty pass, is an error.
+        assert!(restore(&mut a, Some("nope.md"), RestoreChoice::Ask).is_err());
+        assert!(restore(&mut a, Some("../x"), RestoreChoice::Ask).is_err());
+        fs::create_dir_all(a.home.path().join(TRASH_PASS).join("empty")).unwrap();
+        assert!(restore(&mut a, Some("empty"), RestoreChoice::Ask).is_err());
+    }
+
+    #[test]
+    fn restore_from_trash_ask_reports_existing_and_writes_nothing() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/differs.md", b"live\n");
+        add(&mut a);
+        plant(&a, "docs/differs.md", b"old\n");
+        plant(&a, "docs/missing.md", b"missing\n");
+
+        let got = restore(&mut a, None, RestoreChoice::Ask).unwrap();
+
+        assert_eq!(
+            got,
+            RestoreResult::Existing {
+                rels: vec!["docs/differs.md".into()],
+            }
+        );
+        assert!(!a.root.path().join("docs/missing.md").exists());
+        assert_eq!(
+            fs::read(a.root.path().join("docs/differs.md")).unwrap(),
+            b"live\n"
+        );
+        assert_eq!(
+            files_in(&a.home.path().join("trash")),
+            [
+                "proj-claude/2026-10-13/120000/docs/differs.md",
+                "proj-claude/2026-10-13/120000/docs/missing.md",
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_from_trash_replace_keeps_the_displaced_live_file() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"live\n");
+        add(&mut a);
+        plant(&a, "docs/a.md", b"old\n");
+
+        let got = restore(&mut a, Some("docs/a.md"), RestoreChoice::Replace).unwrap();
+
+        assert_eq!(
+            got,
+            RestoreResult::Done {
+                restored: vec![RestoredFile {
+                    from: "docs/a.md".into(),
+                    to: "docs/a.md".into(),
+                }],
+                unchanged: vec![],
+                skipped: vec![],
+                tracked: vec![],
+                kept_local: Vec::new(),
+                track_error: None,
+            }
+        );
+        assert_eq!(fs::read(a.root.path().join("docs/a.md")).unwrap(), b"old\n");
+        // The displaced live file is in a new pass; the source stays too.
+        let trash = a.home.path().join("trash/proj-claude");
+        let kept: Vec<String> = files_in(&trash)
+            .into_iter()
+            .filter(|f| !f.starts_with("2026-10-13/120000/"))
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept[0].ends_with("/docs/a.md"), "{kept:?}");
+        let kept = trash.join(&kept[0]);
+        assert_eq!(fs::read(&kept).unwrap(), b"live\n");
+        assert_eq!(
+            fs::metadata(&kept).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(trash.join("2026-10-13/120000/docs/a.md").is_file());
+
+        // Keep both leaves the live file and writes a sibling.
+        let got = restore(&mut a, Some("docs/a.md"), RestoreChoice::Ask).unwrap();
+        assert!(matches!(got, RestoreResult::Done { ref unchanged, .. } if unchanged.len() == 1));
+        write(&a, "docs/a.md", b"newer\n");
+        let got = restore(&mut a, Some("docs/a.md"), RestoreChoice::KeepBoth).unwrap();
+        let RestoreResult::Done { restored, .. } = got else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(
+            restored,
+            [RestoredFile {
+                from: "docs/a.md".into(),
+                to: "docs/a.restored.md".into(),
+            }]
+        );
+        assert_eq!(
+            fs::read(a.root.path().join("docs/a.md")).unwrap(),
+            b"newer\n"
+        );
+    }
+
+    #[test]
+    fn keep_both_tracks_a_restored_copy_outside_the_include_list() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"live\n");
+        write(&a, "docs/a.md", b"live a\n");
+        add(&mut a);
+        plant(&a, "CLAUDE.md", b"old\n");
+
+        let got = restore(&mut a, Some("CLAUDE.md"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            restored, tracked, ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(
+            restored,
+            [RestoredFile {
+                from: "CLAUDE.md".into(),
+                to: "CLAUDE.restored.md".into(),
+            }]
+        );
+        assert_eq!(tracked, ["CLAUDE.restored.md"]);
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let file = repo.project_file().unwrap();
+        assert_eq!(file.entries["CLAUDE.restored.md"].state, State::Tracked);
+        // The restore ran a cycle, so the copy is already staged.
+        assert_eq!(
+            repo.git
+                .ok(&["show", "HEAD:CLAUDE.restored.md"])
+                .unwrap()
+                .trim(),
+            "old"
+        );
+        assert!(rels(&a.engine.tracked_files("proj-claude").unwrap())
+            .contains(&"CLAUDE.restored.md".to_string()));
+    }
+
+    #[test]
+    fn keep_both_reports_a_tracking_failure_and_keeps_the_written_copy() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"live\n");
+        add(&mut a);
+        plant(&a, "CLAUDE.md", b"old\n");
+        // An unreadable staging `.dotloreproject` breaks only the tracking step.
+        let project = a.home.path().join("repos/proj-claude/.dotloreproject");
+        fs::remove_file(&project).unwrap();
+        fs::create_dir(&project).unwrap();
+
+        let got = restore(&mut a, Some("CLAUDE.md"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            restored,
+            tracked,
+            track_error,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(
+            restored,
+            [RestoredFile {
+                from: "CLAUDE.md".into(),
+                to: "CLAUDE.restored.md".into(),
+            }]
+        );
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert!(track_error.is_some());
+        let root = a.root.path();
+        assert_eq!(fs::read(root.join("CLAUDE.restored.md")).unwrap(), b"old\n");
+        assert_eq!(fs::read(root.join("CLAUDE.md")).unwrap(), b"live\n");
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_sensitive_copy() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "credentials.json", b"live\n");
+        add(&mut a);
+        plant(&a, "credentials.json", b"old\n");
+
+        let got = restore(&mut a, Some("credentials.json"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            tracked,
+            kept_local,
+            track_error,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["credentials.restored.json"]);
+        assert_eq!(track_error, None);
+        let root = a.root.path();
+        assert_eq!(
+            fs::read(root.join("credentials.restored.json")).unwrap(),
+            b"old\n"
+        );
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let entries = repo.project_file().unwrap().tracked();
+        assert!(!entries.contains_rel(Path::new("credentials.restored.json")));
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_copy_of_an_exact_name_secret() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "auth.json", b"live\n");
+        add(&mut a);
+        plant(&a, "auth.json", b"old\n");
+
+        let got = restore(&mut a, Some("auth.json"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            tracked,
+            kept_local,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["auth.restored.json"]);
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let entries = repo.project_file().unwrap().tracked();
+        assert!(!entries.contains_rel(Path::new("auth.restored.json")));
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_copy_the_user_untracked() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"live\n");
+        add(&mut a);
+        plant(&a, "CLAUDE.md", b"old\n");
+        restore(&mut a, Some("CLAUDE.md"), RestoreChoice::KeepBoth).unwrap();
+        a.engine
+            .untrack_entry("proj-claude", Path::new("CLAUDE.restored.md"))
+            .unwrap();
+        fs::remove_file(a.root.path().join("CLAUDE.restored.md")).unwrap();
+
+        let got = restore(&mut a, Some("CLAUDE.md"), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            restored,
+            tracked,
+            kept_local,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(restored[0].to, "CLAUDE.restored.md");
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["CLAUDE.restored.md"]);
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let file = repo.project_file().unwrap();
+        assert_eq!(file.entries["CLAUDE.restored.md"].state, State::Removed);
+    }
+
+    fn kept_local_after_untrack(untracked: &str, rel: &str) -> (Vec<String>, Vec<String>, State) {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, rel, b"live\n");
+        add(&mut a);
+        a.engine
+            .untrack_entry("proj-claude", Path::new(untracked))
+            .unwrap();
+        plant(&a, rel, b"old\n");
+
+        let got = restore(&mut a, Some(rel), RestoreChoice::KeepBoth).unwrap();
+
+        let RestoreResult::Done {
+            tracked,
+            kept_local,
+            ..
+        } = got
+        else {
+            panic!("expected Done, got {got:?}");
+        };
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let state = repo.project_file().unwrap().entries[&format!("{untracked}/")].state;
+        (tracked, kept_local, state)
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_copy_inside_an_untracked_folder() {
+        let (tracked, kept_local, state) = kept_local_after_untrack("docs", "docs/a.md");
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["docs/a.restored.md"]);
+        assert_eq!(state, State::Removed);
+    }
+
+    #[test]
+    fn keep_both_never_tracks_a_copy_inside_a_hole_of_a_tracked_folder() {
+        let (tracked, kept_local, state) =
+            kept_local_after_untrack("docs/private", "docs/private/x.md");
+        assert!(tracked.is_empty(), "{tracked:?}");
+        assert_eq!(kept_local, ["docs/private/x.restored.md"]);
+        assert_eq!(state, State::Removed);
+    }
+
+    #[test]
+    fn a_restore_without_a_restored_copy_never_reads_the_project_file() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"live\n");
+        add(&mut a);
+        plant(&a, "CLAUDE.md", b"old\n");
+        let project = a.home.path().join("repos/proj-claude/.dotloreproject");
+        fs::remove_file(&project).unwrap();
+        fs::create_dir(&project).unwrap();
+
+        let got = restore(&mut a, Some("CLAUDE.md"), RestoreChoice::Replace).unwrap();
+
+        let RestoreResult::Done { track_error, .. } = got else {
+            panic!("expected Done, got {got:?}");
+        };
+        assert_eq!(track_error, None);
+        assert_eq!(fs::read(a.root.path().join("CLAUDE.md")).unwrap(), b"old\n");
+    }
+
+    #[test]
+    fn keep_both_under_a_tracked_folder_adds_no_entry() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"live\n");
+        add(&mut a);
+        plant(&a, "docs/a.md", b"old\n");
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let before = repo.project_file().unwrap();
+
+        let got = restore(&mut a, Some("docs/a.md"), RestoreChoice::KeepBoth).unwrap();
+
+        assert!(
+            matches!(got, RestoreResult::Done { ref tracked, ref restored, .. }
+                if tracked.is_empty() && restored[0].to == "docs/a.restored.md"),
+            "{got:?}"
+        );
+        assert_eq!(repo.project_file().unwrap(), before);
+    }
+
+    #[test]
+    fn restore_without_a_restored_copy_adds_no_entry() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        plant(&a, "other.md", b"other\n");
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let before = repo.project_file().unwrap();
+
+        let got = restore(&mut a, None, RestoreChoice::KeepBoth).unwrap();
+
+        assert!(
+            matches!(got, RestoreResult::Done { ref tracked, ref restored, .. }
+                if tracked.is_empty() && restored[0].to == "other.md"),
+            "{got:?}"
+        );
+        assert_eq!(repo.project_file().unwrap(), before);
+    }
+
+    #[test]
+    fn restore_from_trash_refuses_a_removed_project() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        plant(&a, "gone.md", b"gone\n");
+        a.engine.remove_root("proj-claude").unwrap();
+
+        let err = restore(&mut a, None, RestoreChoice::Replace).unwrap_err();
+
+        assert!(err.to_string().contains("removed"), "{err:#}");
+        assert!(!a.root.path().join("gone.md").exists());
+    }
+
+    #[test]
+    fn restore_from_trash_refuses_a_missing_root_folder() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        plant(&a, "gone.md", b"gone\n");
+        let root = a.root.path().to_path_buf();
+        fs::remove_dir_all(&root).unwrap();
+
+        let err = restore(&mut a, None, RestoreChoice::Replace).unwrap_err();
+
+        assert!(err.to_string().contains("missing"), "{err:#}");
+        assert!(!root.exists(), "the project folder must not be recreated");
+    }
+
+    #[test]
+    fn restore_from_trash_refuses_an_initializing_root() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        plant(&a, "gone.md", b"gone\n");
+        let mut cfg = Config::load(a.home.path()).unwrap();
+        cfg.roots[0].initializing = true;
+        cfg.save(a.home.path()).unwrap();
+
+        let err = restore(&mut a, None, RestoreChoice::Replace).unwrap_err();
+
+        assert!(err.to_string().contains("linking"), "{err:#}");
+        assert!(!a.root.path().join("gone.md").exists());
+    }
+
+    #[test]
+    fn restored_file_is_published_on_the_next_cycle() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        add(&mut a);
+        plant(&a, "docs/notes.md", b"notes\n");
+
+        restore(&mut a, None, RestoreChoice::Ask).unwrap();
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        assert_eq!(
+            repo.git.ok(&["show", "HEAD:docs/notes.md"]).unwrap().trim(),
+            "notes"
+        );
+        assert_eq!(cloud_of(&a).list_bundles("proj-claude").len(), 2);
+    }
+
+    #[test]
+    fn restore_types_serialize_for_the_webview() {
+        let choice: RestoreChoice = serde_json::from_str(r#""keep_both""#).unwrap();
+        assert_eq!(choice, RestoreChoice::KeepBoth);
+        assert_eq!(
+            serde_json::to_string(&RestoreResult::Existing {
+                rels: vec!["a.md".into()]
+            })
+            .unwrap(),
+            r#"{"kind":"existing","rels":["a.md"]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&RestoreResult::Done {
+                restored: vec![RestoredFile {
+                    from: "a.md".into(),
+                    to: "a.restored.md".into()
+                }],
+                unchanged: vec![],
+                skipped: vec![],
+                tracked: vec![],
+                kept_local: Vec::new(),
+                track_error: None,
+            })
+            .unwrap(),
+            r#"{"kind":"done","restored":[{"from":"a.md","to":"a.restored.md"}],"unchanged":[],"skipped":[],"tracked":[],"kept_local":[],"track_error":null}"#
+        );
     }
 }

@@ -28,11 +28,12 @@ use crate::config;
 use crate::daemon::{Cmd, SharedEngine};
 use crate::engine::{
     self, AddRootStart, ConflictView, Engine, EntryKind, EntryView, ImportAgentsReport,
-    InspectedEntry, ResolutionSnapshot, ResolveOutcome, RootStatus, SiblingView, TrackOutcome,
-    TrackedFile, WipeReport,
+    InspectedEntry, ResolutionSnapshot, ResolveOutcome, RestoreChoice, RestoreResult, RootStatus,
+    SiblingView, TrackOutcome, TrackedFile, WipeReport,
 };
 use crate::git;
 use crate::project;
+use crate::trash::{self, TrashProject};
 
 use crate::login_item;
 use crate::state::{load_cfg, AppState, RootRow, StatusPayload};
@@ -396,6 +397,118 @@ pub fn app_home(state: State<'_, AppState>) -> String {
 #[tauri::command]
 pub fn open_app_home(state: State<'_, AppState>) -> Result<(), String> {
     open_folder(&state.home)
+}
+
+/// Open `<home>/trash`, where sync keeps every live file it deleted or
+/// overwrote, by root, day and time. Created first so the button works before
+/// anything has been displaced.
+#[tauri::command]
+pub fn open_trash(state: State<'_, AppState>) -> Result<(), String> {
+    let dir = state.home.join("trash");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    open_folder(&dir)
+}
+
+/// Everything in `<home>/trash`, compared against the live roots. Off the
+/// main thread for `load_cfg`, and engine-free so it works before setup.
+#[tauri::command]
+pub async fn list_trash(state: State<'_, AppState>) -> Result<Vec<TrashProject>, String> {
+    let home = state.home.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = load_cfg(&home)?;
+        list_trash_sync(&home, &cfg.roots)
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+/// One trash copy, with the same preview rules as [`read_file`].
+#[tauri::command]
+pub async fn read_trash_file(
+    state: State<'_, AppState>,
+    slug: String,
+    day: String,
+    pass: String,
+    rel: String,
+) -> Result<FileContent, String> {
+    let home = state.home.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        read_trash_file_sync(&home, &slug, &day, &pass, &rel)
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+/// Restore a pass, or the file or folder at `rel` in it, into its live root.
+/// Status is refreshed only when a live file was written.
+#[tauri::command]
+pub async fn restore_trash(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    slug: String,
+    day: String,
+    pass: String,
+    rel: Option<String>,
+    choice: RestoreChoice,
+) -> Result<RestoreResult, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        restore_trash_sync(
+            &mut engine.lock().unwrap_or_else(PoisonError::into_inner),
+            &slug,
+            &day,
+            &pass,
+            rel.as_deref(),
+            choice,
+        )
+    })
+    .await
+    .map_err(front_msg)??;
+    if matches!(&result, RestoreResult::Done { restored, .. } if !restored.is_empty()) {
+        notify(&app, &state)?;
+    }
+    Ok(result)
+}
+
+/// Delete a pass, or the file or folder at `rel` in it. `trash::delete`
+/// takes the home lock itself, so neither it nor the engine is held here.
+#[tauri::command]
+pub async fn delete_trash(
+    state: State<'_, AppState>,
+    slug: String,
+    day: String,
+    pass: String,
+    rel: Option<String>,
+) -> Result<(), String> {
+    let home = state.home.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        delete_trash_sync(&home, &slug, &day, &pass, rel.as_deref())
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+/// Remove everything under `<home>/trash`; `trash::empty` takes the home lock.
+#[tauri::command]
+pub async fn empty_trash(state: State<'_, AppState>) -> Result<(), String> {
+    let home = state.home.clone();
+    tauri::async_runtime::spawn_blocking(move || trash::empty(&home).map_err(front_err))
+        .await
+        .map_err(front_msg)?
+}
+
+/// Delete every dated pass before `before` (`YYYY-MM-DD`);
+/// `trash::delete_older_than` takes the home lock itself.
+#[tauri::command]
+pub async fn delete_trash_older_than(
+    state: State<'_, AppState>,
+    before: String,
+) -> Result<usize, String> {
+    let home = state.home.clone();
+    tauri::async_runtime::spawn_blocking(move || delete_trash_older_than_sync(&home, &before))
+        .await
+        .map_err(front_msg)?
 }
 
 fn cloud_folder_target(provider: &Path) -> PathBuf {
@@ -1064,6 +1177,34 @@ pub async fn set_max_file_mb(
 }
 
 #[tauri::command]
+pub async fn trash_max_mb(state: State<'_, AppState>) -> Result<u64, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .trash_max_mb()
+    })
+    .await
+    .map_err(front_msg)
+}
+
+/// The engine prunes the trash under the home lock it takes itself.
+#[tauri::command]
+pub async fn set_trash_max_mb(state: State<'_, AppState>, mb: u64) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_trash_max_mb(mb)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+#[tauri::command]
 pub async fn max_seed_folder_mb(state: State<'_, AppState>) -> Result<u64, String> {
     let engine = state.shared_engine().map_err(front_msg)?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -1450,6 +1591,52 @@ fn untrack_entry_sync(
     engine.list_entries(slug).map_err(front_err)
 }
 
+fn list_trash_sync(home: &Path, roots: &[config::Root]) -> Result<Vec<TrashProject>, String> {
+    trash::list(home, roots, MAX_PREVIEW_BYTES).map_err(front_err)
+}
+
+fn read_trash_file_sync(
+    home: &Path,
+    slug: &str,
+    day: &str,
+    pass: &str,
+    rel: &str,
+) -> Result<FileContent, String> {
+    let path = trash::item_path(home, slug, day, pass, rel).map_err(front_err)?;
+    let meta = std::fs::symlink_metadata(&path).map_err(front_msg)?;
+    if !meta.is_file() {
+        return Err(front_msg(format!("not a file: {rel}")));
+    }
+    preview(&path)
+}
+
+fn restore_trash_sync(
+    engine: &mut Engine,
+    slug: &str,
+    day: &str,
+    pass: &str,
+    rel: Option<&str>,
+    choice: RestoreChoice,
+) -> Result<RestoreResult, String> {
+    engine
+        .restore_from_trash(slug, day, pass, rel, choice)
+        .map_err(front_err)
+}
+
+fn delete_trash_sync(
+    home: &Path,
+    slug: &str,
+    day: &str,
+    pass: &str,
+    rel: Option<&str>,
+) -> Result<(), String> {
+    trash::delete(home, slug, day, pass, rel).map_err(front_err)
+}
+
+fn delete_trash_older_than_sync(home: &Path, before: &str) -> Result<usize, String> {
+    trash::delete_older_than(home, before).map_err(front_err)
+}
+
 fn list_linkable_unstarted(
     provider_configured: bool,
     runtime_error: String,
@@ -1733,7 +1920,13 @@ fn read_tracked_file(home: &Path, slug: &str, rel: &str) -> Result<FileContent, 
         .find(|r| r.slug == slug)
         .ok_or_else(|| format!("unknown root {slug}"))?;
     let path = resolve_in_root(root, rel).map_err(|e| format!("{e:#}"))?;
-    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    preview(&path)
+}
+
+/// The webview's view of a file: at most [`MAX_PREVIEW_BYTES`], text only
+/// when it is valid UTF-8.
+fn preview(path: &Path) -> Result<FileContent, String> {
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let bytes_len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
     if meta.len() > MAX_PREVIEW_BYTES {
         return Ok(FileContent {
@@ -1743,7 +1936,7 @@ fn read_tracked_file(home: &Path, slug: &str, rel: &str) -> Result<FileContent, 
             bytes_len,
         });
     }
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let bytes_len = bytes.len();
     // Core has no `mirror::lossy_to_string`; valid UTF-8 is taken as-is.
     match String::from_utf8(bytes) {
@@ -1771,6 +1964,7 @@ mod tests {
     use crate::cloud::Manifest;
     use crate::config::Config;
     use crate::engine::Engine;
+    use crate::trash::TrashStatus;
     use tempfile::TempDir;
 
     #[test]
@@ -2305,5 +2499,132 @@ mod tests {
             .expect("unlinked agent must be listed");
         assert_eq!(agent.display_name, ".claude");
         assert!(agent.is_agent);
+    }
+
+    fn trash_item(fx: &Fx, pass: &str, rel: &str, body: &[u8]) -> PathBuf {
+        let p = fx
+            .engine
+            .home
+            .join("trash")
+            .join(&fx.slug)
+            .join("2026-10-13")
+            .join(pass)
+            .join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, body).unwrap();
+        p
+    }
+
+    #[test]
+    fn read_trash_file_previews_text_binary_and_too_large() {
+        let fx = fixture();
+        let big = MAX_PREVIEW_BYTES as usize + 1;
+        trash_item(&fx, "120000", "a.md", b"hello\n");
+        trash_item(&fx, "120000", "bin", b"\x00\xff\x01");
+        trash_item(&fx, "120000", "big", &vec![b'x'; big]);
+        let read = |rel: &str| {
+            read_trash_file_sync(&fx.engine.home, &fx.slug, "2026-10-13", "120000", rel).unwrap()
+        };
+
+        let text = read("a.md");
+        assert_eq!(text.text.as_deref(), Some("hello\n"));
+        assert!(!text.binary && !text.too_large);
+        assert_eq!(text.bytes_len, 6);
+
+        let bin = read("bin");
+        assert!(bin.text.is_none() && bin.binary && !bin.too_large);
+        assert_eq!(bin.bytes_len, 3);
+
+        let large = read("big");
+        assert!(large.text.is_none() && !large.binary && large.too_large);
+        assert_eq!(large.bytes_len, big);
+
+        fs::create_dir_all(
+            fx.engine
+                .home
+                .join("trash")
+                .join(&fx.slug)
+                .join("2026-10-13/120000/dir"),
+        )
+        .unwrap();
+        assert!(
+            read_trash_file_sync(&fx.engine.home, &fx.slug, "2026-10-13", "120000", "dir").is_err(),
+            "a folder is not previewed"
+        );
+    }
+
+    #[test]
+    fn trash_commands_reject_unsafe_ids() {
+        let mut fx = fixture();
+        let home = fx.engine.home.clone();
+        let slug = fx.slug.clone();
+        let item = trash_item(&fx, "120000", "a.md", b"keep");
+        let sentinel = home.join("trash").join(&slug).join("2026-10-13/x");
+        fs::write(&sentinel, b"outside the pass").unwrap();
+        let ask = RestoreChoice::Ask;
+
+        for (slug, day, pass, rel) in [
+            (slug.as_str(), "2026-10-13", "120000", "../x"),
+            ("..", "2026-10-13", "120000", "a.md"),
+            (slug.as_str(), "2026-1-3", "120000", "a.md"),
+            (slug.as_str(), "2026-10-13", "14250", "a.md"),
+        ] {
+            assert!(read_trash_file_sync(&home, slug, day, pass, rel).is_err());
+            assert!(delete_trash_sync(&home, slug, day, pass, Some(rel)).is_err());
+            assert!(restore_trash_sync(&mut fx.engine, slug, day, pass, Some(rel), ask).is_err());
+        }
+        for (slug, day, pass) in [
+            ("..", "2026-10-13", "120000"),
+            (slug.as_str(), "2026-1-3", "120000"),
+            (slug.as_str(), "2026-10-13", "14250"),
+        ] {
+            assert!(delete_trash_sync(&home, slug, day, pass, None).is_err());
+            assert!(restore_trash_sync(&mut fx.engine, slug, day, pass, None, ask).is_err());
+        }
+        for before in ["undated", "..", "2026-1-3", ""] {
+            assert!(delete_trash_older_than_sync(&home, before).is_err());
+        }
+
+        assert_eq!(fs::read(&item).unwrap(), b"keep");
+        assert_eq!(fs::read(&sentinel).unwrap(), b"outside the pass");
+        assert!(!fx.root.path().join("a.md").exists());
+        assert!(!fx.root.path().join("x").exists());
+    }
+
+    #[test]
+    fn delete_trash_older_than_removes_only_passes_before_the_cutoff() {
+        let fx = fixture();
+        let home = fx.engine.home.clone();
+        let old = home
+            .join("trash")
+            .join(&fx.slug)
+            .join("2026-01-01/120000/a.md");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, b"old").unwrap();
+        let new = trash_item(&fx, "120000", "a.md", b"new");
+
+        assert_eq!(delete_trash_older_than_sync(&home, "2026-06-01"), Ok(1));
+        assert!(!old.exists());
+        assert_eq!(fs::read(&new).unwrap(), b"new");
+    }
+
+    #[test]
+    fn list_trash_reports_a_written_trash_item() {
+        let fx = fixture();
+        trash_item(&fx, "120000", "a.md", b"gone");
+        let projects = list_trash_sync(&fx.engine.home, &fx.engine.cfg.roots).unwrap();
+        assert_eq!(projects.len(), 1);
+        let project = &projects[0];
+        assert_eq!(project.slug, fx.slug);
+        assert!(project.root.is_some());
+        assert_eq!(project.passes.len(), 1);
+        let pass = &project.passes[0];
+        assert_eq!(
+            (pass.day.as_str(), pass.pass.as_str()),
+            ("2026-10-13", "120000")
+        );
+        assert_eq!(pass.files.len(), 1);
+        assert_eq!(pass.files[0].rel, "a.md");
+        assert_eq!(pass.files[0].status, Some(TrashStatus::NotInProject));
     }
 }
