@@ -17,6 +17,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { editorExtensions, viewerExtensions } from "@/lib/cm";
@@ -479,10 +480,17 @@ export function ConflictResolver({ slug, rel, onClose }: ConflictResolverProps) 
       )}
     >
       <header className="flex h-row shrink-0 items-center gap-2 border-b border-border px-pad-x">
+        {expanded && root ? (
+          <Badge variant="secondary" className="max-w-48 shrink-0 truncate font-normal">
+            {root.name}
+          </Badge>
+        ) : null}
         <span className="min-w-0 truncate font-mono text-xs" title={rel}>
           {rel}
         </span>
-        <span className="shrink-0 text-muted-foreground">this machine vs {device}</span>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          this machine vs {device}
+        </span>
         <div className="ml-auto flex min-w-0 items-center gap-1">
           {sides && sides.cloud.length > 1
             ? sides.cloud.map((item, index) => (
