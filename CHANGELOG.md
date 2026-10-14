@@ -1,3 +1,15 @@
+## v0.8.0 (2026-10-14)
+
+### Trash
+
+- **Local trash for every live file a sync deletes or overwrites.** Nothing a sync removes is lost: a copy is kept under the app data folder. [#a9277562](https://github.com/dinhanhthi/dotlore/commit/a9277562)
+- **Trash view with preview, restore, delete and empty.** Browse trashed files in a tree, search it, preview a file and restore it, or use Keep both to restore next to the live file; Keep both keeps the live file's permissions. [#426ce3a0](https://github.com/dinhanhthi/dotlore/commit/426ce3a0) [#be3eeabd](https://github.com/dinhanhthi/dotlore/commit/be3eeabd) [#82ae49fc](https://github.com/dinhanhthi/dotlore/commit/82ae49fc) [#4761117c](https://github.com/dinhanhthi/dotlore/commit/4761117c) [#c22f07dd](https://github.com/dinhanhthi/dotlore/commit/c22f07dd)
+- **Trash size limit and age-based emptying.** A new setting caps the trash (floor 100 MB, oldest items pruned first), and the empty trash menu can delete items older than a chosen age. [#fee6f547](https://github.com/dinhanhthi/dotlore/commit/fee6f547) [#ebf54deb](https://github.com/dinhanhthi/dotlore/commit/ebf54deb)
+
+### Desktop app
+
+- **Views refresh after each sync.** [#c22f07dd](https://github.com/dinhanhthi/dotlore/commit/c22f07dd)
+
 ## v0.7.5 (2026-10-11)
 
 ### Sidebar & tree
