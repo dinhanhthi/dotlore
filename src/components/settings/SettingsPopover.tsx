@@ -59,6 +59,7 @@ import {
   setPatternCatalog,
   setSensitivePatterns,
   setTrashMaxMb,
+  takeOpenSettings,
   trashMaxMb,
   WIPE_LABEL,
   type PatternCatalog,
@@ -946,6 +947,10 @@ export function SettingsPopover() {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
+    // A window the tray's Settings row just built missed the event.
+    void takeOpenSettings().then((open) => {
+      if (open) setOpen(true);
+    });
     const unlisten = listenOpenSettings(() => setOpen(true));
     return () => {
       void unlisten.then((fn) => fn());

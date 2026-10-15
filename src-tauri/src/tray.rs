@@ -1,6 +1,7 @@
 //! The macOS status item: logo only, its menu, and the actions the menu
 //! dispatches.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tauri::image::Image;
@@ -14,9 +15,9 @@ use crate::cloud::is_bidi_control;
 use crate::daemon::Cmd;
 use crate::git;
 
-use crate::show_window;
 use crate::state::{load_cfg, AppState};
 use crate::updater;
+use crate::{show_window, WINDOW};
 
 /// Longest menu-item label. A status item's menu is not a log viewer, and
 /// `RootStatus::Error` is not bounded (see [`one_line`]).
@@ -256,6 +257,11 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
         ID_CHECK_UPDATES => updater::check_now(app),
         ID_ABOUT => about::show(app),
         ID_SETTINGS => {
+            if app.get_webview_window(WINDOW).is_none() {
+                app.state::<AppState>()
+                    .open_settings
+                    .store(true, Ordering::SeqCst);
+            }
             show_window(app);
             let _ = app.emit(OPEN_SETTINGS_EVENT, ());
         }

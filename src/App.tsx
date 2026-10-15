@@ -29,6 +29,7 @@ import { TrackConfirmDialog } from "@/components/tree/EntryPickerDialog";
 import { FileTree } from "@/components/tree/FileTree";
 import { Toaster } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useCloseGuard } from "@/lib/close-guard";
 import { uniqueConflictRels } from "@/lib/conflicts";
 import { errorMessage } from "@/lib/errors";
 import {
@@ -305,6 +306,8 @@ export function App() {
     },
     [],
   );
+
+  useCloseGuard(guardLeave);
 
   const selectRoot = useCallback((slug: string, options?: SelectRootOptions) => {
     const apply = () =>

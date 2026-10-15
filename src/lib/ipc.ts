@@ -746,6 +746,11 @@ export function listenUpdateProgress(
   });
 }
 
+/** True once when the tray's Settings row built this window. */
+export function takeOpenSettings(): Promise<boolean> {
+  return invoke("take_open_settings");
+}
+
 /** `dotlore://open-settings`, from the tray's Settings row. */
 export function listenOpenSettings(handler: () => void): Promise<UnlistenFn> {
   return listen("dotlore://open-settings", () => {

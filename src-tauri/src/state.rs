@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -81,6 +82,9 @@ pub struct AppState {
     pub cmd_tx: Mutex<Option<Sender<daemon::Event>>>,
     /// Open resolution, keyed by [`resolution_key`]. At most one entry.
     pub snapshots: Mutex<HashMap<String, ResolutionSnapshot>>,
+    /// The tray's Settings row built the window; its page opens Settings on
+    /// mount, since the `dotlore://open-settings` event beat its listener.
+    pub open_settings: AtomicBool,
 }
 
 /// Registry key for one open resolution. `\0` cannot appear in a slug.
@@ -96,6 +100,7 @@ impl AppState {
             engine: Mutex::new(None),
             cmd_tx: Mutex::new(None),
             snapshots: Mutex::new(HashMap::new()),
+            open_settings: AtomicBool::new(false),
         }
     }
 
@@ -203,6 +208,14 @@ impl AppState {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&key);
+    }
+
+    /// Forget every open resolution: the page that opened it is gone.
+    pub(crate) fn close_all_snapshots(&self) {
+        self.snapshots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
     }
 
     /// Clone the snapshot for this live path, if it is the one open.

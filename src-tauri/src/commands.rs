@@ -17,6 +17,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::PoisonError;
 
 use anyhow::{bail, Result};
@@ -1257,6 +1258,12 @@ pub fn login_item_enabled(state: State<'_, AppState>) -> bool {
 #[tauri::command]
 pub fn set_login_item(state: State<'_, AppState>, on: bool) -> Result<(), String> {
     login_item::set(&state.home_dir, on).map_err(front_err)
+}
+
+/// True once after the tray's Settings row built the window.
+#[tauri::command]
+pub fn take_open_settings(state: State<'_, AppState>) -> bool {
+    state.open_settings.swap(false, Ordering::SeqCst)
 }
 
 /// The version the last update check found, if any.

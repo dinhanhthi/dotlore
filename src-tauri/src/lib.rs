@@ -25,7 +25,7 @@ use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+use tauri::{AppHandle, Manager, RunEvent, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use config::Config;
 
@@ -48,21 +48,12 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             // Regular (the Tauri default) shows the Dock icon while the window
-            // is open; `hide_window` drops to Accessory, leaving only the
+            // is open; closing it drops to Accessory, leaving only the
             // menu-bar item, and `show_window` brings the icon back.
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
             if let Some(window) = app.get_webview_window(WINDOW) {
-                if let Some(icon) = app.default_window_icon() {
-                    let _ = window.set_icon(icon.clone());
-                }
-                let handle = app.handle().clone();
-                window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        hide_window(&handle);
-                    }
-                });
+                watch_window(app.handle(), &window);
             }
 
             app.manage(AppState::new(home, home_dir));
@@ -136,29 +127,64 @@ pub fn run(home: PathBuf, home_dir: PathBuf) {
             commands::set_login_item,
             commands::update_available,
             commands::prompt_update,
+            commands::take_open_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while running Dotlore")
-        .run(|app, event| {
-            if let RunEvent::Reopen { .. } = event {
-                show_window(app);
-            }
+        .run(|app, event| match event {
+            RunEvent::Reopen { .. } => show_window(app),
+            // Closing the window destroys it, webview and all, so a hidden
+            // window does not keep WebKit's content process alive. The app
+            // itself lives on in the menu bar; only Quit (`exit(0)`) ends it.
+            RunEvent::ExitRequested {
+                code: None, api, ..
+            } => api.prevent_exit(),
+            _ => {}
         });
 }
 
+/// Show the window, building it again from the config if it was closed.
 pub(crate) fn show_window(app: &AppHandle) {
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    if let Some(window) = app.get_webview_window(WINDOW) {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
+    let window = match app.get_webview_window(WINDOW) {
+        Some(window) => window,
+        None => match build_window(app) {
+            Ok(window) => window,
+            Err(e) => {
+                eprintln!("dotlore: window: {e}");
+                return;
+            }
+        },
+    };
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
-pub(crate) fn hide_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW) {
-        let _ = window.hide();
+fn build_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == WINDOW)
+        .ok_or(tauri::Error::WindowNotFound)?;
+    let window = WebviewWindowBuilder::from_config(app, config)?.build()?;
+    watch_window(app, &window);
+    Ok(window)
+}
+
+fn watch_window(app: &AppHandle, window: &WebviewWindow) {
+    if let Some(icon) = app.default_window_icon() {
+        let _ = window.set_icon(icon.clone());
     }
-    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    let handle = app.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::Destroyed = event {
+            // A resolver open in the old page never got to close its snapshot.
+            handle.state::<AppState>().close_all_snapshots();
+            let _ = handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+        }
+    });
 }
 
 /// Fresh config under the home lock.

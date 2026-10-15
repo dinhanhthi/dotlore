@@ -10,6 +10,7 @@ import {
   SettingsNeverList,
   SettingsPanel,
   SettingsPatterns,
+  SettingsPopover,
   SettingsSensitive,
   SettingsGeneral,
   SettingsSync,
@@ -31,7 +32,11 @@ const {
   listDevices,
   trashMaxMb,
   setTrashMaxMb,
+  takeOpenSettings,
+  dialogOpen,
 } = vi.hoisted(() => ({
+  takeOpenSettings: vi.fn((): Promise<boolean> => Promise.resolve(false)),
+  dialogOpen: [] as (boolean | undefined)[],
   trashMaxMb: vi.fn((): Promise<number> => Promise.resolve(500)),
   setTrashMaxMb: vi.fn(async (_mb: number): Promise<void> => {}),
   inputs: new Map<
@@ -138,6 +143,19 @@ vi.mock("@/components/settings/SettingsSeedList", async () => {
   };
 });
 
+vi.mock("@/components/ui/dialog", async () => {
+  const actual = await vi.importActual<typeof import("@/components/ui/dialog")>(
+    "@/components/ui/dialog",
+  );
+  return {
+    ...actual,
+    Dialog: (props: ComponentProps<typeof actual.Dialog>) => {
+      dialogOpen.push(props.open);
+      return actual.Dialog(props);
+    },
+  };
+});
+
 // The real content renders through a portal, which is empty on the server.
 vi.mock("@/components/ui/alert-dialog", async () => {
   const actual = await vi.importActual<
@@ -187,6 +205,8 @@ vi.mock("@/lib/ipc", () => ({
   deviceName,
   setDeviceName,
   listDevices,
+  takeOpenSettings,
+  listenOpenSettings: () => Promise.resolve(() => {}),
 }));
 
 function wrap(
@@ -314,6 +334,28 @@ function servedOnce<T>(value: T): () => Promise<T> {
       },
     }) as unknown as Promise<T>;
 }
+
+describe("SettingsPopover", () => {
+  beforeEach(() => {
+    dialogOpen.length = 0;
+    syncEffects.on = true;
+    return () => {
+      syncEffects.on = false;
+    };
+  });
+
+  it("opens Settings when the tray's Settings row built the window", () => {
+    takeOpenSettings.mockImplementation(servedOnce(true));
+    wrap(<SettingsPopover />);
+    expect(dialogOpen).toContain(true);
+  });
+
+  it("stays closed when the window opened any other way", () => {
+    takeOpenSettings.mockImplementation(servedOnce(false));
+    wrap(<SettingsPopover />);
+    expect(dialogOpen).not.toContain(true);
+  });
+});
 
 describe("SettingsSync devices", () => {
   const now = Math.floor(Date.now() / 1000);
