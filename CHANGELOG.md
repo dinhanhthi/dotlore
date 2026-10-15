@@ -1,3 +1,14 @@
+## v0.8.1 (2026-10-15)
+
+### Desktop app
+
+- **Closing the window frees its memory.** The window is now destroyed on close and rebuilt from the menu bar or Dock, so the WebKit content process (about 170 MB) no longer stays alive while only the menu-bar item is in use. Closing with unsaved Result edits in the resolver still asks first, and Settings from the menu bar still opens after a rebuild. [#d4875622](https://github.com/dinhanhthi/dotlore/commit/d4875622)
+- **Settings sections are separated by thin dividers.** [#ddb1036c](https://github.com/dinhanhthi/dotlore/commit/ddb1036c)
+
+### Conflicts
+
+- **Smaller device label and project badge in the expanded resolver.** [#5e82db95](https://github.com/dinhanhthi/dotlore/commit/5e82db95)
+
 ## v0.8.0 (2026-10-14)
 
 ### Trash
