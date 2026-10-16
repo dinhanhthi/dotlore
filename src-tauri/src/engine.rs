@@ -1162,6 +1162,15 @@ impl Engine {
         }
     }
 
+    /// `slug`'s include-list and ignore text, the two inputs of the mirror walk.
+    pub(crate) fn include_filter(&self, slug: &str) -> Result<(project::EntryList, String)> {
+        let repo = self.repo_for(&self.root_cfg(slug)?)?;
+        Ok((
+            repo.project_file()?.tracked(),
+            repo.ignore_text(&self.home_dir),
+        ))
+    }
+
     /// Effective ignore text (`None` in config → `DEFAULT_NEVER_IGNORE`).
     pub fn default_ignore(&self) -> String {
         self.cfg

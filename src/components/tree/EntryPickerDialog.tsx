@@ -83,16 +83,22 @@ export function EntryPickerDialog({
   onOpenChange,
   onMutated,
 }: EntryPickerDialogProps) {
-  const trackedRels = useMemo(
-    () => new Set(files.map((file) => file.rel)),
-    [files],
-  );
-  const [pending, setPending] = useState<PendingMap>({});
-  const [bytesByKey, setBytesByKey] = useState<Record<string, number | null>>({});
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [childrenByRel, setChildrenByRel] = useState<Record<string, PickerRow[]>>(
     {},
   );
+  // Synced files, plus `dir/` keys of listed folders the include-list covers.
+  const trackedRels = useMemo(() => {
+    const rels = new Set(files.map((file) => file.rel));
+    for (const rows of Object.values(childrenByRel)) {
+      for (const row of rows) {
+        if (row.kind === "directory" && row.included) rels.add(`${row.rel}/`);
+      }
+    }
+    return rels;
+  }, [files, childrenByRel]);
+  const [pending, setPending] = useState<PendingMap>({});
+  const [bytesByKey, setBytesByKey] = useState<Record<string, number | null>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [loadingRel, setLoadingRel] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState("");
   const requestGen = useRef(0);

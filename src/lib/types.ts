@@ -62,6 +62,8 @@ export type PickerRow = {
   kind: string;
   rel: string;
   sensitivity: Sensitivity | null;
+  /** Under the include-list and not ignored. */
+  included: boolean;
 };
 
 /** Mirrors `commands::SkippedFileDto` (snake_case fields). */

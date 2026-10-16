@@ -107,6 +107,8 @@ pub struct PickerRow {
     pub kind: String,
     pub rel: String,
     pub sensitivity: Option<project::Sensitivity>,
+    /// Under the include-list and not ignored: the mirror would carry it.
+    pub included: bool,
 }
 
 /// Preview of a path the user may add.
@@ -1682,7 +1684,15 @@ fn list_entry_children_sync(
         .iter()
         .find(|r| r.slug == slug)
         .ok_or_else(|| front_msg(format!("unknown root {slug}")))?;
-    list_children_in(&root.path, rel, &engine.sensitive_matcher())
+    let (entries, ignore) = engine.include_filter(slug).map_err(front_err)?;
+    let ignore = crate::mirror::build_ignore(&root.path, &ignore).map_err(front_err)?;
+    list_children_in(
+        &root.path,
+        rel,
+        &engine.sensitive_matcher(),
+        &entries,
+        &ignore,
+    )
 }
 
 fn skip_picker_name(name: &str) -> bool {
@@ -1693,6 +1703,8 @@ fn list_children_in(
     root: &Path,
     rel: &str,
     matcher: &project::SensitiveMatcher,
+    entries: &project::EntryList,
+    ignore: &ignore::gitignore::Gitignore,
 ) -> Result<Vec<PickerRow>, String> {
     if !picker_rel_ok(rel) {
         return Err(front_msg(format!("unsafe path {rel}")));
@@ -1735,7 +1747,13 @@ fn list_children_in(
         } else {
             format!("{rel}/{name_str}")
         };
+        let child = Path::new(&child_rel);
+        let included = entries.contains_rel(child)
+            && !ignore
+                .matched_path_or_any_parents(child, kind == "directory")
+                .is_ignore();
         out.push(PickerRow {
+            included,
             sensitivity: if kind == "file" {
                 matcher.classify(Path::new(&child_rel))
             } else {
@@ -2159,6 +2177,44 @@ mod tests {
             }
         );
         assert_eq!(fx.engine.list_entries(&fx.slug).unwrap(), before);
+    }
+
+    #[test]
+    fn list_entry_children_marks_what_a_tracked_folder_covers() {
+        let mut fx = fixture();
+        write(&fx, "docs/a.md", b"a\n");
+        write(&fx, "docs/sub/x.md", b"x\n");
+        write(&fx, "docs/__pycache__/y.pyc", b"y\n");
+        write(&fx, "other/z.md", b"z\n");
+        fs::create_dir_all(fx.root.path().join("docs/new")).unwrap();
+        fx.engine
+            .track_entry(&fx.slug, Path::new("docs"), None)
+            .unwrap();
+        fx.engine
+            .untrack_entry(&fx.slug, Path::new("docs/sub"))
+            .unwrap();
+
+        let included = |rel: &str| {
+            let parent = Path::new(rel).parent().unwrap().to_str().unwrap();
+            list_entry_children_sync(&fx.engine, &fx.slug, parent)
+                .unwrap()
+                .into_iter()
+                .find(|row| row.rel == rel)
+                .unwrap()
+                .included
+        };
+        assert!(included("docs"));
+        assert!(included("docs/a.md"));
+        assert!(
+            included("docs/new"),
+            "an empty folder under docs/ is covered"
+        );
+        assert!(!included("docs/sub"), "a punched hole is not covered");
+        assert!(
+            !included("docs/__pycache__"),
+            "an ignored folder is not covered"
+        );
+        assert!(!included("other"));
     }
 
     #[test]

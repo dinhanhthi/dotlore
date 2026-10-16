@@ -222,6 +222,9 @@ function listChildren(slug: string, rel: string): PickerRow[] {
         kind === "file"
           ? mockSensitivity(rel ? `${rel}/${name}` : name, store.sensitivePatterns)
           : null,
+      included: (store.entries[slug] ?? []).some((entry) =>
+        patternMatchesRel(entry.key, rel ? `${rel}/${name}` : name),
+      ),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }

@@ -32,6 +32,14 @@ describe("isShownTracked", () => {
     );
   });
 
+  it("shows an empty folder the include-list covers as tracked", () => {
+    const covered = new Set([...synced, "docs/new/"]);
+    expect(isShownTracked("docs/new", "directory", [docs], {}, covered)).toBe(true);
+    expect(
+      stagePending({}, "docs/new", "directory", "track", [docs], covered),
+    ).toEqual({});
+  });
+
   it("lets a staged parent track or untrack cover its children", () => {
     const trackParent: PendingMap = { "docs/": "track" };
     expect(

@@ -34,9 +34,10 @@ function ancestorAction(rel: string, pending: PendingMap): PendingAction | null 
 
 /**
  * Tracked before staged marks.
- * Files follow the synced file list, so a hole punched in a parent folder
- * stays untracked. A folder is tracked when it is an explicit entry, or it
- * sits under a tracked folder and still contains a synced file.
+ * `trackedRels` holds synced file rels plus `dir/` keys of folders the include
+ * list covers, so a hole punched in a parent folder stays untracked. A folder
+ * is tracked when it is an explicit entry, or it sits under a tracked folder
+ * and is covered (even empty) or still contains a synced file.
  */
 function baselineTracked(
   path: string,
@@ -48,6 +49,7 @@ function baselineTracked(
   if (explicitEntry(path, entries)) return true;
   if (!coveringEntry(path, entries)) return false;
   const prefix = `${path}/`;
+  if (trackedRels.has(prefix)) return true;
   for (const rel of trackedRels) {
     if (rel.startsWith(prefix)) return true;
   }
@@ -81,7 +83,10 @@ export function hasTrackedInside(
 ): boolean {
   const prefix = `${rel.replace(/\/+$/, "")}/`;
   const candidates: [string, PickerKind][] = [
-    ...[...trackedRels].map((path): [string, PickerKind] => [path, "file"]),
+    ...[...trackedRels].map((path): [string, PickerKind] => [
+      path,
+      path.endsWith("/") ? "directory" : "file",
+    ]),
     ...entries.map((entry): [string, PickerKind] => [entry.key, entry.kind]),
     ...Object.entries(pending)
       .filter(([, action]) => action === "track")

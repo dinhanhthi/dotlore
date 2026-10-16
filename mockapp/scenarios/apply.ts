@@ -38,7 +38,13 @@ const seeds: Record<string, ScenarioSeed> = {
   "include-list-editor": {
     pickerExtra: {
       dotlore: {
-        "": [{ name: "NOTES.md", kind: "file", rel: "NOTES.md", sensitivity: null }],
+        "": [{
+            name: "NOTES.md",
+            kind: "file",
+            rel: "NOTES.md",
+            sensitivity: null,
+            included: false,
+          },],
       },
     },
   },

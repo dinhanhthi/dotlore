@@ -17,7 +17,7 @@ function renderRow(
   sensitivity: Sensitivity | null,
   kind: "file" | "directory" = "file",
 ): string {
-  const row: PickerRow = { name, kind, rel: name, sensitivity };
+  const row: PickerRow = { name, kind, rel: name, sensitivity, included: false };
   return renderToStaticMarkup(
     <PickerNode
       row={row}
