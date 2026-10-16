@@ -18,6 +18,7 @@ import {
 import { useRoots } from "@/lib/roots";
 import { cn } from "@/lib/utils";
 
+import { ProjectIgnoreDialog } from "./ProjectIgnoreDialog";
 import { RevealInFinderButton } from "./RevealInFinderButton";
 
 function useSelectedRoot() {
@@ -117,8 +118,9 @@ export function RemoveRootButton() {
 }
 
 export function RootOverflowMenu() {
-  const { active, revealPath } = useSelectedRoot();
+  const { root, active, revealPath } = useSelectedRoot();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [ignoreOpen, setIgnoreOpen] = useState(false);
 
   function reveal() {
     if (!revealPath) return;
@@ -130,41 +132,55 @@ export function RootOverflowMenu() {
   return (
     <RemoveRootControl>
       {(openRemove, removeDisabled) => (
-        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-          <Tooltip disabled={menuOpen}>
-            <TooltipTrigger
-              render={
-                <DropdownMenuTrigger
-                  render={
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-xs"
-                      disabled={!active}
-                      aria-label="More"
-                      className="text-muted-foreground"
-                    />
-                  }
-                />
-              }
-            >
-              <EllipsisVertical aria-hidden />
-            </TooltipTrigger>
-            <TooltipContent>More</TooltipContent>
-          </Tooltip>
-          <DropdownMenuContent align="end" sideOffset={6}>
-            <DropdownMenuItem
-              variant="destructive"
-              disabled={removeDisabled}
-              onClick={openRemove}
-            >
-              Remove
-            </DropdownMenuItem>
-            <DropdownMenuItem disabled={!active || !revealPath} onClick={reveal}>
-              Go to location
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <>
+          <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+            <Tooltip disabled={menuOpen}>
+              <TooltipTrigger
+                render={
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        disabled={!active}
+                        aria-label="More"
+                        className="text-muted-foreground"
+                      />
+                    }
+                  />
+                }
+              >
+                <EllipsisVertical aria-hidden />
+              </TooltipTrigger>
+              <TooltipContent>More</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end" sideOffset={6}>
+              <DropdownMenuItem
+                variant="destructive"
+                disabled={removeDisabled}
+                onClick={openRemove}
+              >
+                Remove
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!active}
+                onClick={() => setIgnoreOpen(true)}
+              >
+                Ignore list…
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={!active || !revealPath} onClick={reveal}>
+                Go to location
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <ProjectIgnoreDialog
+            slug={root?.slug ?? null}
+            name={root?.name ?? "this project"}
+            open={ignoreOpen}
+            onOpenChange={setIgnoreOpen}
+          />
+        </>
       )}
     </RemoveRootControl>
   );

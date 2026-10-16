@@ -21,6 +21,9 @@ use crate::config::{self, Config};
 /// The committed ignore file in a staging worktree.
 pub const IGNORE_FILE: &str = ".dotloreignore";
 
+/// The committed per-project ignore list, appended after the never-list.
+pub const PROJECT_IGNORE_FILE: &str = ".dotloreignore-project";
+
 /// The committed project file in a staging worktree.
 pub const PROJECT_FILE: &str = ".dotloreproject";
 
@@ -555,6 +558,7 @@ fn accept_pattern(root: &Path, pattern: &str, ignore: &Gitignore) -> Result<Opti
 pub fn staging_private(name: &str) -> bool {
     name == ".git"
         || name == IGNORE_FILE
+        || name == PROJECT_IGNORE_FILE
         || name == PROJECT_FILE
         || name.contains(".conflict-")
         || name.ends_with(".dotlore-tmp")

@@ -20,10 +20,12 @@ import {
   dismissError,
   getWorkSnapshot,
   listLinkable,
+  projectIgnore,
   removeRoot,
   reportError,
   runTask,
   sensitivePatterns,
+  setProjectIgnore,
   setSensitivePatterns,
   subscribeWork,
   trackEntry,
@@ -76,6 +78,28 @@ describe("sensitive patterns", () => {
     expect(invokeMock).toHaveBeenCalledWith("set_sensitive_patterns", {
       patterns: ["*.secret", "!x.secret"],
     });
+  });
+});
+
+describe("project ignore", () => {
+  it("reads one project's list through project_ignore", async () => {
+    invokeMock.mockResolvedValue("docs/cache/\n");
+    await expect(projectIgnore("proj")).resolves.toBe("docs/cache/\n");
+    expect(invokeMock).toHaveBeenCalledWith("project_ignore", { slug: "proj" });
+  });
+
+  it("saves one project's list through set_project_ignore as a task", async () => {
+    let label: string | null = null;
+    invokeMock.mockImplementation(async () => {
+      label = getWorkSnapshot().taskLabel;
+      return null;
+    });
+    await expect(setProjectIgnore("proj", "*.log\n")).resolves.not.toBe(BLOCKED);
+    expect(invokeMock).toHaveBeenCalledWith("set_project_ignore", {
+      slug: "proj",
+      ignore: "*.log\n",
+    });
+    expect(label).toBe("Applying ignore list…");
   });
 });
 

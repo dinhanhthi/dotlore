@@ -246,11 +246,21 @@ impl Repo {
         project::read(&self.staging)
     }
 
+    /// The committed never-list followed by the committed per-project list.
+    pub fn ignore_text(&self, _home_dir: &Path) -> String {
+        join_ignore(&self.never_ignore_text(), &self.project_ignore_text())
+    }
+
     /// The committed `.dotloreignore`, or the default never-list when absent
     /// (a linked root whose history has not arrived yet).
-    pub fn ignore_text(&self, _home_dir: &Path) -> String {
+    pub fn never_ignore_text(&self) -> String {
         fs::read_to_string(self.staging.join(crate::project::IGNORE_FILE))
             .unwrap_or_else(|_| project::DEFAULT_NEVER_IGNORE.to_string())
+    }
+
+    /// The committed `.dotloreignore-project`, or empty when absent.
+    pub fn project_ignore_text(&self) -> String {
+        fs::read_to_string(self.staging.join(project::PROJECT_IGNORE_FILE)).unwrap_or_default()
     }
 
     /// Mirror the root into staging and commit whatever changed.
@@ -1411,6 +1421,23 @@ pub fn provider_key(cloud: &Cloud) -> String {
 /// device's head is recorded, namespaced so a provider switch starts clean.
 pub fn remote_ref(provider_key: &str, device_id: &str) -> String {
     format!("refs/remotes/{provider_key}/{device_id}/main")
+}
+
+/// Effective ignore text: the never-list, then the per-project list. A `\n`
+/// goes between them when needed so the two never share a line. The project
+/// list can only add ignores: its `!` lines are dropped, so no list (a peer's
+/// included) can re-include a path the never-list keeps out.
+pub fn join_ignore(never: &str, project: &str) -> String {
+    let project: String = project
+        .split_inclusive('\n')
+        .filter(|line| !line.trim_start().starts_with('!'))
+        .collect();
+    let mut text = never.to_string();
+    if !project.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&project);
+    text
 }
 
 fn tx_ref(id: &str, name: &str) -> String {
@@ -3274,6 +3301,23 @@ mod tests {
         );
         fs::write(fx.repo.staging.join(".dotloreignore"), "custom\n").unwrap();
         assert_eq!(fx.repo.ignore_text(fx.home.path()), "custom\n");
+    }
+
+    #[test]
+    fn ignore_text_appends_the_project_list() {
+        let fx = fixture();
+        fs::write(fx.repo.staging.join(".dotloreignore"), "a").unwrap();
+        assert_eq!(fx.repo.ignore_text(fx.home.path()), "a");
+        fs::write(fx.repo.staging.join(".dotloreignore-project"), "b\n").unwrap();
+        assert_eq!(fx.repo.ignore_text(fx.home.path()), "a\nb\n");
+    }
+
+    #[test]
+    fn join_ignore_drops_negated_project_lines() {
+        assert_eq!(
+            join_ignore("/auth.json\n", "!/auth.json\nb\n  !c\n"),
+            "/auth.json\nb\n"
+        );
     }
 
     #[test]

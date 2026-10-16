@@ -78,7 +78,7 @@ const SETTINGS_TABS = [
 
 type SettingsTab = (typeof SETTINGS_TABS)[number]["id"];
 
-function ignoreToLines(text: string): string[] {
+export function ignoreToLines(text: string): string[] {
   return text.split("\n").filter((line) => line.length > 0);
 }
 

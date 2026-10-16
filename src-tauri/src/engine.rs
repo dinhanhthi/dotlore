@@ -1203,6 +1203,60 @@ impl Engine {
         let repo = self.repo_for(&root)?;
         let old = repo.ignore_text(&self.home_dir);
         let new = self.default_ignore();
+        // The project list still follows, so its paths stay untracked.
+        let effective = repo::join_ignore(&new, &repo.project_ignore_text());
+        let ignore = mirror::build_ignore(&root.path, &effective)?;
+        let file = self.untrack_newly_ignored(&root, &repo, &old, &ignore)?;
+        project::write(&repo.staging, &file)?;
+        fs::write(repo.staging.join(project::IGNORE_FILE), &new)?;
+        let status = self.run_cycle(&cloud, &root, FetchMode::Normal);
+        self.settle(&g, slug, &status)?;
+        Ok(status)
+    }
+
+    /// `slug`'s own ignore list, on top of the never-list ("" when it has none).
+    pub fn project_ignore(&self, slug: &str) -> Result<String> {
+        Ok(self.repo_for(&self.root_cfg(slug)?)?.project_ignore_text())
+    }
+
+    /// Write `slug`'s own ignore list and untrack every tracked path the
+    /// effective list now matches, like `apply_default_ignore`. The text is
+    /// validated before anything is written: a committed line that does not
+    /// build would fail every later cycle, and a `!` line is refused because
+    /// the project list can only add ignores.
+    pub fn set_project_ignore(&mut self, slug: &str, text: String) -> Result<RootStatus> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let cloud = self.cloud();
+        let root = self.root_cfg(slug)?;
+        let repo = self.repo_for(&root)?;
+        let old = repo.ignore_text(&self.home_dir);
+        if let Some(line) = text.lines().find(|l| l.trim_start().starts_with('!')) {
+            bail!("a project ignore line cannot start with !: {line}");
+        }
+        let new = repo::join_ignore(&repo.never_ignore_text(), &text);
+        let ignore = mirror::build_ignore(&root.path, &new)?;
+        if text == repo.project_ignore_text() {
+            return root_status(&repo);
+        }
+        let file = self.untrack_newly_ignored(&root, &repo, &old, &ignore)?;
+        project::write(&repo.staging, &file)?;
+        fs::write(repo.staging.join(project::PROJECT_IGNORE_FILE), &text)?;
+        let status = self.run_cycle(&cloud, &root, FetchMode::Normal);
+        self.settle(&g, slug, &status)?;
+        Ok(status)
+    }
+
+    /// `root`'s include-list with every path `ignore` matches untracked:
+    /// staged paths, plus the live ones the `old` ignore text let through.
+    /// Untracking (not deleting) is what lets peers keep their live copies.
+    fn untrack_newly_ignored(
+        &self,
+        root: &Root,
+        repo: &Repo,
+        old: &str,
+        ignore: &ignore::gitignore::Gitignore,
+    ) -> Result<project::ProjectFile> {
         let mut file = repo.project_file()?;
         let entries = file.tracked();
         // Staged paths too: a peer may hold them live even when this root does not.
@@ -1216,23 +1270,18 @@ impl Engine {
             .collect();
         if root_present(&root.path) {
             let limits = Limits::from_config(&self.cfg);
-            for (rel, _, _) in mirror::list_live(&root.path, &entries, &old, limits)? {
+            for (rel, _, _) in mirror::list_live(&root.path, &entries, old, limits)? {
                 rels.insert(rel);
             }
         }
-        let ignore = mirror::build_ignore(&root.path, &new)?;
         let hits: BTreeSet<(PathBuf, bool)> = rels
             .iter()
-            .filter_map(|rel| ignored_prefix(&ignore, rel))
+            .filter_map(|rel| ignored_prefix(ignore, rel))
             .collect();
         for (rel, is_dir) in &hits {
             file.untrack_as(rel, Some(*is_dir))?;
         }
-        project::write(&repo.staging, &file)?;
-        fs::write(repo.staging.join(project::IGNORE_FILE), &new)?;
-        let status = self.run_cycle(&cloud, &root, FetchMode::Normal);
-        self.settle(&g, slug, &status)?;
-        Ok(status)
+        Ok(file)
     }
 
     /// Effective per-file ceiling in MiB (`None` in config → 50).
@@ -2277,7 +2326,7 @@ fn root_status(repo: &Repo) -> Result<RootStatus> {
     }
     match open_conflicts(repo)?
         .iter()
-        .filter(|c| c.live != Path::new(crate::project::IGNORE_FILE))
+        .filter(|c| !is_ignore_file(&c.live))
         .count()
     {
         0 => Ok(RootStatus::Synced),
@@ -2286,16 +2335,20 @@ fn root_status(repo: &Repo) -> Result<RootStatus> {
 }
 
 /// Conflicts whose live path is still in the include-list, plus the ignore
-/// file's. An untracked path keeps its staged blobs, siblings included, so
+/// files'. An untracked path keeps its staged blobs, siblings included, so
 /// they are left out rather than counted forever.
 fn open_conflicts(repo: &Repo) -> Result<Vec<conflict::Conflict>> {
     let entries = repo.project_file()?.tracked();
     Ok(conflict::list(&repo.git)?
         .into_iter()
-        .filter(|c| {
-            c.live == Path::new(crate::project::IGNORE_FILE) || entries.contains_rel(&c.live)
-        })
+        .filter(|c| is_ignore_file(&c.live) || entries.contains_rel(&c.live))
         .collect())
+}
+
+/// The never-list or the per-project list: listed, but not in the badge.
+fn is_ignore_file(p: &Path) -> bool {
+    p == Path::new(crate::project::IGNORE_FILE)
+        || p == Path::new(crate::project::PROJECT_IGNORE_FILE)
 }
 
 /// Local-only record that a remote commit's content is already in `main`.
@@ -3567,6 +3620,129 @@ mod tests {
         );
     }
 
+    #[test]
+    fn set_project_ignore_untracks_matches_and_keeps_live_files() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "docs/keep.md", b"keep\n");
+        write(&a, "docs/cache/x.md", b"x\n");
+        add(&mut a);
+        assert_eq!(a.engine.project_ignore("proj-claude").unwrap(), "");
+
+        assert_eq!(
+            a.engine
+                .set_project_ignore("proj-claude", "docs/cache/\n".into())
+                .unwrap(),
+            RootStatus::Synced
+        );
+        let file = crate::project::read(&staging(&a)).unwrap();
+        assert_eq!(
+            file.entries["docs/cache/"].state,
+            crate::project::State::Removed
+        );
+        assert_eq!(
+            a.engine.project_ignore("proj-claude").unwrap(),
+            "docs/cache/\n"
+        );
+        assert_eq!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap()),
+            ["docs/keep.md"]
+        );
+        assert!(a.root.path().join("docs/cache/x.md").is_file());
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        assert_eq!(
+            repo.git
+                .ok(&["ls-files", "--", crate::project::PROJECT_IGNORE_FILE])
+                .unwrap()
+                .trim(),
+            crate::project::PROJECT_IGNORE_FILE
+        );
+        assert!(repo.git.ok(&["status", "--porcelain"]).unwrap().is_empty());
+        assert_eq!(
+            a.engine
+                .set_project_ignore("proj-claude", "docs/cache/\n".into())
+                .unwrap(),
+            RootStatus::Synced
+        );
+    }
+
+    #[test]
+    fn set_project_ignore_rejects_an_invalid_line_without_writing() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "docs/keep.md", b"keep\n");
+        write(&a, "docs/cache/x.md", b"x\n");
+        add(&mut a);
+        let before = crate::project::read(&staging(&a)).unwrap();
+
+        assert!(a
+            .engine
+            .set_project_ignore("proj-claude", "docs/cache/\n[z-a].md\n".into())
+            .is_err());
+        assert!(!staging(&a)
+            .join(crate::project::PROJECT_IGNORE_FILE)
+            .exists());
+        assert_eq!(crate::project::read(&staging(&a)).unwrap(), before);
+        assert_eq!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap()),
+            ["docs/cache/x.md", "docs/keep.md"]
+        );
+    }
+
+    #[test]
+    fn set_project_ignore_rejects_a_negation_without_writing() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "docs/keep.md", b"keep\n");
+        add(&mut a);
+        let before = crate::project::read(&staging(&a)).unwrap();
+
+        let err = a
+            .engine
+            .set_project_ignore("proj-claude", "docs/cache/\n  !/.credentials.json\n".into())
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot start with !"), "{err}");
+        assert!(!staging(&a)
+            .join(crate::project::PROJECT_IGNORE_FILE)
+            .exists());
+        assert_eq!(crate::project::read(&staging(&a)).unwrap(), before);
+    }
+
+    #[test]
+    fn apply_default_ignore_keeps_the_project_list() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "docs/keep.md", b"keep\n");
+        write(&a, "docs/drop.log", b"drop\n");
+        write(&a, "docs/cache/x.md", b"x\n");
+        add(&mut a);
+        a.engine
+            .set_project_ignore("proj-claude", "docs/cache/\n".into())
+            .unwrap();
+
+        let ignore = format!("{}*.log\n", a.engine.default_ignore());
+        a.engine.set_default_ignore(ignore.clone()).unwrap();
+        assert_eq!(
+            a.engine.apply_default_ignore("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(
+            fs::read_to_string(staging(&a).join(crate::project::IGNORE_FILE)).unwrap(),
+            ignore
+        );
+        assert_eq!(
+            a.engine.project_ignore("proj-claude").unwrap(),
+            "docs/cache/\n"
+        );
+        assert_eq!(
+            rels(&a.engine.tracked_files("proj-claude").unwrap()),
+            ["docs/keep.md"]
+        );
+    }
+
     /// Two devices adding the same slug must not mint unrelated histories:
     /// the second Add is a Link. Run on a thread because taking the home lock
     /// twice in one process deadlocks — which is exactly the bug a delegation
@@ -4095,6 +4271,58 @@ mod tests {
         let snap = a
             .engine
             .open_resolution("proj-claude", Path::new(crate::project::IGNORE_FILE))
+            .unwrap();
+        let out = a
+            .engine
+            .resolve_conflict("proj-claude", &snap, &[sibling], &snap.live_bytes)
+            .unwrap();
+        assert_eq!(out, ResolveOutcome::Applied(RootStatus::Synced));
+        assert!(a.engine.conflicts("proj-claude").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_project_ignore_file_conflict_is_not_counted_in_the_badge() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"mine\n");
+        add(&mut a);
+        a.engine
+            .set_project_ignore("proj-claude", "mine.tmp\n".into())
+            .unwrap();
+
+        let cloud = cloud_of(&a);
+        cloud
+            .write_device_name("proj-claude", &"b".repeat(32), "Mac b Pro")
+            .unwrap();
+        let root = a.engine.root_cfg("proj-claude").unwrap();
+        let repo = a.engine.repo_for(&root).unwrap();
+        let sibling = PathBuf::from(format!(
+            "{}.conflict-bbbbbbbb-abc1234",
+            crate::project::PROJECT_IGNORE_FILE
+        ));
+        fs::write(repo.staging.join(&sibling), b"theirs.tmp\n").unwrap();
+        repo.git.ok(&["add", "-A"]).unwrap();
+        repo.git
+            .ok(&["commit", "-m", "project ignore conflict"])
+            .unwrap();
+
+        assert_eq!(root_status(&repo).unwrap(), RootStatus::Synced);
+
+        let views = a.engine.conflicts("proj-claude").unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(
+            views[0].live,
+            Path::new(crate::project::PROJECT_IGNORE_FILE)
+        );
+        assert_eq!(views[0].sibling, sibling);
+        assert_eq!(views[0].loser_id8, "bbbbbbbb");
+
+        let snap = a
+            .engine
+            .open_resolution(
+                "proj-claude",
+                Path::new(crate::project::PROJECT_IGNORE_FILE),
+            )
             .unwrap();
         let out = a
             .engine

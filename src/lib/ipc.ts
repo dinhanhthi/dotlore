@@ -611,6 +611,20 @@ export function applyDefaultIgnore(): Promise<void | typeof BLOCKED> {
   return runTask("Applying never-list…", () => invoke<void>("apply_default_ignore"));
 }
 
+export function projectIgnore(slug: string): Promise<string> {
+  return invoke("project_ignore", { slug });
+}
+
+/** Save one project's own ignore list and untrack its matches; files stay on disk. */
+export function setProjectIgnore(
+  slug: string,
+  ignore: string,
+): Promise<void | typeof BLOCKED> {
+  return runTask("Applying ignore list…", () =>
+    invoke<void>("set_project_ignore", { slug, ignore }),
+  );
+}
+
 /** Track new pattern matches in every current root. */
 export function applyDefaultPatterns(): Promise<void | typeof BLOCKED> {
   return runTask("Applying patterns…", () =>

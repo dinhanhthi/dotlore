@@ -1054,6 +1054,40 @@ pub async fn apply_default_ignore(
     notify(&app, &state)
 }
 
+#[tauri::command]
+pub async fn project_ignore(state: State<'_, AppState>, slug: String) -> Result<String, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .project_ignore(&slug)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+#[tauri::command]
+pub async fn set_project_ignore(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    slug: String,
+    ignore: String,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set_project_ignore(&slug, ignore)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
+}
+
 /// Track new pattern matches in every registered root, one engine lock per
 /// root like [`apply_default_ignore`].
 #[tauri::command]

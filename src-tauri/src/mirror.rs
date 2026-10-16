@@ -1452,6 +1452,7 @@ mod tests {
         let td = TempDir::new().unwrap();
         let (root, staging) = dirs(&td);
         put(&staging.join(".dotloreignore"), "*.log\n");
+        put(&staging.join(".dotloreignore-project"), "*.tmp\n");
         put(&staging.join(".dotloreproject"), "{}\n");
         put(&staging.join("a.conflict-dev2.md"), "loser");
         put(&root.join("keep.md"), "keep");
@@ -1461,6 +1462,7 @@ mod tests {
             &root,
             &[
                 (Status::Added, PathBuf::from(".dotloreignore")),
+                (Status::Added, PathBuf::from(".dotloreignore-project")),
                 (Status::Added, PathBuf::from(".dotloreproject")),
                 (Status::Added, PathBuf::from("a.conflict-dev2.md")),
             ],
@@ -1479,6 +1481,7 @@ mod tests {
             files(&staging),
             vec![
                 ".dotloreignore".to_string(),
+                ".dotloreignore-project".to_string(),
                 ".dotloreproject".to_string(),
                 "a.conflict-dev2.md".to_string(),
                 "keep.md".to_string(),
