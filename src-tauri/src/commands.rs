@@ -1720,12 +1720,14 @@ fn list_entry_children_sync(
         .ok_or_else(|| front_msg(format!("unknown root {slug}")))?;
     let (entries, ignore) = engine.include_filter(slug).map_err(front_err)?;
     let ignore = crate::mirror::build_ignore(&root.path, &ignore).map_err(front_err)?;
+    let guard = engine.reinclude_guard(slug).map_err(front_err)?;
     list_children_in(
         &root.path,
         rel,
         &engine.sensitive_matcher(),
         &entries,
         &ignore,
+        guard.as_ref(),
     )
 }
 
@@ -1739,6 +1741,7 @@ fn list_children_in(
     matcher: &project::SensitiveMatcher,
     entries: &project::EntryList,
     ignore: &ignore::gitignore::Gitignore,
+    guard: Option<&crate::mirror::ReincludeGuard>,
 ) -> Result<Vec<PickerRow>, String> {
     if !picker_rel_ok(rel) {
         return Err(front_msg(format!("unsafe path {rel}")));
@@ -1765,6 +1768,12 @@ fn list_children_in(
             Err(e) => return Err(front_msg(e)),
         }
     };
+    // The capture walk prunes each ignored folder on the way down, so nothing
+    // under one is covered, whatever a `!` line says about the child.
+    let in_ignored_dir = rel_path
+        .ancestors()
+        .filter(|d| !d.as_os_str().is_empty())
+        .any(|d| ignore.matched_path_or_any_parents(d, true).is_ignore());
     let mut out = Vec::new();
     for name in names {
         let Some(name_str) = name.to_str().map(str::to_string) else {
@@ -1782,10 +1791,14 @@ fn list_children_in(
             format!("{rel}/{name_str}")
         };
         let child = Path::new(&child_rel);
+        // The guard is per-file, like the capture it mirrors, so folders
+        // keep their entry/ignore answer.
         let included = entries.contains_rel(child)
+            && !in_ignored_dir
             && !ignore
                 .matched_path_or_any_parents(child, kind == "directory")
-                .is_ignore();
+                .is_ignore()
+            && !(kind == "file" && guard.is_some_and(|g| g.blocks(child)));
         out.push(PickerRow {
             included,
             sensitivity: if kind == "file" {
@@ -2249,6 +2262,72 @@ mod tests {
             "an ignored folder is not covered"
         );
         assert!(!included("other"));
+    }
+
+    #[test]
+    fn a_guarded_sensitive_file_is_not_covered() {
+        let td = TempDir::new().unwrap();
+        let root = td.path();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("docs/keep.log"), b"k\n").unwrap();
+        fs::write(root.join("docs/credentials.log"), b"c\n").unwrap();
+        let mut file = project::ProjectFile::default();
+        file.entries.insert(
+            "docs/".into(),
+            project::EntryRecord {
+                gen: 1,
+                state: project::State::Tracked,
+            },
+        );
+        let matcher = project::SensitiveMatcher::default_secret();
+        let guard = crate::mirror::ReincludeGuard::new(root, "*.log\n", matcher.clone()).unwrap();
+        let ignore = crate::mirror::build_ignore(root, "*.log\n!*.log\n").unwrap();
+        let rows = list_children_in(
+            root,
+            "docs",
+            &matcher,
+            &file.tracked(),
+            &ignore,
+            Some(&guard),
+        )
+        .unwrap();
+        let included = |rel: &str| rows.iter().find(|row| row.rel == rel).unwrap().included;
+        assert!(included("docs/keep.log"));
+        assert!(
+            !included("docs/credentials.log"),
+            "a re-included secret the capture guard blocks is not covered"
+        );
+    }
+
+    #[test]
+    fn a_file_under_an_ignored_folder_is_not_covered() {
+        let td = TempDir::new().unwrap();
+        let root = td.path();
+        fs::create_dir_all(root.join("plans")).unwrap();
+        fs::write(root.join("plans/notes.md"), b"n\n").unwrap();
+        let mut file = project::ProjectFile::default();
+        file.entries.insert(
+            "plans/".into(),
+            project::EntryRecord {
+                gen: 1,
+                state: project::State::Tracked,
+            },
+        );
+        let matcher = project::SensitiveMatcher::default_secret();
+        let included = |ignore_text: &str| {
+            let ignore = crate::mirror::build_ignore(root, ignore_text).unwrap();
+            list_children_in(root, "plans", &matcher, &file.tracked(), &ignore, None)
+                .unwrap()
+                .into_iter()
+                .find(|row| row.rel == "plans/notes.md")
+                .unwrap()
+                .included
+        };
+        assert!(
+            !included("/plans/\n!/plans/notes.md\n"),
+            "the capture walk never enters an ignored folder"
+        );
+        assert!(included("/plans/\n!/plans/\n"));
     }
 
     #[test]

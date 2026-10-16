@@ -73,7 +73,7 @@ describe("ProjectIgnoreDialog", () => {
     );
     expect(html).toContain("Ignore list — Demo");
     expect(html).toContain(
-      "Only for this project, on top of the global never-list. Syncs to your other Macs. Matching files are untracked, not deleted.",
+      "Only for this project, on top of the global never-list. Syncs to your other Macs. Matching files are untracked, not deleted. Start a line with ! to sync a path the never-list ignores (name the ignored entry itself, e.g. !/plans/); sensitive files always stay out.",
     );
     expect(html).toContain('placeholder="Add an entry"');
     expect(addInput(html)).not.toContain('disabled=""');

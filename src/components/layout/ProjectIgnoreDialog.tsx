@@ -62,7 +62,7 @@ export function ProjectIgnoreDialog({
         <div className="flex h-[24rem] min-h-0 flex-col">
           <SettingsSeedList
             id={`project-ignore-${slug}`}
-            hint="Only for this project, on top of the global never-list. Syncs to your other Macs. Matching files are untracked, not deleted."
+            hint="Only for this project, on top of the global never-list. Syncs to your other Macs. Matching files are untracked, not deleted. Start a line with ! to sync a path the never-list ignores (name the ignored entry itself, e.g. !/plans/); sensitive files always stay out."
             lines={lines}
             disabled={locked || taskLabel !== null}
             addPlaceholder="Add an entry"

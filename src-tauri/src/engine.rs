@@ -822,6 +822,7 @@ impl Engine {
         let repo = self.repo_for(&root)?;
         let entries = repo.project_file()?.tracked();
         let ignore = repo.ignore_text(&self.home_dir);
+        let guard = repo.reinclude_guard()?;
         let limits = Limits::from_config(&self.cfg);
         let staged = repo.git.ok(&["ls-files", "-z"])?;
         let live_path = root.path.clone();
@@ -838,7 +839,8 @@ impl Engine {
 
         let mut by_rel = BTreeMap::new();
         if root_present(&live_path) {
-            for (rel, bytes, too_large) in mirror::list_live(&live_path, &entries, &ignore, limits)?
+            for (rel, bytes, too_large) in
+                mirror::list_live(&live_path, &entries, &ignore, limits, guard.as_ref())?
             {
                 let rel = rel.to_string_lossy().into_owned();
                 if is_internal(&rel) {
@@ -1171,6 +1173,11 @@ impl Engine {
         ))
     }
 
+    /// `slug`'s capture guard, `None` when its project list has no `!` line.
+    pub(crate) fn reinclude_guard(&self, slug: &str) -> Result<Option<mirror::ReincludeGuard>> {
+        self.repo_for(&self.root_cfg(slug)?)?.reinclude_guard()
+    }
+
     /// Effective ignore text (`None` in config → `DEFAULT_NEVER_IGNORE`).
     pub fn default_ignore(&self) -> String {
         self.cfg
@@ -1222,8 +1229,7 @@ impl Engine {
     /// Write `slug`'s own ignore list and untrack every tracked path the
     /// effective list now matches, like `apply_default_ignore`. The text is
     /// validated before anything is written: a committed line that does not
-    /// build would fail every later cycle, and a `!` line is refused because
-    /// the project list can only add ignores.
+    /// build would fail every later cycle.
     pub fn set_project_ignore(&mut self, slug: &str, text: String) -> Result<RootStatus> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
@@ -1231,9 +1237,6 @@ impl Engine {
         let root = self.root_cfg(slug)?;
         let repo = self.repo_for(&root)?;
         let old = repo.ignore_text(&self.home_dir);
-        if let Some(line) = text.lines().find(|l| l.trim_start().starts_with('!')) {
-            bail!("a project ignore line cannot start with !: {line}");
-        }
         let new = repo::join_ignore(&repo.never_ignore_text(), &text);
         let ignore = mirror::build_ignore(&root.path, &new)?;
         if text == repo.project_ignore_text() {
@@ -1270,7 +1273,7 @@ impl Engine {
             .collect();
         if root_present(&root.path) {
             let limits = Limits::from_config(&self.cfg);
-            for (rel, _, _) in mirror::list_live(&root.path, &entries, old, limits)? {
+            for (rel, _, _) in mirror::list_live(&root.path, &entries, old, limits, None)? {
                 rels.insert(rel);
             }
         }
@@ -2005,6 +2008,7 @@ impl Engine {
             &self.cfg.device_id,
         )?;
         repo.limits = Limits::from_config(&self.cfg);
+        repo.sensitive = self.sensitive_matcher();
         Ok(repo)
     }
 
@@ -2674,11 +2678,12 @@ fn secret_descendants(
             state: State::Tracked,
         },
     );
-    let mut paths: Vec<String> = mirror::list_live(root, &entries.tracked(), ignore_text, limits)?
-        .into_iter()
-        .filter(|(path, _, _)| matcher.classify(path) == Some(Sensitivity::Secret))
-        .map(|(path, _, _)| path.to_string_lossy().into_owned())
-        .collect();
+    let mut paths: Vec<String> =
+        mirror::list_live(root, &entries.tracked(), ignore_text, limits, None)?
+            .into_iter()
+            .filter(|(path, _, _)| matcher.classify(path) == Some(Sensitivity::Secret))
+            .map(|(path, _, _)| path.to_string_lossy().into_owned())
+            .collect();
     paths.sort();
     let more = paths.len() > 20;
     paths.truncate(20);
@@ -3692,23 +3697,113 @@ mod tests {
         );
     }
 
+    /// `docs/keep.log` and `docs/credentials.log` behind a never-listed
+    /// `*.log`, under a tracked `docs/`.
+    fn device_with_never_listed_logs(provider: &Path) -> Dev {
+        let mut a = device(provider, 'a');
+        let never = format!("{}*.log\n", a.engine.default_ignore());
+        a.engine.set_default_ignore(never).unwrap();
+        write(&a, "docs/keep.md", b"keep\n");
+        write(&a, "docs/keep.log", b"keep\n");
+        write(&a, "docs/credentials.log", b"secret\n");
+        add(&mut a);
+        a
+    }
+
+    fn staged_files(dev: &Dev) -> Vec<String> {
+        let repo = dev
+            .engine
+            .repo_for(&dev.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        repo.git
+            .ok(&["ls-files"])
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
     #[test]
-    fn set_project_ignore_rejects_a_negation_without_writing() {
+    fn a_project_negation_syncs_a_never_listed_file_but_not_a_sensitive_one() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device_with_never_listed_logs(provider.path());
+        assert!(!staged_files(&a).contains(&"docs/keep.log".into()));
+
+        assert_eq!(
+            a.engine
+                .set_project_ignore("proj-claude", "!*.log\n".into())
+                .unwrap(),
+            RootStatus::Synced
+        );
+        let staged = staged_files(&a);
+        assert!(staged.contains(&"docs/keep.log".into()), "{staged:?}");
+        assert!(
+            !staged.contains(&"docs/credentials.log".into()),
+            "{staged:?}"
+        );
+        let tracked = rels(&a.engine.tracked_files("proj-claude").unwrap());
+        assert!(tracked.contains(&"docs/keep.log".into()), "{tracked:?}");
+        assert!(
+            !tracked.contains(&"docs/credentials.log".into()),
+            "{tracked:?}"
+        );
+    }
+
+    #[test]
+    fn a_project_negation_is_guarded_by_the_custom_sensitive_patterns() {
         let provider = TempDir::new().unwrap();
         let mut a = device(provider.path(), 'a');
+        let never = format!("{}docs/vault/\n", a.engine.default_ignore());
+        a.engine.set_default_ignore(never).unwrap();
         write(&a, "docs/keep.md", b"keep\n");
+        write(&a, "docs/vault/ok.md", b"ok\n");
+        write(&a, "docs/vault/x.token", b"secret\n");
         add(&mut a);
-        let before = crate::project::read(&staging(&a)).unwrap();
+        a.engine
+            .set_sensitive_patterns(vec!["*.token".into()])
+            .unwrap();
 
-        let err = a
+        assert_eq!(
+            a.engine
+                .set_project_ignore("proj-claude", "!docs/vault/\n".into())
+                .unwrap(),
+            RootStatus::Synced
+        );
+        let staged = staged_files(&a);
+        assert!(staged.contains(&"docs/vault/ok.md".into()), "{staged:?}");
+        assert!(!staged.contains(&"docs/vault/x.token".into()), "{staged:?}");
+    }
+
+    #[test]
+    fn a_peer_negation_is_guarded_too() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device_with_never_listed_logs(provider.path());
+        // As a merge lands it: committed straight into staging, never through
+        // `set_project_ignore`.
+        fs::write(
+            staging(&a).join(crate::project::PROJECT_IGNORE_FILE),
+            "!*.log\n",
+        )
+        .unwrap();
+        let repo = a
             .engine
-            .set_project_ignore("proj-claude", "docs/cache/\n  !/.credentials.json\n".into())
-            .unwrap_err();
-        assert!(err.to_string().contains("cannot start with !"), "{err}");
-        assert!(!staging(&a)
-            .join(crate::project::PROJECT_IGNORE_FILE)
-            .exists());
-        assert_eq!(crate::project::read(&staging(&a)).unwrap(), before);
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        repo.git
+            .ok(&["add", "--", crate::project::PROJECT_IGNORE_FILE])
+            .unwrap();
+        repo.git.ok(&["commit", "-m", "peer list"]).unwrap();
+
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        let staged = staged_files(&a);
+        assert!(staged.contains(&"docs/keep.log".into()), "{staged:?}");
+        assert!(
+            !staged.contains(&"docs/credentials.log".into()),
+            "{staged:?}"
+        );
     }
 
     #[test]

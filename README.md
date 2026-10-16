@@ -40,7 +40,7 @@ Other Macs fetch and merge those bundles with the system `git`. On overlapping e
 
 Global settings (seed patterns, ignore defaults, sensitive patterns, size limits) sync as small write-once snapshots under `<cloud>/dotlore/_settings/`, so a new Mac picks them up automatically.
 
-Each project can also have its own ignore list (project menu → "Ignore list…"). It only adds ignores on top of the global never-list (it cannot re-include a path) and syncs with the project. Update Dotlore on every Mac before using it: older versions do not read the project list.
+Each project can also have its own ignore list (project menu → "Ignore list…"). It adds ignores on top of the global never-list and syncs with the project. A `!` line re-includes a path the never-list ignores, but sensitive files (Settings → sensitive patterns, plus `.credentials.json`, `auth.json`, `.claude.json` and its copies under `backups/`) are never re-included. Update Dotlore on every Mac before using it: older versions ignore the project list or its `!` lines.
 
 ### 🗑️ Trash
 

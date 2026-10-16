@@ -125,6 +125,7 @@ fn pattern_matcher<S: AsRef<str>>(patterns: &[S]) -> Result<Gitignore> {
 }
 
 /// Gitignore-style matcher for secret paths. `TOKEN_HINT_PATTERNS` stay builtin.
+#[derive(Clone)]
 pub struct SensitiveMatcher {
     secret: Gitignore,
 }
@@ -277,6 +278,17 @@ pub const GENERIC_AGENT_PATTERNS: &[&str] = &[
     "rules/",
     "hooks/",
     "prompts/",
+];
+
+/// Credential files a project `!` line can never re-include, whatever the
+/// user's sensitive patterns say. Unanchored so they match at any depth:
+/// Claude Code keeps full `.claude.json` copies under the never-listed
+/// `backups/` (`.claude.json.backup.<ts>`).
+pub const NEVER_REINCLUDE: &[&str] = &[
+    ".credentials.json",
+    "auth.json",
+    ".claude.json",
+    ".claude.json.*",
 ];
 
 /// Gitignore text written into each project's `.dotloreignore` at add time.
@@ -1085,8 +1097,15 @@ mod tests {
                 },
             );
         }
-        crate::mirror::root_to_staging(root, &staging, &file.tracked(), ignore, Limits::default())
-            .unwrap();
+        crate::mirror::root_to_staging(
+            root,
+            &staging,
+            &file.tracked(),
+            ignore,
+            Limits::default(),
+            None,
+        )
+        .unwrap();
         fn go(base: &Path, dir: &Path, out: &mut Vec<String>) {
             for e in fs::read_dir(dir).unwrap().flatten() {
                 let p = e.path();

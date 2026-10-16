@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::cloud::Cloud;
 use crate::git::Git;
 use crate::mirror::{self, FileState, Snapshot, Status};
-use crate::project::{self, EntryList, Limits, ProjectFile};
+use crate::project::{self, EntryList, Limits, ProjectFile, SensitiveMatcher};
 
 /// Journal format; a file written by a newer build is refused, not guessed at.
 const JOURNAL_VERSION: u32 = 1;
@@ -128,6 +128,9 @@ pub struct Repo {
     device_name: String,
     /// Per-sync file/folder ceilings. Engine overwrites from config.
     pub limits: Limits,
+    /// Sensitive patterns for the [`mirror::ReincludeGuard`]. Engine
+    /// overwrites from config.
+    pub sensitive: SensitiveMatcher,
 }
 
 impl Repo {
@@ -229,6 +232,7 @@ impl Repo {
             home: home.to_path_buf(),
             device_name: device_name.to_string(),
             limits: Limits::default(),
+            sensitive: SensitiveMatcher::default_secret(),
         })
     }
 
@@ -263,6 +267,23 @@ impl Repo {
         fs::read_to_string(self.staging.join(project::PROJECT_IGNORE_FILE)).unwrap_or_default()
     }
 
+    /// The capture guard for this root's project list, or `None` when no
+    /// project line starts with `!` (nothing can be re-included).
+    pub fn reinclude_guard(&self) -> Result<Option<mirror::ReincludeGuard>> {
+        let negates = self
+            .project_ignore_text()
+            .lines()
+            .any(|l| l.trim_start().starts_with('!'));
+        if !negates {
+            return Ok(None);
+        }
+        Ok(Some(mirror::ReincludeGuard::new(
+            &self.root,
+            &self.never_ignore_text(),
+            self.sensitive.clone(),
+        )?))
+    }
+
     /// Mirror the root into staging and commit whatever changed.
     ///
     /// Returns whether a commit was made. `allow_empty_first` mints an empty
@@ -280,6 +301,7 @@ impl Repo {
             &entries,
             &self.ignore_text(home_dir),
             self.limits,
+            self.reinclude_guard()?.as_ref(),
         )?;
         stage_worktree(&self.git, &self.staging)?;
 
@@ -1200,6 +1222,7 @@ impl Transaction {
             &entries,
             &repo.ignore_text(home_dir),
             repo.limits,
+            repo.reinclude_guard()?.as_ref(),
         )?;
         stage_worktree(g, &self.worktree)?;
         g.ok(&[
@@ -1424,19 +1447,16 @@ pub fn remote_ref(provider_key: &str, device_id: &str) -> String {
 }
 
 /// Effective ignore text: the never-list, then the per-project list. A `\n`
-/// goes between them when needed so the two never share a line. The project
-/// list can only add ignores: its `!` lines are dropped, so no list (a peer's
-/// included) can re-include a path the never-list keeps out.
+/// goes between them when needed so the two never share a line. A project `!`
+/// line re-includes a path the never-list ignores; the capture's
+/// [`mirror::ReincludeGuard`] keeps the sensitive ones out, a peer's list
+/// included.
 pub fn join_ignore(never: &str, project: &str) -> String {
-    let project: String = project
-        .split_inclusive('\n')
-        .filter(|line| !line.trim_start().starts_with('!'))
-        .collect();
     let mut text = never.to_string();
     if !project.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&project);
+    text.push_str(project);
     text
 }
 
@@ -3313,10 +3333,10 @@ mod tests {
     }
 
     #[test]
-    fn join_ignore_drops_negated_project_lines() {
+    fn join_ignore_keeps_project_negations() {
         assert_eq!(
             join_ignore("/auth.json\n", "!/auth.json\nb\n  !c\n"),
-            "/auth.json\nb\n"
+            "/auth.json\n!/auth.json\nb\n  !c\n"
         );
     }
 

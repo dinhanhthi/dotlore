@@ -19,7 +19,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use crate::project::{EntryList, Limits};
+use crate::project::{EntryList, Limits, SensitiveMatcher, Sensitivity, NEVER_REINCLUDE};
 
 /// What happened to one logical entry between two staging commits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -51,16 +51,53 @@ pub struct MirrorReport {
     pub skipped_too_large: Vec<(PathBuf, u64)>,
 }
 
+/// Keeps sensitive files out of capture when a project `!` line re-included
+/// them past the never-list.
+pub struct ReincludeGuard {
+    never: Gitignore,
+    builtin: Gitignore,
+    sensitive: SensitiveMatcher,
+}
+
+impl ReincludeGuard {
+    /// `never_text` is the never-list alone, without the project list.
+    pub fn new(root: &Path, never_text: &str, sensitive: SensitiveMatcher) -> Result<Self> {
+        Ok(ReincludeGuard {
+            never: build_ignore(root, never_text)?,
+            builtin: build_ignore(root, &NEVER_REINCLUDE.join("\n"))?,
+            sensitive,
+        })
+    }
+
+    /// True when the never-list ignores `rel` (or a parent) and `rel` is in
+    /// `NEVER_REINCLUDE` or Secret-sensitive. Only files the effective ignore
+    /// text let through reach this, so a match here means a `!` line
+    /// re-included it.
+    pub fn blocks(&self, rel: &Path) -> bool {
+        self.never
+            .matched_path_or_any_parents(rel, false)
+            .is_ignore()
+            && (self
+                .builtin
+                .matched_path_or_any_parents(rel, false)
+                .is_ignore()
+                || self.sensitive.classify(rel) == Some(Sensitivity::Secret))
+    }
+}
+
 /// Copy a tracked root into its staging worktree, scoped by `entries` and
 /// filtered by `ignore_text` (gitignore syntax; the caller reads
-/// `<staging>/.dotloreignore` or passes a default). Byte- and mode-identical
-/// files are left untouched, so a quiet root reports `changed == false`.
+/// `<staging>/.dotloreignore` or passes a default). Files `guard` blocks are
+/// left out like ignored ones, so staging drops any copy it already has.
+/// Byte- and mode-identical files are left untouched, so a quiet root reports
+/// `changed == false`.
 pub fn root_to_staging(
     root: &Path,
     staging: &Path,
     entries: &EntryList,
     ignore_text: &str,
     limits: Limits,
+    guard: Option<&ReincludeGuard>,
 ) -> Result<MirrorReport> {
     let md = fs::symlink_metadata(root)
         .with_context(|| format!("tracked root {} is unreadable", root.display()))?;
@@ -91,6 +128,7 @@ pub fn root_to_staging(
         &mut opaque,
         &mut report,
     )?;
+    want.retain(|rel| !guard.is_some_and(|g| g.blocks(rel)));
 
     fs::create_dir_all(staging)?;
     let keep: HashSet<&Path> = want.iter().map(PathBuf::as_path).collect();
@@ -510,7 +548,7 @@ fn mark_opaque(rel: &Path, opaque: &mut HashSet<PathBuf>, report: &mut MirrorRep
     report.skipped_symlinks.push(rel.to_path_buf());
 }
 
-/// Live include-list files with sizes, using the same walk as
+/// Live include-list files with sizes, using the same walk and `guard` as
 /// `root_to_staging`. `too_large` is true when the file exceeds
 /// `limits.max_file_bytes` and was therefore not copied into staging.
 pub(crate) fn list_live(
@@ -518,6 +556,7 @@ pub(crate) fn list_live(
     entries: &EntryList,
     ignore_text: &str,
     limits: Limits,
+    guard: Option<&ReincludeGuard>,
 ) -> Result<Vec<(PathBuf, u64, bool)>> {
     let mut want: HashSet<PathBuf> = HashSet::new();
     let mut opaque: HashSet<PathBuf> = HashSet::new();
@@ -533,6 +572,7 @@ pub(crate) fn list_live(
         &mut opaque,
         &mut report,
     )?;
+    want.retain(|rel| !guard.is_some_and(|g| g.blocks(rel)));
     let mut out = Vec::new();
     for rel in want {
         match inspect(root, &rel)? {
@@ -541,7 +581,7 @@ pub(crate) fn list_live(
         }
     }
     for (rel, len) in report.skipped_too_large {
-        if entries.contains_rel(&rel) {
+        if entries.contains_rel(&rel) && !guard.is_some_and(|g| g.blocks(&rel)) {
             out.push((rel, len, true));
         }
     }
@@ -1226,7 +1266,7 @@ mod tests {
         ignore: &str,
         limits: Limits,
     ) -> MirrorReport {
-        root_to_staging(root, staging, &tracked(keys), ignore, limits).unwrap()
+        root_to_staging(root, staging, &tracked(keys), ignore, limits, None).unwrap()
     }
 
     fn tiny_limits(max_file_bytes: u64) -> Limits {
@@ -1314,9 +1354,150 @@ mod tests {
             &tracked(&["CLAUDE.md"]),
             "",
             Limits::default(),
+            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains("is not a directory"));
+        assert_eq!(files(&staging), Vec::<String>::new());
+    }
+
+    /// Capture with the never-list `never` plus the project list `project`,
+    /// guarded by the builtin sensitive patterns.
+    fn to_staging_guarded(
+        root: &Path,
+        staging: &Path,
+        keys: &[&str],
+        never: &str,
+        project: &str,
+    ) -> MirrorReport {
+        let guard = ReincludeGuard::new(
+            root,
+            never,
+            crate::project::SensitiveMatcher::default_secret(),
+        )
+        .unwrap();
+        root_to_staging(
+            root,
+            staging,
+            &tracked(keys),
+            &format!("{never}{project}"),
+            Limits::default(),
+            Some(&guard),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_reincluded_sensitive_file_is_never_staged() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        for rel in [
+            "projects/a.md",
+            "projects/x/.env",
+            ".credentials.json",
+            ".claude.json",
+            "keep.log",
+            "credentials.log",
+        ] {
+            put(&root.join(rel), "x");
+        }
+
+        to_staging_guarded(
+            &root,
+            &staging,
+            &[
+                "projects/",
+                ".credentials.json",
+                ".claude.json",
+                "keep.log",
+                "credentials.log",
+            ],
+            "/.credentials.json\n/.claude.json\n/projects/\n*.log\n",
+            "!/projects/\n!/.credentials.json\n!/.claude.json\n!*.log\n",
+        );
+
+        assert_eq!(
+            files(&staging),
+            vec!["keep.log".to_string(), "projects/a.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_reincluded_folder_never_stages_claude_json_copies() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        for rel in [
+            "backups/.claude.json.backup.1",
+            "backups/x/.claude.json",
+            "backups/ok.md",
+        ] {
+            put(&root.join(rel), "x");
+        }
+
+        to_staging_guarded(
+            &root,
+            &staging,
+            &["backups/"],
+            "/backups/\n",
+            "!/backups/\n",
+        );
+
+        assert_eq!(files(&staging), vec!["backups/ok.md".to_string()]);
+    }
+
+    #[test]
+    fn list_live_leaves_out_a_blocked_oversized_file() {
+        let td = TempDir::new().unwrap();
+        let (root, _) = dirs(&td);
+        put(&root.join("docs/credentials.log"), "too large");
+        put(&root.join("docs/big.log"), "too large");
+        let guard = ReincludeGuard::new(
+            &root,
+            "*.log\n",
+            crate::project::SensitiveMatcher::default_secret(),
+        )
+        .unwrap();
+
+        let mut live = list_live(
+            &root,
+            &tracked(&["docs/"]),
+            "*.log\n!*.log\n",
+            tiny_limits(4),
+            Some(&guard),
+        )
+        .unwrap();
+        live.sort();
+
+        assert_eq!(live, vec![(PathBuf::from("docs/big.log"), 9, true)]);
+    }
+
+    #[test]
+    fn a_sensitive_file_outside_the_never_list_is_not_blocked() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        put(&root.join("docs/.env"), "TOKEN=x");
+
+        to_staging_guarded(&root, &staging, &["docs/"], "/projects/\n", "!/projects/\n");
+
+        assert_eq!(files(&staging), vec!["docs/.env".to_string()]);
+    }
+
+    #[test]
+    fn a_blocked_file_already_in_staging_is_pruned() {
+        let td = TempDir::new().unwrap();
+        let (root, staging) = dirs(&td);
+        put(&root.join(".credentials.json"), "{}");
+        put(&staging.join(".credentials.json"), "{}");
+
+        let rep = to_staging_guarded(
+            &root,
+            &staging,
+            &[".credentials.json"],
+            "/.credentials.json\n",
+            "!/.credentials.json\n",
+        );
+
+        assert!(rep.changed);
         assert_eq!(files(&staging), Vec::<String>::new());
     }
 
