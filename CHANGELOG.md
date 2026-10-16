@@ -1,3 +1,9 @@
+## v0.9.0 (2026-10-16)
+
+### Projects
+
+- **A per-project ignore list.** "Ignore list…" in a project's More menu adds entries that apply to that project only, on top of the global never-list. The list syncs with the project; matching files are untracked, not deleted, and the global Apply leaves it alone. It can only add ignores, so a `!` line is rejected and one arriving from another Mac is dropped. Update Dotlore on every Mac before using it: older versions do not read the project list. [#c2362c02](https://github.com/dinhanhthi/dotlore/commit/c2362c02)
+
 ## v0.8.2 (2026-10-16)
 
 ### Sidebar & tree
