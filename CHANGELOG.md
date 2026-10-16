@@ -1,3 +1,9 @@
+## v0.8.2 (2026-10-16)
+
+### Sidebar & tree
+
+- **An empty folder under a tracked folder shows as tracked in the include-list picker.** A new folder inside `docs/` is covered by the `docs/` entry, so it no longer looks untracked or needs ticking by hand; folders you untracked or that the ignore list excludes still show as untracked. [#894365db](https://github.com/dinhanhthi/dotlore/commit/894365db)
+
 ## v0.8.1 (2026-10-15)
 
 ### Desktop app
