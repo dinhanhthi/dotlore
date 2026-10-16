@@ -1,3 +1,9 @@
+## v0.9.1 (2026-10-16)
+
+### Projects
+
+- **A project's ignore list can re-include a path the global never-list ignores.** A `!` line in "Ignore list…" syncs a never-listed path for that project only; name the ignored entry itself (`!/plans/`), since a file inside an ignored folder cannot be re-included on its own. Sensitive files never sync this way, including from a list synced from another Mac: files matching Settings → sensitive patterns, and `.credentials.json`, `auth.json`, `.claude.json` and its `.claude.json.*` copies at any depth. The file tree and the include-list picker no longer show such a file as synced. Update Dotlore on every Mac before using `!` lines. [#8e941320](https://github.com/dinhanhthi/dotlore/commit/8e941320)
+
 ## v0.9.0 (2026-10-16)
 
 ### Projects
