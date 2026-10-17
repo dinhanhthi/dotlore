@@ -22,8 +22,16 @@ import { ProjectIgnoreDialog } from "./ProjectIgnoreDialog";
 import { RevealInFinderButton } from "./RevealInFinderButton";
 
 function useSelectedRoot() {
-  const { roots, selectedSlug, view, starredSlugs, toggleStar, locked, seeding } =
-    useRoots();
+  const {
+    roots,
+    selectedSlug,
+    view,
+    starredSlugs,
+    toggleStar,
+    showHistory,
+    locked,
+    seeding,
+  } = useRoots();
   const root = roots.find((row) => row.slug === selectedSlug) ?? null;
   const active = view === "root" && root !== null;
   const starred = root !== null && starredSlugs.includes(root.slug);
@@ -38,6 +46,7 @@ function useSelectedRoot() {
     revealPath,
     removeDisabled,
     toggleStar,
+    showHistory,
   };
 }
 
@@ -118,7 +127,7 @@ export function RemoveRootButton() {
 }
 
 export function RootOverflowMenu() {
-  const { root, active, revealPath } = useSelectedRoot();
+  const { root, active, revealPath, showHistory } = useSelectedRoot();
   const [menuOpen, setMenuOpen] = useState(false);
   const [ignoreOpen, setIgnoreOpen] = useState(false);
 
@@ -171,6 +180,14 @@ export function RootOverflowMenu() {
               </DropdownMenuItem>
               <DropdownMenuItem disabled={!active || !revealPath} onClick={reveal}>
                 Go to location
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!active || !root?.linked}
+                onClick={() => {
+                  if (root) showHistory(root.slug);
+                }}
+              >
+                Deleted files…
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

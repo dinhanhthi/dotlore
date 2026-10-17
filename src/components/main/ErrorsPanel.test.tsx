@@ -71,6 +71,7 @@ function render(roots: RootRow[], commandErrors: ErrorLogEntry[] = []): string {
     showConflicts: () => {},
     showErrors: () => {},
     showTrash: () => {},
+    showHistory: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},

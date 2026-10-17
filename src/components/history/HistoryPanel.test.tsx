@@ -367,6 +367,7 @@ describe("HistoryPanel", () => {
       showConflicts: () => {},
       showErrors: () => {},
       showTrash: () => {},
+      showHistory: () => {},
       toggleStar: () => {},
       applyProvider: () => {},
       refreshRoots: async () => {},

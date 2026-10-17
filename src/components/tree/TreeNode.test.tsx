@@ -263,3 +263,50 @@ describe("TreeNode mark as sensitive", () => {
     expect(marked).toEqual(["notes/a.md"]);
   });
 });
+
+describe("TreeNode history", () => {
+  function historyItems(): MenuItemProps[] {
+    return menuItems.filter((item) => item.children === "History…");
+  }
+
+  it("offers History… on a file and calls the handler with its rel", () => {
+    const opened: string[] = [];
+    renderNode("docs/notes.md", null, { onHistory: (rel) => opened.push(rel) });
+    const items = historyItems();
+    expect(items).toHaveLength(1);
+    items[0].onClick?.();
+    expect(opened).toEqual(["docs/notes.md"]);
+  });
+
+  it("does not offer History… on a folder but does on its open child file", () => {
+    const opened: string[] = [];
+    renderToStaticMarkup(
+      <TreeNode
+        node={{
+          name: "notes",
+          path: "notes",
+          kind: "folder",
+          bytes: 0,
+          state: "Synced",
+          children: [file("notes/a.md")],
+        }}
+        depth={0}
+        selectedRel={null}
+        conflictSet={new Set()}
+        isOpen={() => true}
+        onToggle={() => {}}
+        onSelect={() => {}}
+        entries={entries}
+        onUntrack={() => {}}
+        rootPath="/Users/demo/git/dotlore"
+        maxFileBytes={50 * 1024 * 1024}
+        sensitivityByRel={new Map()}
+        onHistory={(rel) => opened.push(rel)}
+      />,
+    );
+    const items = historyItems();
+    expect(items).toHaveLength(1);
+    items[0].onClick?.();
+    expect(opened).toEqual(["notes/a.md"]);
+  });
+});

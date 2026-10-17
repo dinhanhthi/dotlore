@@ -227,6 +227,7 @@ function wrap(
     showConflicts: () => {},
     showErrors: () => {},
     showTrash: () => {},
+    showHistory: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},

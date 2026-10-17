@@ -291,6 +291,7 @@ export function FileTree() {
     locked,
     resolvingRel,
     cycleGen,
+    showHistory,
   } = useRoots();
   const syncing = useSyncing();
   const taskLabel = useTaskLabel();
@@ -604,6 +605,7 @@ export function FileTree() {
             onUntrack={setUntrackTarget}
             onMarkSensitive={markSensitive}
             markSensitiveDisabled={locked}
+            onHistory={(rel) => showHistory(root.slug, rel)}
             rootPath={root.path}
             maxFileBytes={maxFileBytes}
             sensitivityByRel={sensitivityByRel}

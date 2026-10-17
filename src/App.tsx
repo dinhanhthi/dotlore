@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import { HistoryPanel } from "@/components/history/HistoryPanel";
 import { AppBodyProvider } from "@/components/layout/app-body";
 import {
   MainSkeleton,
@@ -52,7 +53,9 @@ import {
 import { type LeaveTarget, shouldPromptLeave } from "@/lib/leave-guard";
 import {
   applyCycle,
+  applyDiscoveredHistory,
   applyRootDiscovery,
+  applyShowHistory,
   emptyRootsState,
   emptyTrackedStats,
   folderName,
@@ -113,13 +116,31 @@ async function loadTrackedCounts(
 }
 
 function MainPanel() {
-  const { view, selectedSlug, selectedRel, resolvingRel, closeResolver } =
-    useRoots();
+  const {
+    view,
+    historyTarget,
+    selectedSlug,
+    selectedRel,
+    resolvingRel,
+    closeResolver,
+    selectRoot,
+  } = useRoots();
   if (view === "all") return <AllProjects />;
   if (view === "starred") return <AllProjects starredOnly />;
   if (view === "conflicts") return <AllProjects conflictsOnly />;
   if (view === "errors") return <ErrorsPanel />;
   if (view === "trash") return <TrashPanel />;
+  if (view === "history" && historyTarget) {
+    const { slug, rel, nonce } = historyTarget;
+    return (
+      <HistoryPanel
+        key={`${slug}/${rel ?? ""}/${nonce}`}
+        slug={slug}
+        rel={rel}
+        onBack={() => selectRoot(slug)}
+      />
+    );
+  }
   if (!selectedSlug || !selectedRel) return <EmptyState />;
   if (resolvingRel === selectedRel) {
     return (
@@ -230,15 +251,18 @@ export function App() {
       } else {
         discoveryErrorRef.current = null;
       }
-      return {
-        ...current,
-        roots: overlayStatuses(discovered, liveRef.current),
-        error,
-        selectedSlug:
-          stillSelected || seedingSelected ? current.selectedSlug : null,
-        selectedRel: keepLive ? current.selectedRel : null,
-        resolvingRel: keepLive ? current.resolvingRel : null,
-      };
+      return applyDiscoveredHistory(
+        {
+          ...current,
+          roots: overlayStatuses(discovered, liveRef.current),
+          error,
+          selectedSlug:
+            stillSelected || seedingSelected ? current.selectedSlug : null,
+          selectedRel: keepLive ? current.selectedRel : null,
+          resolvingRel: keepLive ? current.resolvingRel : null,
+        },
+        discovered,
+      );
     });
     const trackedBySlug = await loadTrackedCounts(discovered);
     if (generation !== discoveryGen.current) return;
@@ -431,6 +455,10 @@ export function App() {
     );
   }, [guardLeave]);
 
+  const showHistory = useCallback((slug: string, rel: string | null = null) => {
+    guardLeave(() => setState((current) => applyShowHistory(current, slug, rel)));
+  }, [guardLeave]);
+
   const toggleStar = useCallback((slug: string) => {
     const starredSlugs = toggleStarred(slug);
     setState((current) => ({ ...current, starredSlugs }));
@@ -528,6 +556,7 @@ export function App() {
       showConflicts,
       showErrors,
       showTrash,
+      showHistory,
       toggleStar,
       applyProvider,
       refreshRoots,
@@ -552,6 +581,7 @@ export function App() {
       showConflicts,
       showErrors,
       showTrash,
+      showHistory,
       toggleStar,
       applyProvider,
       refreshRoots,

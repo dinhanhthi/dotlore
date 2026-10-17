@@ -1,6 +1,8 @@
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { RootOverflowMenu } from "@/components/layout/RootActions";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { emptyRootsState, RootsContext, type RootsContextValue } from "@/lib/roots";
 import { buildTree, filterTree } from "@/lib/tree";
@@ -22,6 +24,30 @@ import {
   treeLoadMatches,
 } from "./FileTree";
 
+type MenuItemProps = { children?: ReactNode; disabled?: boolean; onClick?: () => void };
+
+const { menuItems } = vi.hoisted(() => ({ menuItems: [] as MenuItemProps[] }));
+
+// Renders dropdown content inline (a closed base-ui menu renders nothing) and
+// records each item's props so a test can inspect and click it.
+vi.mock("@/components/ui/dropdown-menu", async () => {
+  const actual = await vi.importActual<typeof import("@/components/ui/dropdown-menu")>(
+    "@/components/ui/dropdown-menu",
+  );
+  return {
+    ...actual,
+    DropdownMenuContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+    DropdownMenuItem: (props: MenuItemProps) => {
+      menuItems.push(props);
+      return <div role="menuitem">{props.children}</div>;
+    },
+  };
+});
+
+beforeEach(() => {
+  menuItems.length = 0;
+});
+
 const linked: RootRow = {
   slug: "dotlore",
   path: "/Users/demo/git/dotlore",
@@ -38,8 +64,11 @@ const unlinked: RootRow = {
   status: { kind: "Pending" },
 };
 
-function renderTree(row: RootRow): string {
-  const value: RootsContextValue = {
+function rootsValue(
+  row: RootRow,
+  overrides: Partial<RootsContextValue> = {},
+): RootsContextValue {
+  return {
     ...emptyRootsState,
     roots: [row],
     selectedSlug: row.slug,
@@ -54,6 +83,7 @@ function renderTree(row: RootRow): string {
     showConflicts: () => {},
     showErrors: () => {},
     showTrash: () => {},
+    showHistory: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},
@@ -64,10 +94,14 @@ function renderTree(row: RootRow): string {
     commandErrors: [],
     setBanner: () => {},
     addProject: async () => {},
+    ...overrides,
   };
+}
+
+function renderTree(row: RootRow, overrides: Partial<RootsContextValue> = {}): string {
   return renderToStaticMarkup(
     <TooltipProvider>
-      <RootsContext.Provider value={value}>
+      <RootsContext.Provider value={rootsValue(row, overrides)}>
         <FileTree />
       </RootsContext.Provider>
     </TooltipProvider>,
@@ -115,6 +149,7 @@ describe("FileTree seeding", () => {
       showConflicts: () => {},
       showErrors: () => {},
       showTrash: () => {},
+      showHistory: () => {},
       toggleStar: () => {},
       applyProvider: () => {},
       refreshRoots: async () => {},
@@ -212,6 +247,38 @@ describe("FileTree header", () => {
     expect(sensitive).toBeLessThan(size);
     expect(isDisabled(buttonWithLabel(html, "Filter by size"))).toBe(true);
     expect(html).toContain("Size");
+  });
+});
+
+describe("FileTree More menu", () => {
+  function deletedFilesItem(): MenuItemProps | undefined {
+    return menuItems.find((props) => props.children === "Deleted files…");
+  }
+
+  it("disables Deleted files… on an unlinked row", () => {
+    // An unlinked row renders the header at once.
+    renderTree(unlinked);
+    expect(deletedFilesItem()?.disabled).toBe(true);
+  });
+
+  it("opens the project's deleted files from Deleted files…", () => {
+    const showHistory = vi.fn();
+    // A linked FileTree shows a skeleton until its tree loads, so render the
+    // header's menu on its own.
+    renderToStaticMarkup(
+      <TooltipProvider>
+        <RootsContext.Provider value={rootsValue(linked, { showHistory })}>
+          <RootOverflowMenu />
+        </RootsContext.Provider>
+      </TooltipProvider>,
+    );
+    const item = deletedFilesItem();
+    expect(item).toBeDefined();
+    expect(item?.disabled).toBe(false);
+    item?.onClick?.();
+    expect(showHistory).toHaveBeenCalledTimes(1);
+    expect(showHistory.mock.calls[0][0]).toBe("dotlore");
+    expect(showHistory.mock.calls[0][1] ?? null).toBeNull();
   });
 });
 

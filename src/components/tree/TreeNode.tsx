@@ -81,6 +81,7 @@ type TreeNodeProps = {
   quickResolveDisabled?: boolean;
   onMarkSensitive?: (rel: string) => void;
   markSensitiveDisabled?: boolean;
+  onHistory?: (rel: string) => void;
 };
 
 export function TreeNode({
@@ -101,6 +102,7 @@ export function TreeNode({
   quickResolveDisabled,
   onMarkSensitive,
   markSensitiveDisabled,
+  onHistory,
 }: TreeNodeProps) {
   const status = nodeStatus(node, conflictSet);
   const weight = nodeWeight(node, maxFileBytes);
@@ -196,6 +198,9 @@ export function TreeNode({
           >
             Go to location
           </ContextMenuItem>
+          {onHistory && node.kind === "file" ? (
+            <ContextMenuItem onClick={() => onHistory(node.path)}>History…</ContextMenuItem>
+          ) : null}
           {onMarkSensitive && node.kind === "file" && sensitivity !== "secret" ? (
             <ContextMenuItem
               disabled={markSensitiveDisabled ?? false}
@@ -254,6 +259,7 @@ export function TreeNode({
               quickResolveDisabled={quickResolveDisabled}
               onMarkSensitive={onMarkSensitive}
               markSensitiveDisabled={markSensitiveDisabled}
+              onHistory={onHistory}
             />
           ))}
         </div>

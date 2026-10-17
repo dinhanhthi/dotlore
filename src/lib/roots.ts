@@ -10,11 +10,20 @@ export type AppView =
   | "starred"
   | "conflicts"
   | "errors"
-  | "trash";
+  | "trash"
+  | "history";
 
 export type FocusRequest = {
   slug: string;
   seq: number;
+};
+
+/** What the history view shows; a new `nonce` remounts the panel. */
+export type HistoryViewTarget = {
+  slug: string;
+  /** `null` lists the project's deleted files. */
+  rel: string | null;
+  nonce: number;
 };
 
 export type SelectRootOptions = {
@@ -49,6 +58,7 @@ export type RootsState = {
   /** When set, the main panel shows the conflict resolver for this path. */
   resolvingRel: string | null;
   view: AppView;
+  historyTarget: HistoryViewTarget | null;
   focusRequest: FocusRequest | null;
   /** Adds in flight. Does not disable the rest of the app. */
   seeding: SeedingRoot[];
@@ -76,6 +86,8 @@ export type RootsContextValue = RootsState & {
   showConflicts: () => void;
   showErrors: () => void;
   showTrash: () => void;
+  /** Open a file's history, or the project's deleted files when `rel` is null. */
+  showHistory: (slug: string, rel?: string | null) => void;
   toggleStar: (slug: string) => void;
   /** Set `providerDir` immediately so onboarding unmounts, then refresh roots. */
   applyProvider: (dir: string) => void;
@@ -104,6 +116,7 @@ export const emptyRootsState: RootsState = {
   selectedRel: null,
   resolvingRel: null,
   view: "root",
+  historyTarget: null,
   focusRequest: null,
   seeding: [],
   loadingRoots: false,
@@ -114,6 +127,36 @@ export const emptyRootsState: RootsState = {
 /** Record a cycle start or end; an end bumps `cycleGen`. */
 export function applyCycle(state: RootsState, cycling: boolean): RootsState {
   return { ...state, cycling, cycleGen: cycling ? state.cycleGen : state.cycleGen + 1 };
+}
+
+/** Open the history view on a fresh target, even when it repeats the current one. */
+export function applyShowHistory(
+  state: RootsState,
+  slug: string,
+  rel: string | null,
+): RootsState {
+  const nonce = (state.historyTarget?.nonce ?? 0) + 1;
+  return {
+    ...state,
+    view: "history",
+    resolvingRel: null,
+    historyTarget: { slug, rel, nonce },
+  };
+}
+
+/** Drop a history target whose project is gone or unlinked; leave its view too. */
+export function applyDiscoveredHistory(
+  state: RootsState,
+  discovered: RootRow[],
+): RootsState {
+  const target = state.historyTarget;
+  if (target === null) return state;
+  if (discovered.some((row) => row.slug === target.slug && row.linked)) return state;
+  return {
+    ...state,
+    historyTarget: null,
+    view: state.view === "history" ? "root" : state.view,
+  };
 }
 
 /** Unresolved conflicts in one root. */

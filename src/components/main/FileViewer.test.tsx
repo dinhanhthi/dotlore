@@ -37,6 +37,7 @@ function renderViewer(): string {
     showConflicts: () => {},
     showErrors: () => {},
     showTrash: () => {},
+    showHistory: () => {},
     toggleStar: () => {},
     applyProvider: () => {},
     refreshRoots: async () => {},

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyCycle,
+  applyDiscoveredHistory,
   applyRootDiscovery,
+  applyShowHistory,
   emptyRootsState,
   errorTotal,
   hasError,
@@ -213,5 +215,49 @@ describe("applyCycle", () => {
     const ended = applyCycle(started, false);
     expect(ended).toMatchObject({ cycling: false, cycleGen: 1 });
     expect(applyCycle(applyCycle(ended, true), false).cycleGen).toBe(2);
+  });
+});
+
+describe("applyShowHistory", () => {
+  it("opens the history view with a fresh target each time", () => {
+    const first = applyShowHistory(
+      { ...emptyRootsState, resolvingRel: "CLAUDE.md" },
+      "notes",
+      null,
+    );
+    expect(first).toMatchObject({
+      view: "history",
+      resolvingRel: null,
+      historyTarget: { slug: "notes", rel: null, nonce: 1 },
+    });
+    const again = applyShowHistory(first, "notes", null);
+    expect(again.historyTarget).toEqual({ slug: "notes", rel: null, nonce: 2 });
+  });
+});
+
+describe("applyDiscoveredHistory", () => {
+  const open = applyShowHistory(emptyRootsState, "notes", null);
+
+  it("leaves history for a project that is gone", () => {
+    const next = applyDiscoveredHistory(open, [linkedRow({ slug: "other" })]);
+    expect(next.historyTarget).toBeNull();
+    expect(next.view).toBe("root");
+  });
+
+  it("leaves history for a project that is no longer linked", () => {
+    const next = applyDiscoveredHistory(open, [unlinkedRow({ slug: "notes" })]);
+    expect(next.historyTarget).toBeNull();
+    expect(next.view).toBe("root");
+  });
+
+  it("keeps history for a project that is still linked", () => {
+    expect(applyDiscoveredHistory(open, [linkedRow()])).toBe(open);
+    expect(applyDiscoveredHistory(emptyRootsState, [])).toBe(emptyRootsState);
+  });
+
+  it("drops a stale target without leaving another view", () => {
+    const next = applyDiscoveredHistory({ ...open, view: "trash" }, []);
+    expect(next.historyTarget).toBeNull();
+    expect(next.view).toBe("trash");
   });
 });
