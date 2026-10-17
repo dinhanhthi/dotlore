@@ -73,9 +73,10 @@ pub enum FetchMode {
 pub enum MergeOutcome {
     AlreadyMerged,
     FastForward,
-    /// Two diverged heads with identical trees; this device took theirs
-    /// because their commit hash sorts first. No merge commit is minted and
-    /// no bundle is needed — the adopted commit is already in the cloud.
+    /// Two diverged heads with identical trees and no differing user events
+    /// ([`histories_differ`]); this device took theirs because their commit
+    /// hash sorts first. No merge commit is minted and no bundle is needed —
+    /// the adopted commit is already in the cloud.
     Adopted,
     Clean,
     /// Merged after the conflict policy resolved the index; the paths are the
@@ -649,8 +650,14 @@ impl Repo {
         }
         // Diverged heads that happen to hold the same tree: minting a merge
         // commit here is what makes two devices trade bundles forever. Both
-        // sides pick the smaller hash, so both reach the same commit.
-        if g.run(&["diff", "--quiet", "HEAD", &r])?.status.success() {
+        // sides pick the smaller hash, so both reach the same commit. Unless
+        // each side holds user events the other lacks: adopting one would
+        // drop the other's events from every later presence decision, so a
+        // real merge with the same tree is minted below. Two such merges
+        // differ only in merge commits, so they take this shortcut next.
+        if g.run(&["diff", "--quiet", "HEAD", &r])?.status.success()
+            && !histories_differ(g, "HEAD", &r)?
+        {
             let theirs = g.rev(&r).unwrap_or_default();
             let ours = g.rev("HEAD").unwrap_or_default();
             return if theirs < ours {
@@ -661,23 +668,47 @@ impl Repo {
             };
         }
 
-        let mut out = g.run(&["merge", "--no-edit", &r])?;
+        // No commit yet: the presence rule must see the merged index first.
+        // git refuses unrelated histories before touching the index, so the
+        // retry starts from a clean worktree.
+        let merge = ["merge", "--no-commit", "--no-ff"];
+        let mut out = g.run(&[&merge[..], &["--end-of-options", &r]].concat())?;
         if !out.status.success()
             && String::from_utf8_lossy(&out.stderr).contains("unrelated histories")
         {
-            out = g.run(&["merge", "--no-edit", "--allow-unrelated-histories", &r])?;
+            let retry = ["--allow-unrelated-histories", "--end-of-options", &r];
+            out = g.run(&[&merge[..], &retry].concat())?;
         }
-        if out.status.success() {
-            return Ok(MergeOutcome::Clean);
+        let resolved = if out.status.success() {
+            None
+        } else {
+            Some((tx.resolve_index)(
+                g,
+                &r,
+                &self.my_id,
+                their_id,
+                Winner::Newer,
+            )?)
+        };
+        // The merged include-list: `.dotloreproject` may have just merged.
+        let entries = project::read(&tx.worktree)?.tracked();
+        crate::conflict::settle_presence(g, "HEAD", &r, &entries)?;
+        match resolved {
+            // git's own merge message, as a committed clean merge had.
+            None => {
+                g.ok(&["commit", "--no-edit"])?;
+                Ok(MergeOutcome::Clean)
+            }
+            Some(paths) => {
+                g.ok(&[
+                    "commit",
+                    "--no-edit",
+                    "-m",
+                    &format!("merge {}", short8(their_id)),
+                ])?;
+                Ok(MergeOutcome::Resolved(paths))
+            }
         }
-        let paths = (tx.resolve_index)(g, &r, &self.my_id, their_id, Winner::Newer)?;
-        g.ok(&[
-            "commit",
-            "--no-edit",
-            "-m",
-            &format!("merge {}", short8(their_id)),
-        ])?;
-        Ok(MergeOutcome::Resolved(paths))
     }
 
     // --- reading trees ----------------------------------------------------
@@ -919,25 +950,7 @@ impl Repo {
     /// with their `--raw` changes. Read whole: a `--max-count` would count
     /// the synthetic commits [`parse_event_log`] drops.
     fn event_log(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let mut argv = vec![
-            "log",
-            "--no-merges",
-            "--full-history",
-            "--raw",
-            "--no-abbrev",
-            "--no-renames",
-            "-z",
-            EVENT_FORMAT,
-        ];
-        argv.extend_from_slice(args);
-        let o = self.git.run(&argv)?;
-        if !o.status.success() {
-            bail!(
-                "git log failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            );
-        }
-        Ok(o.stdout)
+        event_log(&self.git, args)
     }
 
     // --- transactions -----------------------------------------------------
@@ -1478,16 +1491,29 @@ impl Transaction {
             &target,
             &format!("{target}^{{tree}}"),
         ])?;
-        let out = g.run(&["merge", "--no-edit", &t])?;
-        if !out.status.success() {
-            // `T` always wins: peers already hold it, so letting the unpublished
-            // root edit win would flip their live file back. That edit is this
-            // device's, so the sibling carries our id8. Only this device makes
-            // this merge, so the cross-device `Newer` rule is not needed, and
-            // with `L` and `T` often in the same second it was a hash coin flip
-            // that put a peer's bytes under our id8.
+        // No commit yet: the presence rule must see the merged index first.
+        // `B` is a parent of both, so the histories are never unrelated.
+        let out = g.run(&["merge", "--no-commit", "--no-ff", "--end-of-options", &t])?;
+        let conflicted = !out.status.success();
+        if conflicted {
+            // `T` wins content conflicts: peers already hold it, so letting the
+            // unpublished root edit win would flip their live file back. That
+            // edit is this device's, so the sibling carries our id8. Only this
+            // device makes this merge, so the cross-device `Newer` rule is not
+            // needed, and with `L` and `T` often in the same second it was a
+            // hash coin flip that put a peer's bytes under our id8.
             (self.resolve_index)(g, &t, &repo.my_id, &repo.my_id, Winner::Theirs)?;
+        }
+        // Presence (delete vs re-add) is not a content conflict: the newer
+        // user event wins, so a delete captured in `L` can beat `T`. `merged`
+        // is a merge commit, so it is no event. `entries` is the merged list:
+        // `L` keeps the baseline's `.dotloreproject`, so the merge takes `T`'s.
+        crate::conflict::settle_presence(g, "HEAD", &t, &entries)?;
+        if conflicted {
             g.ok(&["commit", "--no-edit", "-m", "reconcile"])?;
+        } else {
+            // git's own merge message, as the committed clean merge had.
+            g.ok(&["commit", "--no-edit"])?;
         }
 
         let new_target = g
@@ -1729,6 +1755,68 @@ fn valid_device(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
+/// Raw `git log` output of the non-merge commits selected by `args`, with
+/// their `--raw` changes. See [`Repo::event_log`].
+fn event_log(git: &Git, args: &[&str]) -> Result<Vec<u8>> {
+    let mut argv = vec![
+        "log",
+        "--no-merges",
+        "--full-history",
+        "--raw",
+        "--no-abbrev",
+        "--no-renames",
+        "-z",
+        EVENT_FORMAT,
+    ];
+    argv.extend_from_slice(args);
+    let o = git.run(&argv)?;
+    if !o.status.success() {
+        bail!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        );
+    }
+    Ok(o.stdout)
+}
+
+/// The user events selected by `args` (revisions, negations, pathspecs),
+/// each with its changed paths. Staging-private names (which include
+/// conflict siblings) and undecodable names are dropped.
+pub(crate) fn user_events(
+    git: &Git,
+    args: &[&str],
+) -> Result<Vec<(PathEvent, Vec<(PathBuf, RawChange)>)>> {
+    let out = event_log(git, args)?;
+    Ok(parse_event_log(&out)
+        .into_iter()
+        .map(|(event, changes)| {
+            let changes = changes
+                .into_iter()
+                .filter_map(|(path, change)| Some((usable_entry(path)?, change)))
+                .collect();
+            (event, changes)
+        })
+        .collect())
+}
+
+/// Does any user event separate `a` from `b`?
+///
+/// True when they share a merge-base and the symmetric difference `a...b`
+/// holds at least one user event (a non-merge commit under
+/// [`EVENT_SUBJECTS`]), on either side. Both identical-tree shortcuts ask
+/// this, but about different commits: the engine's settled marker
+/// (`needs_merge`) about the durable `main`, `merge_remote` adoption about
+/// the transaction's HEAD, so their answers can differ within a cycle.
+/// Either outcome is safe and settles on the next cycle. Without a
+/// merge-base the presence rule does not run either, and the shortcut stays.
+pub(crate) fn histories_differ(git: &Git, a: &str, b: &str) -> Result<bool> {
+    if crate::conflict::merge_bases(git, a, b)?.is_empty() {
+        return Ok(false);
+    }
+    let range = format!("{a}...{b}");
+    Ok(!user_events(git, &["--end-of-options", &range])?.is_empty())
+}
+
 /// Staging-private entries, and names git can carry but we cannot pass to it.
 fn usable_entry(path: &[u8]) -> Option<PathBuf> {
     // `Git::run` takes `&str`, so a name we cannot decode could never be
@@ -1766,7 +1854,7 @@ fn valid_rev(r: &str) -> bool {
 }
 
 /// What a `--raw` change left at its path.
-type RawChange = Option<Option<(String, bool)>>;
+pub(crate) type RawChange = Option<Option<(String, bool)>>;
 
 /// The user events of an [`Repo::event_log`] stream, each with its
 /// `(path, change)` entries.
@@ -3571,6 +3659,169 @@ mod tests {
         );
     }
 
+    fn now_epoch() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    fn in_main(b: &Repo, rel: &str) -> bool {
+        let tree = b
+            .git
+            .ok(&["ls-tree", "-r", "--name-only", "refs/heads/main"])
+            .unwrap();
+        tree.lines().any(|l| l == rel)
+    }
+
+    /// Device B linked to A's `CLAUDE.md` and `f.md` (`"f\n"`), holding a
+    /// transaction pinned on A's next head and not yet applied. That head
+    /// edits `CLAUDE.md` and runs `peer` on `f.md` at pinned epochs (`true`
+    /// writes the base bytes back), so the peer's events have known times.
+    /// B's own `local` commit in `reconcile` is dated now.
+    fn presence_tx(
+        peer: &[PresenceEvent],
+        resolve: IndexResolver,
+    ) -> (Fx, TempDir, TempDir, Repo, Transaction) {
+        let fx = fixture();
+        let cloud = fx.cloud();
+        let key = provider_key(&cloud);
+        fx.write("CLAUDE.md", b"plan v1\n");
+        fx.write("f.md", b"f\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b
+            .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+            .unwrap();
+        tx.set_target(&b).unwrap();
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+
+        stage_file(&fx, "CLAUDE.md", b"plan v2\n");
+        for &(epoch, present) in peer {
+            if present {
+                stage_file(&fx, "f.md", b"f\n");
+            } else {
+                unstage_file(&fx, "f.md");
+            }
+            commit_at(&fx, ID_A, &format!("local {}", short8(ID_A)), epoch);
+        }
+        fx.repo.publish(&cloud).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b.begin_tx(&key, "HEAD", resolve).unwrap();
+        assert_eq!(
+            b.merge_remote(&tx, ID_A).unwrap(),
+            MergeOutcome::FastForward
+        );
+        tx.set_target(&b).unwrap();
+        (fx, bh, b_root, b, tx)
+    }
+
+    /// R1: the peer deleted and re-added `f.md`, then B's user deletes it
+    /// mid-apply. That newer delete, captured as `local`, beats the older
+    /// re-add. `merged` is a merge commit, so it is no event and cannot date
+    /// the re-add to now.
+    #[test]
+    fn reconcile_keeps_a_newer_local_delete_over_an_older_peer_re_add() {
+        let now = now_epoch();
+        let (_fx, bh, b_root, b, mut tx) =
+            presence_tx(&[(now - 200, false), (now - 100, true)], no_resolver);
+        fs::remove_file(b_root.path().join("f.md")).unwrap();
+
+        assert!(tx.reconcile(&b, bh.path()).unwrap());
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+        assert!(!b_root.path().join("f.md").exists());
+        assert!(!in_main(&b, "f.md"));
+        assert_eq!(
+            fs::read(b_root.path().join("CLAUDE.md")).unwrap(),
+            b"plan v2\n"
+        );
+    }
+
+    /// R1, converse: a peer re-add newer than B's mid-apply delete brings the
+    /// file back, though git alone would merge the delete (the re-add wrote
+    /// the base bytes back). The deleted copy stays in the trash.
+    #[test]
+    fn reconcile_restores_a_peer_re_add_newer_than_the_local_delete() {
+        let now = now_epoch();
+        let (_fx, bh, b_root, b, mut tx) =
+            presence_tx(&[(now - 200, false), (now + 3600, true)], no_resolver);
+        fs::remove_file(b_root.path().join("f.md")).unwrap();
+
+        assert!(tx.reconcile(&b, bh.path()).unwrap());
+        assert!(tx.wrote_trash());
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+        assert_eq!(fs::read(b_root.path().join("f.md")).unwrap(), b"f\n");
+        assert!(in_main(&b, "f.md"));
+    }
+
+    /// R2: the peer deleted `f.md`; B's user deletes it and writes the same
+    /// bytes back while the transaction applies. `local` equals the baseline,
+    /// so git sees only the peer's delete and no event re-adds the file:
+    /// apply removes it and keeps the live copy in the trash.
+    #[test]
+    fn reconcile_lets_a_peer_delete_remove_an_identical_re_add() {
+        let now = now_epoch();
+        let (_fx, bh, b_root, b, mut tx) = presence_tx(&[(now - 100, false)], no_resolver);
+        let f = b_root.path().join("f.md");
+        fs::remove_file(&f).unwrap();
+        fs::write(&f, b"f\n").unwrap();
+
+        assert!(tx.reconcile(&b, bh.path()).unwrap());
+        assert!(!tx.wrote_trash(), "the capture saw no deletion");
+        let base = b.git.rev(&tx_ref(&tx.id, "base")).unwrap();
+        let local = b.git.rev(&tx_ref(&tx.id, "local")).unwrap();
+        assert_eq!(
+            b.git.ok(&["diff", "--name-only", &base, &local]).unwrap(),
+            ""
+        );
+
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+        assert!(!f.exists());
+        assert!(!in_main(&b, "f.md"));
+        let kept = trash_files(bh.path());
+        assert!(
+            kept.iter()
+                .any(|(p, bytes)| p.ends_with("f.md") && bytes == b"f\n"),
+            "{kept:?}"
+        );
+    }
+
+    /// R3: the peer deleted `f.md`; B's user writes different bytes to it
+    /// while the transaction applies. The drift reconciles, and the edit
+    /// beats the delete even though the delete is newer: it is no file the
+    /// deleter ever saw.
+    #[test]
+    fn reconcile_keeps_a_live_edit_over_a_newer_peer_delete() {
+        let now = now_epoch();
+        let (_fx, bh, b_root, b, mut tx) =
+            presence_tx(&[(now + 3600, false)], crate::conflict::resolve_index);
+        fs::write(b_root.path().join("f.md"), b"user\n").unwrap();
+
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+        assert_eq!(fs::read(b_root.path().join("f.md")).unwrap(), b"user\n");
+        assert_eq!(b.git.ok(&["show", "refs/heads/main:f.md"]).unwrap(), "user");
+        let subjects = b
+            .git
+            .ok(&["log", "--format=%s", "refs/heads/main"])
+            .unwrap();
+        assert!(subjects.lines().any(|s| s == "reconcile"), "{subjects}");
+        let tree = b
+            .git
+            .ok(&["ls-tree", "-r", "--name-only", "refs/heads/main"])
+            .unwrap();
+        assert!(!tree.contains(".conflict-"), "{tree}");
+    }
+
     // --- merge_remote -----------------------------------------------------
 
     /// Identical trees on diverged heads: both devices pick the same side, so
@@ -3629,6 +3880,219 @@ mod tests {
             fx.repo.merge_remote(&tx, ID_B).unwrap(),
             MergeOutcome::AlreadyMerged
         );
+    }
+
+    /// A base holding `f.md`, then two children of it that each delete it:
+    /// `(D_A, D_C)`, user events from two devices with identical trees.
+    fn twin_deletes(fx: &Fx) -> (String, String) {
+        fx.track(&["f.md"]);
+        stage_file(fx, "f.md", b"f\n");
+        let base = commit_at(fx, ID_A, "local aaaaaaaa", 100);
+        let delete = |id: &str, epoch: i64| -> String {
+            pinned_git(
+                &fx.repo.staging,
+                epoch,
+                id,
+                &["reset", "-q", "--hard", &base],
+            );
+            unstage_file(fx, "f.md");
+            commit_at(fx, id, &format!("local {}", short8(id)), epoch)
+        };
+        let d_a = delete(ID_A, 200);
+        let d_c = delete(ID_B, 150);
+        let tree = |c: &str| fx.repo.git.ok(&["rev-parse", &format!("{c}^{{tree}}")]);
+        assert_eq!(tree(&d_a).unwrap(), tree(&d_c).unwrap());
+        (d_a, d_c)
+    }
+
+    /// Point the transaction at `ours` and device B's ref at `theirs`.
+    fn face(fx: &Fx, tx: &Transaction, key: &str, ours: &str, theirs: &str) {
+        tx.git.ok(&["reset", "-q", "--hard", ours]).unwrap();
+        fx.repo
+            .git
+            .ok(&["update-ref", &remote_ref(key, ID_B), theirs])
+            .unwrap();
+    }
+
+    /// Identical trees, but each head carries a user delete the other lacks.
+    /// Adopting one would drop the other's event from every later presence
+    /// decision, so a real merge with the same tree is minted, in either
+    /// hash order.
+    #[test]
+    fn identical_trees_with_differing_user_events_mint_a_merge() {
+        let fx = fixture();
+        let key = provider_key(&fx.cloud());
+        let (d_a, d_c) = twin_deletes(&fx);
+        let tree = fx.repo.git.ok(&["rev-parse", "HEAD^{tree}"]).unwrap();
+        let tx = fx
+            .repo
+            .begin_tx(&key, "refs/heads/main", no_resolver)
+            .unwrap();
+        for (ours, theirs) in [(&d_a, &d_c), (&d_c, &d_a)] {
+            face(&fx, &tx, &key, ours, theirs);
+            assert_eq!(
+                fx.repo.merge_remote(&tx, ID_B).unwrap(),
+                MergeOutcome::Clean
+            );
+            assert_eq!(tx.git.rev("HEAD^1").as_ref(), Some(ours));
+            assert_eq!(tx.git.rev("HEAD^2").as_ref(), Some(theirs));
+            assert_eq!(tx.git.ok(&["rev-parse", "HEAD^{tree}"]).unwrap(), tree);
+        }
+    }
+
+    /// The fixpoint: two devices that each minted that merge hold equivalent
+    /// merges whose only differing commits are merges. The smaller hash is
+    /// adopted as before, so the pair stops trading bundles.
+    #[test]
+    fn equivalent_merges_of_differing_events_adopt_the_smaller_hash() {
+        let fx = fixture();
+        let key = provider_key(&fx.cloud());
+        let (d_a, d_c) = twin_deletes(&fx);
+        let tree = fx.repo.git.ok(&["rev-parse", "HEAD^{tree}"]).unwrap();
+        let mut merges =
+            [(&d_a, &d_c, "Merge one"), (&d_c, &d_a, "Merge two")].map(|(p1, p2, msg)| {
+                fx.repo
+                    .git
+                    .ok(&["commit-tree", "-m", msg, "-p", p1, "-p", p2, &tree])
+                    .unwrap()
+            });
+        merges.sort();
+        let [small, large] = merges;
+
+        let tx = fx
+            .repo
+            .begin_tx(&key, "refs/heads/main", no_resolver)
+            .unwrap();
+        face(&fx, &tx, &key, &large, &small);
+        assert_eq!(
+            fx.repo.merge_remote(&tx, ID_B).unwrap(),
+            MergeOutcome::Adopted
+        );
+        assert_eq!(tx.git.rev("HEAD"), Some(small.clone()));
+        face(&fx, &tx, &key, &small, &large);
+        assert_eq!(
+            fx.repo.merge_remote(&tx, ID_B).unwrap(),
+            MergeOutcome::AlreadyMerged
+        );
+        assert_eq!(tx.git.rev("HEAD"), Some(small));
+    }
+
+    /// Synthetic commits record a device catching up, not a user action:
+    /// heads that differ only in those still take the shortcut.
+    #[test]
+    fn identical_trees_differing_only_in_synthetic_commits_adopt() {
+        let fx = fixture();
+        let key = provider_key(&fx.cloud());
+        fx.track(&["f.md"]);
+        stage_file(&fx, "f.md", b"f\n");
+        let base = commit_at(&fx, ID_A, "local aaaaaaaa", 100);
+        let mut heads = [(ID_A, "reconcile baseline", 200), (ID_B, "merged", 150)].map(
+            |(id, subject, epoch)| {
+                pinned_git(
+                    &fx.repo.staging,
+                    epoch,
+                    id,
+                    &["reset", "-q", "--hard", &base],
+                );
+                unstage_file(&fx, "f.md");
+                commit_at(&fx, id, subject, epoch)
+            },
+        );
+        heads.sort();
+        let [small, large] = heads;
+
+        let tx = fx
+            .repo
+            .begin_tx(&key, "refs/heads/main", no_resolver)
+            .unwrap();
+        face(&fx, &tx, &key, &large, &small);
+        assert_eq!(
+            fx.repo.merge_remote(&tx, ID_B).unwrap(),
+            MergeOutcome::Adopted
+        );
+        face(&fx, &tx, &key, &small, &large);
+        assert_eq!(
+            fx.repo.merge_remote(&tx, ID_B).unwrap(),
+            MergeOutcome::AlreadyMerged
+        );
+    }
+
+    /// One presence event on `f.md`: `true` writes the base bytes back,
+    /// `false` deletes it, at the given epoch.
+    type PresenceEvent = (i64, bool);
+
+    /// Merge two histories of `f.md` that diverge from a base holding it
+    /// (ours as `main`, theirs as device B's head) and report whether the
+    /// merged HEAD keeps it. Every merge here is clean as far as git is
+    /// concerned: re-adds write the base bytes back.
+    fn presence_merge(ours: &[PresenceEvent], theirs: &[PresenceEvent]) -> bool {
+        let fx = fixture();
+        let key = provider_key(&fx.cloud());
+        fx.track(&["f.md"]);
+        stage_file(&fx, "f.md", b"f\n");
+        let base = commit_at(&fx, ID_A, "local aaaaaaaa", 100);
+        let side = |id: &str, events: &[PresenceEvent]| -> String {
+            pinned_git(&fx.repo.staging, 100, id, &["reset", "-q", "--hard", &base]);
+            for &(epoch, present) in events {
+                if present {
+                    stage_file(&fx, "f.md", b"f\n");
+                } else {
+                    unstage_file(&fx, "f.md");
+                }
+                commit_at(&fx, id, &format!("local {}", short8(id)), epoch);
+            }
+            fx.repo.git.rev("HEAD").unwrap()
+        };
+        let theirs = side(ID_B, theirs);
+        let ours = side(ID_A, ours);
+        fx.repo
+            .git
+            .ok(&["update-ref", &remote_ref(&key, ID_B), &theirs])
+            .unwrap();
+
+        let tx = fx
+            .repo
+            .begin_tx(&key, "refs/heads/main", no_resolver)
+            .unwrap();
+        assert_eq!(
+            fx.repo.merge_remote(&tx, ID_B).unwrap(),
+            MergeOutcome::Clean
+        );
+        // Still a real merge commit: both tips are its parents.
+        assert_eq!(tx.git.rev("HEAD^1"), Some(ours));
+        assert_eq!(tx.git.rev("HEAD^2"), Some(theirs));
+        let tree = tx.git.ok(&["ls-tree", "--name-only", "HEAD"]).unwrap();
+        let kept = tree.lines().any(|l| l == "f.md");
+        assert_eq!(tx.worktree.join("f.md").is_file(), kept);
+        kept
+    }
+
+    /// Theirs deleted and later restored `f.md`; our older delete must not
+    /// take it away again.
+    #[test]
+    fn a_newer_peer_re_add_beats_an_older_local_delete() {
+        assert!(presence_merge(
+            &[(200, false)],
+            &[(150, false), (300, true)]
+        ));
+    }
+
+    /// The mirror image: our newer restore beats the peer's older delete.
+    #[test]
+    fn a_newer_local_re_add_beats_an_older_peer_delete() {
+        assert!(presence_merge(
+            &[(150, false), (300, true)],
+            &[(200, false)]
+        ));
+    }
+
+    /// A delete newer than the re-add still removes the file.
+    #[test]
+    fn a_newer_delete_beats_an_older_re_add() {
+        assert!(!presence_merge(
+            &[(150, false), (200, true)],
+            &[(300, false)]
+        ));
     }
 
     // --- input boundaries -------------------------------------------------

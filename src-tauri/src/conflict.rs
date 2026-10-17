@@ -22,14 +22,17 @@
 //! Everything here runs against the transaction worktree ([`Transaction`]);
 //! `main` and its staging worktree are finalized later, by the transaction.
 
+use std::collections::{BTreeSet, HashMap};
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::git::Git;
-use crate::project;
-use crate::repo::{Transaction, Winner};
+use crate::project::{self, EntryList};
+use crate::repo::{self, Transaction, Winner};
 
 /// Separator between a live name and the generated conflict suffix.
 const DELIM: &str = ".conflict-";
@@ -155,6 +158,252 @@ pub fn resolve(tx: &Transaction, live: &Path, siblings: &[PathBuf], content: &[u
     tx.git
         .ok(&["commit", "-m", &format!("resolve {}", live.display())])?;
     Ok(())
+}
+
+// --- presence: delete vs re-add -------------------------------------------
+
+/// Seconds within which a delete and a re-add count as simultaneous; a tie
+/// keeps the file.
+pub const PRESENCE_TIE_SECS: i64 = 5;
+
+/// Apply the newer-wins presence rule to an in-progress merge.
+///
+/// git keeps a path one side deleted only when the other side changed it,
+/// so a restore with the base's bytes loses to an older delete, and an add
+/// that another device deletes later survives. For every path one side
+/// deleted since the merge-bases and exactly one tip still holds, each
+/// side's last user event on it since the bases is weighed: the holder's
+/// and the deleter's. The rule acts only when the holder's last event is a
+/// present one and the deleter's is a delete; otherwise git's result
+/// stands. A present event at least as new as the delete (minus
+/// [`PRESENCE_TIE_SECS`]) keeps or restores the path, otherwise it is
+/// removed, but only when the merged blob and mode are what the deleter
+/// saw. A modification always beats a deletion.
+///
+/// Holder and deleter are named by the tips' contents and each side's
+/// events are the [`repo::user_events`] of `<tip> ^<bases>`, so the
+/// outcome does not depend on which side is HEAD and both devices reach
+/// the same tree. Without a merge-base nothing is done: every old delete
+/// would be in range. Returns the paths it changed in the index and
+/// worktree.
+pub fn settle_presence(
+    g: &Git,
+    ours: &str,
+    theirs: &str,
+    entries: &EntryList,
+) -> Result<Vec<PathBuf>> {
+    let tips = [head_id(g, ours)?, head_id(g, theirs)?];
+    let bases = merge_bases(g, &tips[0], &tips[1])?;
+    if bases.is_empty() {
+        return Ok(Vec::new());
+    }
+    let nots: Vec<String> = bases.iter().map(|b| format!("^{b}")).collect();
+
+    let mut args = vec!["--diff-filter=D", "--end-of-options", &tips[0], &tips[1]];
+    args.extend(nots.iter().map(String::as_str));
+    args.push("--");
+    let deleted: BTreeSet<PathBuf> = repo::user_events(g, &args)?
+        .into_iter()
+        .flat_map(|(_, changes)| changes)
+        .filter(|(rel, change)| *change == Some(None) && entries.contains_rel(rel))
+        .map(|(rel, _)| rel)
+        .collect();
+    if deleted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let holders = one_sided(g, &tips)?;
+    let candidates: Vec<(PathBuf, usize)> = deleted
+        .into_iter()
+        .filter_map(|rel| holders.get(&rel).map(|&h| (rel, h)))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let last = [
+        last_events(g, &tips[0], &nots)?,
+        last_events(g, &tips[1], &nots)?,
+    ];
+    let mut changed = Vec::new();
+    for (rel, holder) in candidates {
+        let (Some(h), Some(d)) = (last[holder].get(&rel), last[1 - holder].get(&rel)) else {
+            continue;
+        };
+        if !h.present || d.present {
+            continue;
+        }
+        if settle_path(
+            g,
+            &rel,
+            &tips[holder],
+            h.time >= d.time - PRESENCE_TIE_SECS,
+            &d.commit,
+        )? {
+            changed.push(rel);
+        }
+    }
+    Ok(changed)
+}
+
+/// A side's last user event on one path.
+struct LastEvent {
+    time: i64,
+    present: bool,
+    commit: String,
+}
+
+/// The last user event on each path in `tip ^<bases>`. The newest time
+/// wins; at an equal time a present event beats a delete (as a tie keeps
+/// the file), then the larger commit id, so the choice never depends on
+/// log order.
+fn last_events(g: &Git, tip: &str, nots: &[String]) -> Result<HashMap<PathBuf, LastEvent>> {
+    let mut args = vec!["--end-of-options", tip];
+    args.extend(nots.iter().map(String::as_str));
+    args.push("--");
+    let mut map: HashMap<PathBuf, LastEvent> = HashMap::new();
+    for (event, changes) in repo::user_events(g, &args)? {
+        for (rel, change) in changes {
+            let Some(blob) = change else {
+                continue;
+            };
+            let e = LastEvent {
+                time: event.time,
+                present: blob.is_some(),
+                commit: event.commit.clone(),
+            };
+            let newer = map.get(&rel).is_none_or(|old| {
+                (e.time, e.present, &e.commit) > (old.time, old.present, &old.commit)
+            });
+            if newer {
+                map.insert(rel, e);
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// Make the index agree with the decision for one candidate. `holder` is
+/// the tip that still has `rel`; `deleter` is the commit of the deleting
+/// side's last event on it.
+fn settle_path(
+    g: &Git,
+    rel: &Path,
+    holder: &str,
+    want_present: bool,
+    deleter: &str,
+) -> Result<bool> {
+    let spec = pathspec(rel)?;
+    let staged = entry_at(g, &["ls-files", "-s", "-z", "--", &spec], rel)?;
+    if want_present {
+        if staged.is_some() {
+            return Ok(false);
+        }
+        g.ok(&["checkout", "--end-of-options", holder, "--", &spec])?;
+        return Ok(true);
+    }
+    // Only an informed delete removes: the deleter saw these exact bytes
+    // and mode. Anything else is a modification, which wins.
+    let Some(staged) = staged else {
+        return Ok(false);
+    };
+    let parent = format!("{deleter}^");
+    let seen = entry_at(
+        g,
+        &[
+            "ls-tree",
+            "-r",
+            "-z",
+            "--end-of-options",
+            &parent,
+            "--",
+            &spec,
+        ],
+        rel,
+    )?;
+    if seen != Some(staged) {
+        return Ok(false);
+    }
+    g.ok(&["rm", "-q", "-f", "--", &spec])?;
+    Ok(true)
+}
+
+/// `(mode, object)` of `rel` in an `ls-files -s -z` or `ls-tree -z`
+/// listing. An unmerged index entry is an error: this runs after
+/// [`resolve_index`].
+fn entry_at(g: &Git, args: &[&str], rel: &Path) -> Result<Option<(String, String)>> {
+    let mut found = None;
+    for record in split_nul(&raw(g, args)?) {
+        // ls-files: "<mode> <object> <stage>\t<path>";
+        // ls-tree: "<mode> <type> <object>\t<path>".
+        let Some(tab) = record.iter().position(|b| *b == b'\t') else {
+            continue;
+        };
+        if Path::new(OsStr::from_bytes(&record[tab + 1..])) != rel {
+            continue;
+        }
+        let meta = String::from_utf8_lossy(&record[..tab]);
+        let f: Vec<&str> = meta.split(' ').collect();
+        let (mode, object) = match (args[0], f.as_slice()) {
+            ("ls-files", [mode, object, "0"]) => (mode, object),
+            ("ls-files", _) => bail!("{} is unmerged", rel.display()),
+            (_, [mode, _, object]) => (mode, object),
+            _ => continue,
+        };
+        found = Some((mode.to_string(), object.to_string()));
+    }
+    Ok(found)
+}
+
+/// Regular files present in exactly one tip, mapped to the index of that
+/// tip in `tips`.
+fn one_sided(g: &Git, tips: &[String; 2]) -> Result<HashMap<PathBuf, usize>> {
+    let out = raw(
+        g,
+        &[
+            "diff-tree",
+            "-r",
+            "-z",
+            "--no-renames",
+            "--no-abbrev",
+            "--diff-filter=AD",
+            "--end-of-options",
+            &tips[0],
+            &tips[1],
+            "--",
+        ],
+    )?;
+    let mut map = HashMap::new();
+    let mut fields = out.split(|b| *b == 0);
+    while let Some(meta) = fields.next() {
+        let Some(path) = fields.next() else {
+            break;
+        };
+        // ":<old mode> <new mode> <old oid> <new oid> <status>"
+        let meta = String::from_utf8_lossy(meta.strip_prefix(b":").unwrap_or(meta));
+        let f: Vec<&str> = meta.split(' ').collect();
+        let holder = match f.as_slice() {
+            [old, _, _, _, "D"] if old.starts_with("100") => 0,
+            [_, new, _, _, "A"] if new.starts_with("100") => 1,
+            _ => continue,
+        };
+        map.insert(PathBuf::from(OsStr::from_bytes(path)), holder);
+    }
+    Ok(map)
+}
+
+/// Every merge-base of two commits; empty for unrelated histories.
+pub(crate) fn merge_bases(g: &Git, a: &str, b: &str) -> Result<Vec<String>> {
+    let out = g.run(&["merge-base", "--all", "--end-of-options", a, b])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    match out.status.code() {
+        Some(0) => Ok(stdout.lines().map(str::to_string).collect()),
+        Some(1) if stdout.trim().is_empty() => Ok(Vec::new()),
+        _ => bail!(
+            "git merge-base failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
 }
 
 // --- one unmerged entry ----------------------------------------------------
@@ -1312,6 +1561,327 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    // --- presence: delete vs re-add ----------------------------------------
+
+    const V: &[u8] = b"v\n";
+    const W: &[u8] = b"w\n";
+    const T0: i64 = 1_000_000;
+
+    fn tracked(keys: &[&str]) -> EntryList {
+        use crate::project::{EntryRecord, ProjectFile, State};
+        ProjectFile {
+            entries: keys
+                .iter()
+                .map(|k| {
+                    let rec = EntryRecord {
+                        gen: 1,
+                        state: State::Tracked,
+                    };
+                    ((*k).to_string(), rec)
+                })
+                .collect(),
+        }
+        .tracked()
+    }
+
+    /// A user event writing `rel`, at `T0 + at`.
+    fn put(repo: &Path, rel: &str, body: &[u8], subject: &str, at: i64) {
+        write(repo, rel, body);
+        commit_at(repo, subject, T0 + at);
+    }
+
+    /// A user event deleting `rels`, at `T0 + at`.
+    fn del(repo: &Path, rels: &[&str], subject: &str, at: i64) {
+        for rel in rels {
+            fs::remove_file(repo.join(rel)).unwrap();
+        }
+        commit_at(repo, subject, T0 + at);
+    }
+
+    /// `git merge --no-commit` as the engine will run it: a conflict is
+    /// resolved first, so the index holds the merge result.
+    fn merge_in_progress(git: &Git, r: &str, my_id: &str, their_id: &str, extra: &[&str]) {
+        let mut args = vec!["merge", "--no-ff", "--no-commit", "--no-edit"];
+        args.extend_from_slice(extra);
+        args.push(r);
+        let out = git.run(&args).unwrap();
+        if !out.status.success() {
+            resolve_index(git, r, my_id, their_id, Winner::Newer).unwrap();
+        }
+    }
+
+    fn index_tree(git: &Git) -> String {
+        git.ok(&["write-tree"]).unwrap()
+    }
+
+    fn in_index(git: &Git, rel: &str) -> bool {
+        !git.ok(&["ls-files", "--", &format!(":(literal){rel}")])
+            .unwrap()
+            .is_empty()
+    }
+
+    /// Each device merges the other and settles. Returns what each settle
+    /// changed and asserts the two index trees are identical.
+    fn settle_both(p: &Pair, entries: &EntryList) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let (ga, gb) = (p.ga(), p.gb());
+        let rb = p.fetch(&ga, &p.b, ID_B);
+        let ra = p.fetch(&gb, &p.a, ID_A);
+        merge_in_progress(&ga, &rb, ID_A, ID_B, &[]);
+        merge_in_progress(&gb, &ra, ID_B, ID_A, &[]);
+        let got_a = settle_presence(&ga, "HEAD", &rb, entries).unwrap();
+        let got_b = settle_presence(&gb, "HEAD", &ra, entries).unwrap();
+        assert_eq!(index_tree(&ga), index_tree(&gb), "settled trees differ");
+        (got_a, got_b)
+    }
+
+    /// `rel` is staged and live on both devices with `body`, or gone from both.
+    fn assert_presence(p: &Pair, rel: &str, body: Option<&[u8]>) {
+        for (dir, git) in [(&p.a, p.ga()), (&p.b, p.gb())] {
+            assert_eq!(in_index(&git, rel), body.is_some(), "{rel} in index");
+            match body {
+                Some(b) => assert_eq!(read(dir, rel), b, "{rel} bytes"),
+                None => assert!(!dir.join(rel).exists(), "{rel} still live"),
+            }
+        }
+    }
+
+    fn paths(rels: &[&str]) -> Vec<PathBuf> {
+        rels.iter().map(PathBuf::from).collect()
+    }
+
+    /// A deletes F and restores it; B deletes F `b_delete` seconds in. git
+    /// alone deletes F (A's F equals the base).
+    fn restore_vs_delete(a_restore: i64, b_delete: i64) -> Pair {
+        let p = pair(&[("F.md", V)]);
+        del(&p.a, &["F.md"], "local aaaaaaaa", 100);
+        put(&p.a, "F.md", V, "local aaaaaaaa", a_restore);
+        del(&p.b, &["F.md"], "local bbbbbbbb", b_delete);
+        p
+    }
+
+    #[test]
+    fn presence_a_re_add_newer_than_the_delete_is_kept() {
+        let p = restore_vs_delete(300, 200);
+        let (a, b) = settle_both(&p, &tracked(&["F.md"]));
+        assert_eq!((a, b), (paths(&["F.md"]), paths(&["F.md"])));
+        assert_presence(&p, "F.md", Some(V));
+    }
+
+    #[test]
+    fn presence_a_delete_newer_than_the_restore_stays_deleted() {
+        let p = restore_vs_delete(200, 300);
+        let (a, b) = settle_both(&p, &tracked(&["F.md"]));
+        assert_eq!((a, b), (vec![], vec![]));
+        assert_presence(&p, "F.md", None);
+    }
+
+    /// `tp == td - PRESENCE_TIE_SECS` is a tie and keeps the file; one more
+    /// second and the delete wins.
+    #[test]
+    fn presence_events_within_the_tie_window_keep_the_file() {
+        let p = restore_vs_delete(200, 200 + PRESENCE_TIE_SECS);
+        let (a, b) = settle_both(&p, &tracked(&["F.md"]));
+        assert_eq!((a, b), (paths(&["F.md"]), paths(&["F.md"])));
+        assert_presence(&p, "F.md", Some(V));
+
+        let p = restore_vs_delete(200, 201 + PRESENCE_TIE_SECS);
+        let (a, b) = settle_both(&p, &tracked(&["F.md"]));
+        assert_eq!((a, b), (vec![], vec![]));
+        assert_presence(&p, "F.md", None);
+    }
+
+    /// The base lacks F. A adds F and deletes it later; B adds F in between.
+    /// git keeps B's add, so the settle itself has to remove it.
+    fn add_vs_later_delete(b_body: &[u8], b_exec: bool) -> Pair {
+        use std::os::unix::fs::PermissionsExt;
+        let p = pair(&[("other.md", V)]);
+        put(&p.a, "F.md", V, "local aaaaaaaa", 100);
+        del(&p.a, &["F.md"], "local aaaaaaaa", 300);
+        write(&p.b, "F.md", b_body);
+        if b_exec {
+            fs::set_permissions(p.b.join("F.md"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        commit_at(&p.b, "local bbbbbbbb", T0 + 200);
+        p
+    }
+
+    #[test]
+    fn presence_a_newer_informed_delete_removes_a_peer_add() {
+        let p = add_vs_later_delete(V, false);
+        let (a, b) = settle_both(&p, &tracked(&["F.md"]));
+        assert_eq!((a, b), (paths(&["F.md"]), paths(&["F.md"])));
+        assert_presence(&p, "F.md", None);
+    }
+
+    #[test]
+    fn presence_never_removes_different_bytes() {
+        let p = add_vs_later_delete(W, false);
+        let (a, b) = settle_both(&p, &tracked(&["F.md"]));
+        assert_eq!((a, b), (vec![], vec![]));
+        assert_presence(&p, "F.md", Some(W));
+    }
+
+    #[test]
+    fn presence_never_removes_a_changed_mode() {
+        let p = add_vs_later_delete(V, true);
+        let (a, b) = settle_both(&p, &tracked(&["F.md"]));
+        assert_eq!((a, b), (vec![], vec![]));
+        assert_presence(&p, "F.md", Some(V));
+        let mode = p.ga().ok(&["ls-files", "-s", "--", "F.md"]).unwrap();
+        assert!(mode.starts_with("100755"), "{mode}");
+    }
+
+    /// Modify/delete: resolve_index keeps the modification, and a newer
+    /// delete does not take it away.
+    #[test]
+    fn presence_a_newer_delete_never_beats_a_modification() {
+        let p = pair(&[("F.md", V)]);
+        put(&p.a, "F.md", W, "local aaaaaaaa", 100);
+        del(&p.b, &["F.md"], "local bbbbbbbb", 300);
+        let (a, b) = settle_both(&p, &tracked(&["F.md"]));
+        assert_eq!((a, b), (vec![], vec![]));
+        assert_presence(&p, "F.md", Some(W));
+    }
+
+    #[test]
+    fn presence_skips_untracked_private_and_sibling_paths() {
+        let names = [
+            "docs/keep.md",
+            "docs/.dotloreproject",
+            "docs/x.conflict-aaaaaaaa-1234567.md",
+            "other.md",
+        ];
+        let seed: Vec<(&str, &[u8])> = names.iter().map(|n| (*n, V)).collect();
+        let p = pair(&seed);
+        del(&p.a, &names, "local aaaaaaaa", 100);
+        for n in names {
+            write(&p.a, n, V);
+        }
+        commit_at(&p.a, "local aaaaaaaa", T0 + 300);
+        del(&p.b, &names, "local bbbbbbbb", 200);
+
+        let (a, b) = settle_both(&p, &tracked(&["docs/"]));
+        assert_eq!((a, b), (paths(&["docs/keep.md"]), paths(&["docs/keep.md"])));
+        assert_presence(&p, "docs/keep.md", Some(V));
+        for n in &names[1..] {
+            assert_presence(&p, n, None);
+        }
+    }
+
+    /// The result is a function of the two tips, not of which one is HEAD.
+    #[test]
+    fn presence_swapping_ours_and_theirs_gives_the_same_tree() {
+        let p = pair(&[("F.md", V), ("G.md", V), ("H.md", V)]);
+        // F: A restores late. G: B deletes late. H: both edit, a conflict.
+        del(&p.a, &["F.md", "G.md"], "local aaaaaaaa", 100);
+        write(&p.a, "F.md", V);
+        write(&p.a, "G.md", V);
+        write(&p.a, "H.md", W);
+        commit_at(&p.a, "local aaaaaaaa", T0 + 300);
+        del(&p.b, &["F.md"], "local bbbbbbbb", 200);
+        write(&p.b, "H.md", b"b\n");
+        commit_at(&p.b, "local bbbbbbbb", T0 + 250);
+        del(&p.b, &["G.md"], "local bbbbbbbb", 400);
+
+        let (a, b) = settle_both(&p, &tracked(&["F.md", "G.md", "H.md"]));
+        assert_eq!(a, b);
+        assert_presence(&p, "F.md", Some(V));
+        assert_presence(&p, "G.md", None);
+    }
+
+    /// Case 4. M0 has F; C deletes it Sunday; A deletes it Monday and B
+    /// restores it Tuesday on top. When D_A is the kept head R fast-forwards;
+    /// when D_C is kept, R merges into D_C. This function never compares
+    /// hashes, so that merge in both directions is every order there is.
+    #[test]
+    fn presence_case_4_keeps_the_restore_in_either_direction() {
+        const DAY: i64 = 86_400;
+        let p = pair(&[("F.md", V)]);
+        del(&p.b, &["F.md"], "local cccccccc", DAY);
+        del(&p.a, &["F.md"], "local aaaaaaaa", 2 * DAY);
+        put(&p.a, "F.md", V, "local bbbbbbbb", 3 * DAY);
+
+        let (a, b) = settle_both(&p, &tracked(&["F.md"]));
+        assert_eq!((a, b), (paths(&["F.md"]), paths(&["F.md"])));
+        assert_presence(&p, "F.md", Some(V));
+    }
+
+    /// Without a merge-base every old event would be in range; an ancient
+    /// delete of a same-named path must not act.
+    #[test]
+    fn presence_does_nothing_without_a_merge_base() {
+        let dir = TempDir::new().unwrap();
+        let (a, b) = (dir.path().join("A"), dir.path().join("B"));
+        for d in [&a, &b] {
+            fs::create_dir_all(d).unwrap();
+            fixture_git(d, T0, &["init", "-q", "-b", "main"]);
+        }
+        put(&a, "G.md", V, "local aaaaaaaa", 50);
+        put(&a, "F.md", V, "local aaaaaaaa", 100);
+        del(&a, &["F.md"], "local aaaaaaaa", 300);
+        put(&b, "F.md", V, "local bbbbbbbb", 200);
+
+        let ga = Git::new(a.clone(), "Mac A Pro", ID_A);
+        let r = "refs/remotes/pk/b/main";
+        ga.ok(&["fetch", b.to_str().unwrap(), &format!("+main:{r}")])
+            .unwrap();
+        merge_in_progress(&ga, r, ID_A, ID_B, &["--allow-unrelated-histories"]);
+        let got = settle_presence(&ga, "HEAD", r, &tracked(&["F.md", "G.md"])).unwrap();
+        assert!(got.is_empty(), "{got:?}");
+        assert!(in_index(&ga, "F.md"));
+        assert_eq!(read(&a, "F.md"), V);
+    }
+
+    #[test]
+    fn presence_has_no_candidates_when_a_peer_only_added_files() {
+        let p = pair(&[("F.md", V)]);
+        put(&p.a, "H.md", V, "local aaaaaaaa", 100);
+        put(&p.b, "G.md", V, "local bbbbbbbb", 200);
+        let (a, b) = settle_both(&p, &tracked(&["F.md", "G.md", "H.md"]));
+        assert_eq!((a, b), (vec![], vec![]));
+        for f in ["F.md", "G.md", "H.md"] {
+            assert_presence(&p, f, Some(V));
+        }
+    }
+
+    /// One side deleted, the other never touched the path: there is no
+    /// present event to weigh, so git's clean delete stands.
+    #[test]
+    fn presence_leaves_a_lone_delete_alone() {
+        let p = pair(&[("F.md", V)]);
+        del(&p.a, &["F.md"], "local aaaaaaaa", 100);
+        put(&p.b, "G.md", V, "local bbbbbbbb", 200);
+        let (a, b) = settle_both(&p, &tracked(&["F.md", "G.md"]));
+        assert_eq!((a, b), (vec![], vec![]));
+        assert_presence(&p, "F.md", None);
+    }
+
+    /// A edits F and deletes it within the tie window; B never touches F.
+    /// Both events are A's, so there is nothing to weigh: the delete stands.
+    #[test]
+    fn presence_a_same_side_edit_then_delete_is_left_alone() {
+        let p = pair(&[("F.md", V)]);
+        put(&p.a, "F.md", W, "local aaaaaaaa", 100);
+        del(&p.a, &["F.md"], "local aaaaaaaa", 103);
+        put(&p.b, "G.md", V, "local bbbbbbbb", 200);
+        let (a, b) = settle_both(&p, &tracked(&["F.md", "G.md"]));
+        assert_eq!((a, b), (vec![], vec![]));
+        assert_presence(&p, "F.md", None);
+    }
+
+    /// A deletes F and re-adds it within the tie window; B never touches F.
+    /// git's result stands.
+    #[test]
+    fn presence_a_same_side_delete_then_re_add_is_left_alone() {
+        let p = pair(&[("F.md", V)]);
+        del(&p.a, &["F.md"], "local aaaaaaaa", 100);
+        put(&p.a, "F.md", V, "local aaaaaaaa", 103);
+        put(&p.b, "G.md", V, "local bbbbbbbb", 200);
+        let (a, b) = settle_both(&p, &tracked(&["F.md", "G.md"]));
+        assert_eq!((a, b), (vec![], vec![]));
+        assert_presence(&p, "F.md", Some(V));
     }
 
     impl Conflict {

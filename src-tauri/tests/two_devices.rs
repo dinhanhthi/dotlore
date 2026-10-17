@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use dotlore::cloud::Cloud;
 use dotlore::config::Config;
+use dotlore::conflict::PRESENCE_TIE_SECS;
 use dotlore::engine::{
     configure_provider, Engine, FileSync, ResolveOutcome, RestoreChoice, RestoreResult,
     RestoredFile, RootStatus,
@@ -689,6 +690,193 @@ fn restore_survives_a_mac_offline_across_delete_and_restore() {
     assert_dir_eq(a.root.path(), c.root.path());
 }
 
+/// Puts two capture commits further apart than the presence tie window
+/// (commit times have one-second resolution).
+const TIE_GAP: Duration = Duration::from_secs(PRESENCE_TIE_SECS as u64 + 1);
+
+/// `standard_start` plus C linked and converged with A and B.
+fn three_linked() -> (Device, Device, Device) {
+    let (mut a, mut b) = standard_start();
+    let mut c = Device::new('c');
+    sync_cloud(&[&a, &b, &c]);
+    assert_eq!(
+        c.engine.link_root(SLUG, c.root.path()).unwrap(),
+        RootStatus::Synced
+    );
+    dance(&mut [&mut a, &mut b, &mut c]);
+    (a, b, c)
+}
+
+/// Restore `agents/x.md` from `dev`'s Dotlore trash.
+fn restore_x_from_trash(dev: &mut Device) {
+    let trash = dotlore::trash::list(dev.home.path(), &dev.engine.cfg.roots, u64::MAX).unwrap();
+    let pass = trash
+        .iter()
+        .filter(|p| p.slug == SLUG)
+        .flat_map(|p| &p.passes)
+        .find(|p| p.files.iter().any(|f| f.rel == "agents/x.md"))
+        .expect("no trash copy of agents/x.md");
+    let got = dev
+        .engine
+        .restore_from_trash(
+            SLUG,
+            &pass.day,
+            &pass.pass,
+            Some("agents/x.md"),
+            RestoreChoice::Ask,
+        )
+        .unwrap();
+    let RestoreResult::Done { restored, .. } = got else {
+        panic!("restore did not run: {got:?}");
+    };
+    assert_eq!(
+        restored,
+        vec![RestoredFile {
+            from: "agents/x.md".into(),
+            to: "agents/x.md".into(),
+        }]
+    );
+}
+
+/// Case 4: C deletes offline (oldest event), A deletes later, B restores
+/// last. The restore is the newest event, so it wins on every Mac, whatever
+/// the hash order of the reconnect merges.
+#[test]
+fn case4_a_later_restore_beats_an_earlier_offline_delete() {
+    let (mut a, mut b, mut c) = three_linked();
+
+    // C goes offline and deletes first.
+    fs::remove_file(c.root.path().join("agents/x.md")).unwrap();
+    c.engine.sync_all().unwrap();
+    std::thread::sleep(TIE_GAP);
+
+    fs::remove_file(a.root.path().join("agents/x.md")).unwrap();
+    dance(&mut [&mut a, &mut b]);
+    assert!(!b.root.path().join("agents/x.md").exists());
+    std::thread::sleep(TIE_GAP);
+
+    restore_x_from_trash(&mut b);
+    dance(&mut [&mut a, &mut b]);
+    assert_eq!(read(&a, "agents/x.md"), b"agent x\n");
+    c.engine.sync_all().unwrap();
+
+    // C reconnects.
+    dance(&mut [&mut a, &mut b, &mut c]);
+    dance(&mut [&mut a, &mut b, &mut c]);
+
+    for dev in [&a, &b, &c] {
+        assert_eq!(read(dev, "agents/x.md"), b"agent x\n");
+    }
+    assert_synced(&mut a);
+    assert_synced(&mut b);
+    assert_synced(&mut c);
+    assert_dir_eq(a.root.path(), b.root.path());
+    assert_dir_eq(a.root.path(), c.root.path());
+}
+
+/// The mirror of case 4: A deletes, B restores, and only then does the
+/// offline C delete. C's delete is the newest event, so it wins everywhere.
+#[test]
+fn a_delete_after_the_restore_wins() {
+    let (mut a, mut b, mut c) = three_linked();
+
+    // C is offline throughout.
+    fs::remove_file(a.root.path().join("agents/x.md")).unwrap();
+    dance(&mut [&mut a, &mut b]);
+    assert!(!b.root.path().join("agents/x.md").exists());
+    c.engine.sync_all().unwrap();
+
+    restore_x_from_trash(&mut b);
+    dance(&mut [&mut a, &mut b]);
+    assert_eq!(read(&a, "agents/x.md"), b"agent x\n");
+    c.engine.sync_all().unwrap();
+    std::thread::sleep(TIE_GAP);
+
+    // C deletes the bytes the restore brought back.
+    assert_eq!(read(&c, "agents/x.md"), b"agent x\n");
+    fs::remove_file(c.root.path().join("agents/x.md")).unwrap();
+    c.engine.sync_all().unwrap();
+
+    // C reconnects.
+    dance(&mut [&mut a, &mut b, &mut c]);
+    dance(&mut [&mut a, &mut b, &mut c]);
+
+    for dev in [&a, &b, &c] {
+        assert!(
+            !dev.root.path().join("agents/x.md").exists(),
+            "agents/x.md survived on {}",
+            dev.id8()
+        );
+    }
+    assert_synced(&mut a);
+    assert_synced(&mut b);
+    assert_synced(&mut c);
+    assert_dir_eq(a.root.path(), b.root.path());
+    assert_dir_eq(a.root.path(), c.root.path());
+}
+
+/// Case 4 where the offline C's delete commit also carries an edit to
+/// another file: the restore still wins and C's edit still propagates.
+#[test]
+fn case4_with_an_extra_edit_on_the_offline_mac_converges() {
+    let (mut a, mut b, mut c) = three_linked();
+
+    fs::remove_file(c.root.path().join("agents/x.md")).unwrap();
+    append(&c, "CLAUDE.md", "edited offline on C\n");
+    c.engine.sync_all().unwrap();
+    let c_claude = read(&c, "CLAUDE.md");
+    std::thread::sleep(TIE_GAP);
+
+    fs::remove_file(a.root.path().join("agents/x.md")).unwrap();
+    dance(&mut [&mut a, &mut b]);
+    assert!(!b.root.path().join("agents/x.md").exists());
+    std::thread::sleep(TIE_GAP);
+
+    restore_x_from_trash(&mut b);
+    dance(&mut [&mut a, &mut b]);
+    c.engine.sync_all().unwrap();
+
+    // C reconnects.
+    dance(&mut [&mut a, &mut b, &mut c]);
+    dance(&mut [&mut a, &mut b, &mut c]);
+
+    for dev in [&a, &b, &c] {
+        assert_eq!(read(dev, "agents/x.md"), b"agent x\n");
+        assert_eq!(read(dev, "CLAUDE.md"), c_claude);
+        no_markers(dev.root.path());
+    }
+    assert_synced(&mut a);
+    assert_synced(&mut b);
+    assert_synced(&mut c);
+    assert_dir_eq(a.root.path(), b.root.path());
+    assert_dir_eq(a.root.path(), c.root.path());
+}
+
+/// Both Macs delete the same file before seeing each other's delete. The
+/// histories differ in user events but not in trees; the devices must still
+/// settle on one head and stop publishing.
+#[test]
+fn twin_offline_deletes_converge() {
+    let (mut a, mut b) = standard_start();
+
+    fs::remove_file(a.root.path().join("agents/x.md")).unwrap();
+    fs::remove_file(b.root.path().join("agents/x.md")).unwrap();
+    a.engine.sync_all().unwrap();
+    b.engine.sync_all().unwrap();
+
+    dance(&mut [&mut a, &mut b]);
+
+    assert!(!a.root.path().join("agents/x.md").exists());
+    assert!(!b.root.path().join("agents/x.md").exists());
+    assert_eq!(head(&a, SLUG), head(&b, SLUG));
+    let before = (snap(&a), snap(&b));
+    dance(&mut [&mut a, &mut b]);
+    assert_eq!(before, (snap(&a), snap(&b)));
+    assert_synced(&mut a);
+    assert_synced(&mut b);
+    assert_dir_eq(a.root.path(), b.root.path());
+}
+
 #[test]
 fn binary_conflict_newer_wins_loser_preserved() {
     let (mut a, mut b) = standard_start();
@@ -999,6 +1187,119 @@ fn an_untracked_entry_is_not_resurrected_by_a_peer() {
     assert_eq!(read(&b, "notes/one.md"), b"notes from A\n");
     no_markers(a.root.path());
     no_markers(b.root.path());
+}
+
+/// A deletes `notes/one.md` and then untracks `notes/`. B, which saw
+/// neither, deletes and re-adds the file later: its re-add is the newest
+/// presence event, but the presence rule only acts on tracked paths, so the
+/// merge neither re-tracks it nor brings it back into staging.
+#[test]
+fn an_untracked_path_is_not_resurrected_by_a_newer_peer_re_add() {
+    let (mut a, mut b) = standard_start();
+    write(&a, "notes/one.md", b"notes from A\n");
+    a.engine
+        .track_entry(SLUG, Path::new("notes"), None)
+        .unwrap();
+    dance(&mut [&mut a, &mut b]);
+    assert_eq!(read(&b, "notes/one.md"), b"notes from A\n");
+
+    fs::remove_file(a.root.path().join("notes/one.md")).unwrap();
+    assert_synced(&mut a);
+    assert_eq!(
+        a.engine.untrack_entry(SLUG, Path::new("notes")).unwrap(),
+        RootStatus::Synced
+    );
+    std::thread::sleep(TIE_GAP);
+
+    // B has seen neither the delete nor the untrack.
+    fs::remove_file(b.root.path().join("notes/one.md")).unwrap();
+    assert_synced(&mut b);
+    write(&b, "notes/one.md", b"notes from A\n");
+    assert_synced(&mut b);
+
+    dance(&mut [&mut a, &mut b]);
+
+    for (label, dev) in [("A", &mut a), ("B", &mut b)] {
+        let file = project::read(&dev.staging(SLUG)).unwrap();
+        assert_eq!(
+            file.entries["notes/"].state,
+            project::State::Removed,
+            "{label} did not converge on Removed"
+        );
+        let keys = listed_keys(dev);
+        assert!(
+            !keys.iter().any(|k| k == "notes/"),
+            "{label} still lists notes/ as tracked: {keys:?}"
+        );
+        let rels = tracked_rels(dev);
+        assert!(
+            !rels.iter().any(|r| r.starts_with("notes/")),
+            "{label} still reports notes/** as tracked: {rels:?}"
+        );
+        let staged = dev
+            .git(SLUG)
+            .ok(&["ls-tree", "-r", "--name-only", "HEAD", "--", "notes"])
+            .unwrap();
+        assert!(
+            staged.trim().is_empty(),
+            "{label} brought notes/** back into staging: {staged}"
+        );
+    }
+    assert_eq!(head(&a, SLUG), head(&b, SLUG));
+    assert!(!a.root.path().join("notes/one.md").exists());
+    no_markers(a.root.path());
+    no_markers(b.root.path());
+}
+
+/// A ignores `notes.md`, which untracks it (a tombstone; the blob stays in
+/// staging), while B, unaware, has a delete and a re-add of `notes.md` in
+/// its history. The two histories differ in user events but agree on the
+/// tree, so this is exactly the shape that must not merge forever.
+#[test]
+fn ignore_churn_against_a_peer_re_add_converges() {
+    let (mut a, mut b) = standard_start();
+    write(&a, "notes.md", b"notes\n");
+    a.engine
+        .track_entry(SLUG, Path::new("notes.md"), None)
+        .unwrap();
+    dance(&mut [&mut a, &mut b]);
+    assert_eq!(read(&b, "notes.md"), b"notes\n");
+
+    fs::remove_file(b.root.path().join("notes.md")).unwrap();
+    assert_synced(&mut b);
+    write(&b, "notes.md", b"notes\n");
+    assert_synced(&mut b);
+    std::thread::sleep(TIE_GAP);
+
+    assert_eq!(
+        a.engine
+            .set_project_ignore(SLUG, "notes.md\n".into())
+            .unwrap(),
+        RootStatus::Synced
+    );
+
+    dance(&mut [&mut a, &mut b]);
+
+    for (label, dev) in [("A", &mut a), ("B", &mut b)] {
+        let file = project::read(&dev.staging(SLUG)).unwrap();
+        assert_eq!(
+            file.entries["notes.md"].state,
+            project::State::Removed,
+            "{label} did not converge on Removed"
+        );
+        assert!(
+            !tracked_rels(dev).iter().any(|r| r == "notes.md"),
+            "{label} still tracks notes.md"
+        );
+        assert_eq!(read(dev, "notes.md"), b"notes\n", "{label} lost notes.md");
+    }
+    assert_eq!(head(&a, SLUG), head(&b, SLUG));
+    let before = (snap(&a), snap(&b));
+    dance(&mut [&mut a, &mut b]);
+    assert_eq!(before, (snap(&a), snap(&b)));
+    assert_synced(&mut a);
+    assert_synced(&mut b);
+    assert_dir_eq(a.root.path(), b.root.path());
 }
 
 /// Untrack commits a tombstone only: live bytes and content blob ids stay put

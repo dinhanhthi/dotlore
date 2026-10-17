@@ -38,6 +38,8 @@ Each project gets a private staging git repo under `~/Library/Application Suppor
 
 Other Macs fetch and merge those bundles with the system `git`. On overlapping edits the newer commit wins, and the other version is kept as `<stem>.conflict-<device>-<blob>.<ext>`, so nothing is lost.
 
+When one Mac deletes a file and another restores it, the later of the two wins, and a tie keeps the file. Edits always beat deletes. A delete counts from when Dotlore sees it: a file deleted while Dotlore is not running counts from the next launch, so keep Dotlore running (login item on) and keep your Macs' clocks set automatically. Update Dotlore on every Mac before relying on this: an older version can still let an older delete win.
+
 Global settings (seed patterns, ignore defaults, sensitive patterns, size limits) sync as small write-once snapshots under `<cloud>/dotlore/_settings/`, so a new Mac picks them up automatically.
 
 Each project can also have its own ignore list (project menu → "Ignore list…"). It adds ignores on top of the global never-list and syncs with the project. A `!` line re-includes a path the never-list ignores, but sensitive files (Settings → sensitive patterns, plus `.credentials.json`, `auth.json`, `.claude.json` and its copies under `backups/`) are never re-included. Update Dotlore on every Mac before using it: older versions ignore the project list or its `!` lines.

@@ -2571,6 +2571,12 @@ fn settled_ref(provider_key: &str, device_id: &str) -> String {
 /// sorts *below* ours is still merged — that is the adoption case, and it is
 /// what keeps both devices on one commit.
 ///
+/// Identical trees are not enough when each side holds user events the other
+/// lacks (two devices deleting the same file): settling would drop the other
+/// side's events from every later presence decision, so that head is merged
+/// into a real merge with the same tree. Two such merges differ only in merge
+/// commits, so the next round settles or adopts as above.
+///
 /// Where the guarantee ends: the marker suppresses that exact commit, here.
 /// A third device that merged the discarded commit into a non-identical head
 /// before the equivalence was settled still carries it as a real ancestor, so
@@ -2600,7 +2606,7 @@ fn needs_merge(repo: &Repo, key: &str, device: &str) -> Result<bool> {
         .run(&["diff", "--quiet", "--end-of-options", &main, &r])?
         .status
         .success();
-    if identical && rev > main {
+    if identical && rev > main && !crate::repo::histories_differ(&repo.git, &main, &rev)? {
         repo.git
             .ok(&["update-ref", &settled_ref(key, device), &rev])?;
         return Ok(false);
@@ -4918,6 +4924,65 @@ mod tests {
         );
         assert_eq!(repo.git.rev("refs/heads/main").as_deref(), Some(&*r));
         assert_eq!(fs::read(a.root.path().join("docs/a.md")).unwrap(), b"a\n");
+    }
+
+    /// Two devices delete the same file from `main`'s parent: identical
+    /// trees, but each head carries a user event the other lacks. Settling
+    /// the larger hash would drop the other delete from every later presence
+    /// decision, so it is merged; once both sides hold equivalent merges
+    /// (only merge commits differ), the larger one is settled as before.
+    #[test]
+    fn needs_merge_keeps_identical_heads_with_differing_user_events() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        add(&mut a);
+
+        let root = a.engine.root_cfg("proj-claude").unwrap();
+        let repo = a.engine.repo_for(&root).unwrap();
+        let key = provider_key(&cloud_of(&a));
+        let b = "b".repeat(32);
+        let m0 = repo.git.rev("refs/heads/main").unwrap();
+        repo.git
+            .ok(&["rm", "--cached", "-q", "--", "docs/a.md"])
+            .unwrap();
+        let tree_d = repo.git.ok(&["write-tree"]).unwrap();
+        repo.git.ok(&["read-tree", "HEAD"]).unwrap();
+        let ordered = |mut pair: [String; 2]| {
+            pair.sort();
+            pair
+        };
+        let [d_small, d_large] = ordered(["local aaaaaaaa", "local bbbbbbbb"].map(|msg| {
+            repo.git
+                .ok(&["commit-tree", "-m", msg, "-p", &m0, &tree_d])
+                .unwrap()
+        }));
+
+        repo.git
+            .ok(&["update-ref", "refs/heads/main", &d_small])
+            .unwrap();
+        repo.git
+            .ok(&["update-ref", &remote_ref(&key, &b), &d_large])
+            .unwrap();
+        assert!(needs_merge(&repo, &key, &b).unwrap());
+        assert_eq!(repo.git.rev(&settled_ref(&key, &b)), None);
+
+        let [m_small, m_large] = ordered([(&d_small, &d_large), (&d_large, &d_small)].map(
+            |(p1, p2)| {
+                repo.git
+                    .ok(&["commit-tree", "-m", "Merge", "-p", p1, "-p", p2, &tree_d])
+                    .unwrap()
+            },
+        ));
+        repo.git
+            .ok(&["update-ref", "refs/heads/main", &m_small])
+            .unwrap();
+        repo.git
+            .ok(&["update-ref", &remote_ref(&key, &b), &m_large])
+            .unwrap();
+        assert!(!needs_merge(&repo, &key, &b).unwrap());
+        assert_eq!(repo.git.rev(&settled_ref(&key, &b)), Some(m_large));
     }
 
     /// I3: the destination gets a complete bootstrap bundle, the source is
