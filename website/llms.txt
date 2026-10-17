@@ -1,0 +1,39 @@
+# Dotlore
+
+> Dotlore is a free, open-source (MIT) macOS app that syncs the AI-agent config your projects git-ignore (`.claude/`, `CLAUDE.md`, `.agents/`, `docs/`, `~/.claude`) between your own Macs. It syncs through a folder your cloud app already keeps in sync (iCloud Drive, Google Drive, Dropbox, OneDrive, Box, MEGA, …). It uses a folder path, never a cloud API. Files stay where they are: nothing is moved, symlinked, or added to your project's git history.
+
+Windows and Linux are planned; macOS is the current priority.
+
+## How it works
+
+- Each project is a folder with an include-list of entries (files such as `CLAUDE.md`, folders such as `.claude/` or `docs/`). New projects start from the patterns common AI tools use (`AGENTS.md`, `.cursor/`, `.mcp.json`, `.github/copilot-instructions.md`, …).
+- Each project has a private staging git repo under `~/Library/Application Support/dotlore/`. A change becomes a commit. Dotlore notices it through a file watcher (2 s quiet period, 5 s cap) and a poll every 30 s.
+- Each Mac publishes immutable git bundles to its own folder: `<cloud>/dotlore/<project>/devices/<device-id>/000001.bundle`. Nothing in the cloud folder is ever rewritten or deleted. The one exception is Settings → "Wipe cloud data", which asks first.
+- Other Macs fetch the bundles and merge them with the system `git`. A Mac that was offline catches up when its cloud folder syncs again.
+
+## Sync rules
+
+- Edits on different lines merge. Edits on the same lines: the newer commit wins, and the other version is kept as `<name>.conflict-<device>-<hash>.<ext>`. Conflict markers are never written into files.
+- A delete syncs like any change. Before a sync deletes or overwrites a file, the old version goes to a local trash.
+- Edit versus delete: the edit always wins.
+- Delete versus restore: the later of the two wins, and a tie within 5 seconds keeps the file. A delete counts from when Dotlore sees it. A file deleted while Dotlore is not running counts from the next launch.
+- Trash: local only, never synced, capped at 500 MB by default (oldest syncs removed first). Files you delete yourself are kept there too.
+- History: each project keeps its synced versions on this Mac. Right-click a file → "History…" brings back an earlier version. "More" → "Deleted files…" brings back a deleted file.
+- Ignore lists: a global never-list keeps agent state out of every project (sessions, logs, caches, `node_modules/`, `.DS_Store`, `*.log`, …). Each project can add its own `.gitignore`-style list, and a `!` line re-includes a path for that project. Ignoring a tracked file stops syncing it, but the file stays on disk.
+- Sensitive files: names such as `.env`, `*.pem`, `*.key` and `credentials*` need confirmation before they are tracked. A `!` line never re-includes them. `.credentials.json`, `auth.json` and `.claude.json` are always left out.
+- Size limits: files over 50 MB are skipped. Tracking a folder over 200 MB asks for confirmation. Both limits are in Settings → "Size limits". Symlinks are never followed.
+- Global settings (patterns, ignore defaults, sensitive patterns, size limits) sync as small snapshots under `<cloud>/dotlore/_settings/`, so a new Mac picks them up.
+
+## Links
+
+- [Website](https://dotlore.dinhanhthi.com/): landing page
+- [Download for macOS](https://github.com/dinhanhthi/dotlore/releases/latest/download/Dotlore-universal.dmg): universal DMG of the latest release
+- [Source code](https://github.com/dinhanhthi/dotlore): GitHub repository, MIT license
+- [README](https://github.com/dinhanhthi/dotlore/blob/main/README.md): features, how it works, trash, cloud folders, development
+- [Releases and changelog](https://github.com/dinhanhthi/dotlore/releases)
+- [Intro video](https://www.youtube.com/watch?v=WACPvu10plc)
+
+## Optional
+
+- [Contributing](https://github.com/dinhanhthi/dotlore/blob/main/CONTRIBUTING.md): engine invariants, layout, tests
+- [Privacy](https://dotlore.dinhanhthi.com/privacy.html)
