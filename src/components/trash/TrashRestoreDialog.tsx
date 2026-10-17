@@ -20,6 +20,8 @@ type TrashRestoreDialogProps = {
   open: boolean;
   /** Files whose live copy exists and differs from the trash copy. */
   rels: string[];
+  /** Defaults to the trash wording, which lists several files. */
+  title?: string;
   onCancel: () => void;
   onReplace: () => void;
   onKeepBoth: () => void;
@@ -28,6 +30,7 @@ type TrashRestoreDialogProps = {
 export function TrashRestoreDialog({
   open,
   rels,
+  title = "Some files already exist in the project",
   onCancel,
   onReplace,
   onKeepBoth,
@@ -44,7 +47,7 @@ export function TrashRestoreDialog({
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Some files already exist in the project</AlertDialogTitle>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>
             Replace moves the current file to the trash first. Keep both writes
             a copy named {"<name>.restored.<ext>"} and leaves the current file

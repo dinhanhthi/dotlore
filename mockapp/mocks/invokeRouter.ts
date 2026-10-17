@@ -2,6 +2,7 @@ import { defaultSlug } from "@/lib/slug";
 import type {
   EntryKind,
   EntryView,
+  FileContent,
   InspectedEntryDto,
   PickerRow,
   RestoreResult,
@@ -22,6 +23,7 @@ import { MOCK_FILE_PATHS } from "./plugin-dialog";
 import {
   fileRecord,
   gdriveMounts,
+  historyKey,
   icloudPath,
   resolutionFor,
   store,
@@ -426,6 +428,91 @@ function deleteTrashOlderThan(args: Record<string, unknown>): number {
   return removed;
 }
 
+type HistoryArgs = { slug: string; rel: string; commit: string };
+
+function historyArgs(args: Record<string, unknown>): HistoryArgs {
+  return {
+    slug: argString(args, "slug"),
+    rel: argString(args, "rel"),
+    commit: argString(args, "commit"),
+  };
+}
+
+/** The content of `rel` at `commit`; a version that deleted the file has none. */
+function requireHistoryContent({ slug, rel, commit }: HistoryArgs): FileContent {
+  const version = store.history[slug]?.[rel]?.find((item) => item.commit === commit);
+  if (!version) throw new Error(`${commit} is not a version of ${rel}`);
+  const content = store.historyContents[historyKey(slug, rel, commit)];
+  if (version.deleted || !content) throw new Error(`${rel} does not exist at ${commit}`);
+  return content;
+}
+
+function sameContent(record: FileRecord, content: FileContent): boolean {
+  const live = toFileContent(record);
+  return (
+    live.text === content.text &&
+    live.binary === content.binary &&
+    live.bytes_len === content.bytes_len
+  );
+}
+
+function restoreHistory(args: Record<string, unknown>): RestoreResult {
+  const target = historyArgs(args);
+  const choice = args.choice;
+  if (choice !== "ask" && choice !== "replace" && choice !== "keep_both") {
+    throw new Error(`mockapp: unknown restore choice ${String(choice)}`);
+  }
+  const row = store.roots.find((item) => item.slug === target.slug);
+  if (!row) {
+    throw new Error(
+      `${target.slug} was removed from Dotlore; its history can no longer be restored`,
+    );
+  }
+  if (row.status.kind === "RootMissing") {
+    throw new Error(`the project folder ${row.path} is missing`);
+  }
+  const content = requireHistoryContent(target);
+  const files = store.files[target.slug] ?? (store.files[target.slug] = {});
+  const live = files[target.rel];
+  const done = (
+    restored: { from: string; to: string }[],
+    unchanged: string[],
+    tracked: string[],
+  ): RestoreResult => ({
+    kind: "done",
+    restored,
+    unchanged,
+    skipped: [],
+    tracked,
+    kept_local: [],
+    track_error: null,
+  });
+  if (live && sameContent(live, content)) return done([], [target.rel], []);
+  if (live && choice === "ask") return { kind: "existing", rels: [target.rel] };
+  // Keep both leaves the live file alone and writes a sibling.
+  const to = live && choice === "keep_both" ? restoredRel(target.rel) : target.rel;
+  files[to] = {
+    text: content.text,
+    binary: content.binary,
+    too_large: content.too_large,
+    bytes: content.bytes_len,
+  };
+  if (to === target.rel) {
+    store.deletedFiles[target.slug] = (store.deletedFiles[target.slug] ?? []).filter(
+      (item) => item.rel !== target.rel,
+    );
+  }
+  const tracked: string[] = [];
+  const entries = store.entries[target.slug] ?? (store.entries[target.slug] = []);
+  if (!coveredBy(to, entries, store.excludes[target.slug] ?? [])) {
+    entries.push({ key: to, kind: "file", covering: [] });
+    store.entries[target.slug] = withCovering(entries);
+    tracked.push(to);
+  }
+  emitStatus();
+  return done([{ from: target.rel, to }], [], tracked);
+}
+
 const handlers: Record<
   string,
   (args: Record<string, unknown>) => unknown
@@ -710,6 +797,19 @@ const handlers: Record<
     return { text, binary: false, too_large: false, bytes_len: text.length };
   },
   restore_trash: restoreTrash,
+  file_history: (args) => {
+    const slug = argString(args, "slug");
+    const rel = argString(args, "rel");
+    requireRoot(slug);
+    return structuredClone(store.history[slug]?.[rel] ?? []);
+  },
+  deleted_files: (args) => {
+    const slug = argString(args, "slug");
+    requireRoot(slug);
+    return structuredClone(store.deletedFiles[slug] ?? []);
+  },
+  read_history_file: (args) => ({ ...requireHistoryContent(historyArgs(args)) }),
+  restore_history: restoreHistory,
   delete_trash: deleteTrash,
   delete_trash_older_than: deleteTrashOlderThan,
   empty_trash: () => {

@@ -17,12 +17,16 @@ import {
   applyTrackBatch,
   BLOCKED,
   clearErrors,
+  deletedFiles,
   dismissError,
+  fileHistory,
   getWorkSnapshot,
   listLinkable,
   projectIgnore,
+  readHistoryFile,
   removeRoot,
   reportError,
+  restoreHistory,
   runTask,
   sensitivePatterns,
   setProjectIgnore,
@@ -100,6 +104,57 @@ describe("project ignore", () => {
       ignore: "*.log\n",
     });
     expect(label).toBe("Applying ignore list…");
+  });
+});
+
+describe("history", () => {
+  it("lists one file's versions through file_history", async () => {
+    const versions = [
+      { commit: "abc", time: 1, device_name: "Mac", deleted: false, bytes_len: null },
+    ];
+    invokeMock.mockResolvedValue(versions);
+    await expect(fileHistory("proj", "CLAUDE.md")).resolves.toEqual(versions);
+    expect(invokeMock).toHaveBeenCalledWith("file_history", {
+      slug: "proj",
+      rel: "CLAUDE.md",
+    });
+  });
+
+  it("lists deleted files through deleted_files", async () => {
+    const files = [{ rel: "a.md", commit: "abc", deleted_at: 1, device_name: "Mac" }];
+    invokeMock.mockResolvedValue(files);
+    await expect(deletedFiles("proj")).resolves.toEqual(files);
+    expect(invokeMock).toHaveBeenCalledWith("deleted_files", { slug: "proj" });
+  });
+
+  it("previews one version through read_history_file", async () => {
+    const content = { text: "hi", binary: false, too_large: false, bytes_len: 2 };
+    invokeMock.mockResolvedValue(content);
+    await expect(readHistoryFile("proj", "CLAUDE.md", "abc")).resolves.toEqual(content);
+    expect(invokeMock).toHaveBeenCalledWith("read_history_file", {
+      slug: "proj",
+      rel: "CLAUDE.md",
+      commit: "abc",
+    });
+  });
+
+  it("restores one version through restore_history as a task", async () => {
+    const result = { kind: "existing", rels: ["CLAUDE.md"] };
+    let label: string | null = null;
+    invokeMock.mockImplementation(async () => {
+      label = getWorkSnapshot().taskLabel;
+      return result;
+    });
+    await expect(restoreHistory("proj", "CLAUDE.md", "abc", "keep_both")).resolves.toEqual(
+      result,
+    );
+    expect(invokeMock).toHaveBeenCalledWith("restore_history", {
+      slug: "proj",
+      rel: "CLAUDE.md",
+      commit: "abc",
+      choice: "keep_both",
+    });
+    expect(label).toBe("Restoring…");
   });
 });
 

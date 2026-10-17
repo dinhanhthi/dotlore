@@ -52,7 +52,7 @@ Before a sync deletes or overwrites a file, Dotlore keeps the old version in a l
 
 Open "Trash" in the sidebar to preview, compare, and restore a file, a folder, or a whole sync. The trash is capped at 500 MB by default (Settings → Sync → "Trash size limit"); past the cap, the oldest syncs are removed first.
 
-**Restore from history** — each project also keeps a history of its synced versions on this Mac, so you can bring back an earlier version of a file or a file that was deleted. The history is local to this Mac and is lost by "Wipe cloud data", by recovering a project, and when a project is removed and then added or linked again (its staging repo is archived to recovery).
+**Restore from history** — each project also keeps a history of its synced versions on this Mac, so you can bring back an earlier version of a file or a file that was deleted. Right-click a file and choose "History…" to see its versions, or open a project's "More" menu and choose "Deleted files…". The history is local to this Mac and is lost by "Wipe cloud data", by recovering a project, and when a project is removed and then added or linked again (its staging repo is archived to recovery).
 
 ### ☁️ Cloud folders
 

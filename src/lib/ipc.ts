@@ -4,9 +4,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { errorMessage } from "./errors";
 import type {
   ConflictView,
+  DeletedFile,
   DeviceRow,
   EntryView,
   FileContent,
+  HistoryVersion,
   ImportAgentsDto,
   InspectedEntryDto,
   LinkableRow,
@@ -307,6 +309,36 @@ export function restoreTrash(
 ): Promise<RestoreResult | typeof BLOCKED> {
   return runTask("Restoring…", () =>
     invoke<RestoreResult>("restore_trash", { slug, day, pass, rel, choice }),
+  );
+}
+
+/** One file's versions in the local staging history, newest first. */
+export function fileHistory(slug: string, rel: string): Promise<HistoryVersion[]> {
+  return invoke("file_history", { slug, rel });
+}
+
+/** Tracked files absent from the project, with the version that deleted each. */
+export function deletedFiles(slug: string): Promise<DeletedFile[]> {
+  return invoke("deleted_files", { slug });
+}
+
+export function readHistoryFile(
+  slug: string,
+  rel: string,
+  commit: string,
+): Promise<FileContent> {
+  return invoke("read_history_file", { slug, rel, commit });
+}
+
+/** Restore one file as it was at `commit`. */
+export function restoreHistory(
+  slug: string,
+  rel: string,
+  commit: string,
+  choice: RestoreChoice,
+): Promise<RestoreResult | typeof BLOCKED> {
+  return runTask("Restoring…", () =>
+    invoke<RestoreResult>("restore_history", { slug, rel, commit, choice }),
   );
 }
 

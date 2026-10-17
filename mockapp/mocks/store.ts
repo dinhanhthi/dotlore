@@ -2,7 +2,12 @@ import {
   demoConflicts,
   demoResolution,
 } from "../fixtures/conflicts";
-import { SECRET_PATTERNS, demoFiles, type FileRecord } from "../fixtures/files";
+import {
+  SECRET_PATTERNS,
+  demoFiles,
+  toFileContent,
+  type FileRecord,
+} from "../fixtures/files";
 import {
   GDRIVE_MOUNTS,
   ICLOUD_PROVIDER,
@@ -11,8 +16,10 @@ import {
 } from "../fixtures/roots";
 import type {
   ConflictView,
+  DeletedFile,
   EntryView,
   FileContent,
+  HistoryVersion,
   LinkableRow,
   PickerRow,
   ResolutionDto,
@@ -69,6 +76,11 @@ export type MockState = {
   trash: TrashProject[];
   /** Trash file previews keyed by `trashKey(slug, day, pass, rel)`. */
   trashContents: Record<string, FileContent>;
+  /** Staging history per slug and rel, newest first. */
+  history: Record<string, Record<string, HistoryVersion[]>>;
+  /** History previews keyed by `historyKey(slug, rel, commit)`; a deleting version has none. */
+  historyContents: Record<string, FileContent>;
+  deletedFiles: Record<string, DeletedFile[]>;
 };
 
 /** The mock state dir; the trash lives under `<APP_HOME>/trash`. */
@@ -76,6 +88,10 @@ export const APP_HOME = "/Users/demo/Library/Application Support/dotlore";
 
 export function trashKey(slug: string, day: string, pass: string, rel: string): string {
   return `${slug}/${day}/${pass}/${rel}`;
+}
+
+export function historyKey(slug: string, rel: string, commit: string): string {
+  return `${slug}/${rel}@${commit}`;
 }
 
 function textContent(text: string): FileContent {
@@ -187,6 +203,175 @@ function demoTrash(): Pick<MockState, "trash" | "trashContents"> {
   return { trash, trashContents };
 }
 
+const MACBOOK = "MacBook Pro";
+const MAC_MINI = "Mac mini";
+/** Fixed clock for history times (2026-10-16 14:30 UTC), so the demo stays deterministic. */
+const HISTORY_NOW = Date.UTC(2026, 9, 16, 14, 30) / 1000;
+const HOUR = 3600;
+const DAY = 24 * HOUR;
+
+/** A deterministic 40-hex fake commit id (FNV-1a over `seed`, five rounds, then a final mix). */
+function fakeCommit(seed: string): string {
+  let out = "";
+  for (let round = 0; round < 5; round += 1) {
+    let hash = 0x811c9dc5;
+    for (const ch of `${round}:${seed}`) {
+      hash = Math.imul(hash ^ ch.charCodeAt(0), 0x01000193);
+    }
+    // Final mix, so seeds that differ in one character look unrelated.
+    hash = Math.imul(hash ^ (hash >>> 16), 0x85ebca6b);
+    hash = Math.imul(hash ^ (hash >>> 13), 0xc2b2ae35);
+    hash ^= hash >>> 16;
+    out += (hash >>> 0).toString(16).padStart(8, "0");
+  }
+  return out;
+}
+
+/** An older text: the first half of the lines; a binary keeps its kind with another size. */
+function olderContent(content: FileContent, step: number): FileContent {
+  if (content.text === null) {
+    return { ...content, bytes_len: Math.max(1, content.bytes_len - step * 512) };
+  }
+  const lines = content.text.split("\n");
+  const keep = Math.max(1, Math.ceil(lines.length / (step + 1)));
+  return textContent(`${lines.slice(0, keep).join("\n")}\n`);
+}
+
+/** One step back in a file's history; `content` null is the version that deleted it. */
+type HistorySeed = { ago: number; device: string; content: FileContent | null };
+
+/** Tracked files no longer in the project, each with its versions newest first. */
+const DELETED_SEED: Record<string, Record<string, HistorySeed[]>> = {
+  dotlore: {
+    ".claude/agents/reviewer.md": [
+      { ago: 5 * HOUR, device: MAC_MINI, content: null },
+      {
+        ago: 2 * DAY,
+        device: MACBOOK,
+        content: textContent("# Reviewer\n\nReview each diff for bugs and missing tests.\n"),
+      },
+      {
+        ago: 6 * DAY,
+        device: MAC_MINI,
+        content: textContent("# Reviewer\n\nReview each diff.\n"),
+      },
+    ],
+    "docs/plans/old-idea.md": [
+      { ago: 3 * DAY, device: MACBOOK, content: null },
+      {
+        ago: 8 * DAY,
+        device: MACBOOK,
+        content: textContent("# Old idea\n\nA plan that was dropped.\n"),
+      },
+    ],
+    ".claude/commands/release.md": [
+      { ago: 9 * DAY, device: MAC_MINI, content: null },
+      {
+        ago: 12 * DAY,
+        device: MAC_MINI,
+        content: textContent("Bump the version, tag it and push.\n"),
+      },
+    ],
+  },
+  memlore: {
+    ".claude/agents/planner.md": [
+      { ago: 1 * DAY, device: MACBOOK, content: null },
+      {
+        ago: 4 * DAY,
+        device: MAC_MINI,
+        content: textContent("# Planner\n\nSplit work into phases.\n"),
+      },
+    ],
+    "docs/notes.md": [
+      { ago: 7 * DAY, device: MAC_MINI, content: null },
+      {
+        ago: 10 * DAY,
+        device: MACBOOK,
+        content: textContent("# Notes\n\n- Try the new index\n"),
+      },
+    ],
+  },
+  notes: {
+    "drafts/ideas.md": [
+      { ago: 2 * HOUR, device: MACBOOK, content: null },
+      {
+        ago: 1 * DAY,
+        device: MACBOOK,
+        content: textContent("# Ideas\n\n- A reading list\n- A garden plan\n"),
+      },
+      {
+        ago: 5 * DAY,
+        device: MAC_MINI,
+        content: textContent("# Ideas\n\n- A reading list\n"),
+      },
+    ],
+    "assets/old-cover.png": [
+      { ago: 4 * DAY, device: MAC_MINI, content: null },
+      {
+        ago: 20 * DAY,
+        device: MACBOOK,
+        content: { text: null, binary: true, too_large: false, bytes_len: 9_216 },
+      },
+    ],
+  },
+};
+
+/** Four versions of a live file: the current content, then older ones; one file was deleted and re-added. */
+function liveHistory(slug: string, rel: string, record: FileRecord): HistorySeed[] {
+  const current = toFileContent(record);
+  const deletedOnce = slug === "dotlore" && rel === "CLAUDE.md";
+  return [
+    { ago: 3 * HOUR, device: MACBOOK, content: current },
+    deletedOnce
+      ? { ago: 1 * DAY, device: MAC_MINI, content: null }
+      : { ago: 1 * DAY, device: MAC_MINI, content: olderContent(current, 1) },
+    { ago: 4 * DAY, device: MAC_MINI, content: olderContent(current, 2) },
+    { ago: 11 * DAY, device: MACBOOK, content: olderContent(current, 3) },
+  ];
+}
+
+function demoHistory(
+  files: Record<string, Record<string, FileRecord>>,
+): Pick<MockState, "history" | "historyContents" | "deletedFiles"> {
+  const history: MockState["history"] = {};
+  const historyContents: Record<string, FileContent> = {};
+  const deletedFiles: MockState["deletedFiles"] = {};
+  const add = (slug: string, rel: string, seeds: HistorySeed[]): HistoryVersion[] => {
+    const versions = seeds.map(({ ago, device, content }, index) => {
+      const commit = fakeCommit(`${slug}/${rel}/${index}`);
+      if (content) historyContents[historyKey(slug, rel, commit)] = { ...content };
+      return {
+        commit,
+        time: HISTORY_NOW - ago,
+        device_name: device,
+        deleted: content === null,
+        bytes_len: null,
+      };
+    });
+    (history[slug] ??= {})[rel] = versions;
+    return versions;
+  };
+  for (const [slug, recs] of Object.entries(files)) {
+    for (const [rel, record] of Object.entries(recs)) {
+      add(slug, rel, liveHistory(slug, rel, record));
+    }
+  }
+  for (const [slug, rels] of Object.entries(DELETED_SEED)) {
+    deletedFiles[slug] = Object.entries(rels)
+      .map(([rel, seeds]) => {
+        const newest = add(slug, rel, seeds)[0]!;
+        return {
+          rel,
+          commit: newest.commit,
+          deleted_at: newest.time,
+          device_name: newest.device_name,
+        };
+      })
+      .sort((a, b) => b.deleted_at - a.deleted_at);
+  }
+  return { history, historyContents, deletedFiles };
+}
+
 export function entriesFromFiles(
   files: Record<string, Record<string, FileRecord>>,
 ): Record<string, EntryView[]> {
@@ -248,6 +433,7 @@ export function emptyPopulated(): MockState {
     maxSeedFolderMb: DEFAULT_MAX_SEED_FOLDER_MB,
     trashMaxMb: DEFAULT_TRASH_MAX_MB,
     ...demoTrash(),
+    ...demoHistory(files),
   };
 }
 
@@ -306,6 +492,11 @@ export function resetStore(next?: Partial<MockState>): void {
   store.trashContents = next?.trashContents
     ? clone(next.trashContents)
     : seed.trashContents;
+  store.history = next?.history ? clone(next.history) : seed.history;
+  store.historyContents = next?.historyContents
+    ? clone(next.historyContents)
+    : seed.historyContents;
+  store.deletedFiles = next?.deletedFiles ? clone(next.deletedFiles) : seed.deletedFiles;
 }
 
 export function icloudPath(): string {

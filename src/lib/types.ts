@@ -190,6 +190,23 @@ export type TrashProject = {
   passes: TrashPass[];
 };
 
+/** Mirrors `engine::HistoryVersion` (snake_case fields). `time` is Unix seconds; `bytes_len` is null in a listing. */
+export type HistoryVersion = {
+  commit: string;
+  time: number;
+  device_name: string;
+  deleted: boolean;
+  bytes_len: number | null;
+};
+
+/** Mirrors `engine::DeletedFile` (snake_case fields). `deleted_at` is Unix seconds. */
+export type DeletedFile = {
+  rel: string;
+  commit: string;
+  deleted_at: number;
+  device_name: string;
+};
+
 /** Mirrors `engine::RestoreChoice` (`rename_all = "snake_case"`). */
 export type RestoreChoice = "ask" | "replace" | "keep_both";
 
