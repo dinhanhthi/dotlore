@@ -257,6 +257,250 @@
             </li>
           </ol>
         </section>
+
+        <section>
+          <h2>Sync rules</h2>
+          <p class="section-lead">
+            What Dotlore syncs, when, and what happens when Macs disagree.
+          </p>
+          <div class="accordion">
+            <details name="rules">
+              <summary>
+                What gets synced
+                <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <ul>
+                  <li>
+                    Each project has an include-list of entries: a file such as
+                    <code>CLAUDE.md</code>, or a folder such as
+                    <code>.claude/</code> or <code>docs/</code>.
+                  </li>
+                  <li>
+                    A new project starts from the patterns AI tools use:
+                    <code>AGENTS.md</code>, <code>.cursor/</code>,
+                    <code>.mcp.json</code>, <code>.github/copilot-instructions.md</code>,
+                    and more. Add or remove entries at any time.
+                  </li>
+                  <li>
+                    Agent homes such as <code>~/.claude</code> can be added as
+                    projects too.
+                  </li>
+                  <li>
+                    The include-list syncs with the project, so every Mac tracks
+                    the same entries.
+                  </li>
+                </ul>
+              </div>
+            </details>
+
+            <details name="rules">
+              <summary>
+                When a sync runs
+                <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <ul>
+                  <li>
+                    A file change starts a sync after 2 seconds of quiet, or 5
+                    seconds at most while you keep typing.
+                  </li>
+                  <li>A poll every 30 seconds picks up anything the watcher missed.</li>
+                  <li>
+                    A Mac that was offline catches up on its own when its cloud
+                    folder syncs again: bundles are never rewritten, so nothing
+                    goes missing in between.
+                  </li>
+                </ul>
+              </div>
+            </details>
+
+            <details name="rules">
+              <summary>
+                Editing the same file on two Macs
+                <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <ul>
+                  <li>Edits to different lines merge on their own.</li>
+                  <li>
+                    Edits to the same lines: the newer commit wins on every Mac.
+                    The other version stays beside it as
+                    <code>CLAUDE.conflict-&lt;device&gt;-&lt;hash&gt;.md</code>.
+                  </li>
+                  <li>No conflict markers are ever written into your files.</li>
+                </ul>
+              </div>
+            </details>
+
+            <details name="rules">
+              <summary>
+                Deleting a file
+                <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <ul>
+                  <li>
+                    A delete syncs like any change. Each other Mac moves its copy
+                    to its local trash first.
+                  </li>
+                  <li>
+                    Edit versus delete: the edit always wins, and the file comes
+                    back on the Mac that deleted it.
+                  </li>
+                  <li>
+                    Delete versus restore: the later of the two wins, and a tie
+                    within 5 seconds keeps the file.
+                  </li>
+                  <li>
+                    A delete counts from when Dotlore sees it. A file deleted while
+                    Dotlore is not running counts from the next launch, so keep the
+                    login item on.
+                  </li>
+                </ul>
+              </div>
+            </details>
+
+            <details name="rules">
+              <summary>
+                Trash and history
+                <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <ul>
+                  <li>
+                    Before a sync deletes or overwrites a file, the old version
+                    goes to a local trash. Files you delete yourself go there too.
+                  </li>
+                  <li>
+                    The trash is never synced, and is capped at 500 MB by default:
+                    past the cap, the oldest syncs go first.
+                  </li>
+                  <li>
+                    Every project also keeps its synced versions on this Mac.
+                    Right-click a file → "History…" to bring back an earlier
+                    version, or "More" → "Deleted files…" for a file that is gone.
+                  </li>
+                </ul>
+              </div>
+            </details>
+
+            <details name="rules">
+              <summary>
+                Ignore lists
+                <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <ul>
+                  <li>
+                    A global never-list keeps agent state out of every project:
+                    sessions, logs, caches, <code>node_modules/</code>,
+                    <code>.DS_Store</code>, <code>*.log</code>, and similar.
+                  </li>
+                  <li>
+                    Each project can add its own ignore list on top (project menu →
+                    "Ignore list…"). It uses <code>.gitignore</code> syntax and syncs
+                    with the project.
+                  </li>
+                  <li>
+                    A <code>!</code> line re-includes a path the never-list
+                    ignores, for one project only.
+                  </li>
+                  <li>
+                    Ignoring a tracked file stops syncing it. The file stays on
+                    disk.
+                  </li>
+                </ul>
+              </div>
+            </details>
+
+            <details name="rules">
+              <summary>
+                Sensitive files
+                <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <ul>
+                  <li>
+                    Names that often hold secrets, such as <code>.env</code>,
+                    <code>*.pem</code>, <code>*.key</code> and
+                    <code>credentials*</code>, are marked sensitive and need your
+                    confirmation before they are tracked.
+                  </li>
+                  <li>
+                    Edit the sensitive patterns in Settings → Sensitive, or mark a
+                    single file from its context menu.
+                  </li>
+                  <li>
+                    A <code>!</code> line never re-includes a sensitive file.
+                    <code>.credentials.json</code>, <code>auth.json</code> and
+                    <code>.claude.json</code> are always left out.
+                  </li>
+                </ul>
+              </div>
+            </details>
+
+            <details name="rules">
+              <summary>
+                Size limits and symlinks
+                <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <ul>
+                  <li>
+                    Files over 50 MB are skipped, and Dotlore shows which ones.
+                  </li>
+                  <li>
+                    Tracking a folder over 200 MB asks for confirmation first.
+                  </li>
+                  <li>Change both limits in Settings → "Size limits".</li>
+                  <li>Symlinks are never followed and never replaced.</li>
+                </ul>
+              </div>
+            </details>
+
+            <details name="rules">
+              <summary>
+                What happens in the cloud folder
+                <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <ul>
+                  <li>
+                    Each Mac only adds new bundle files to its own folder. Nothing
+                    there is rewritten or deleted.
+                  </li>
+                  <li>
+                    Settings (patterns, ignore defaults, sensitive patterns, size
+                    limits) sync as small snapshots, so a new Mac picks them up.
+                  </li>
+                  <li>
+                    The one exception is Settings → "Wipe cloud data", which asks
+                    first and removes the whole <code>dotlore</code> folder.
+                  </li>
+                </ul>
+              </div>
+            </details>
+          </div>
+        </section>
       </div>
       <footer class="site-footer">
         <div class="site-footer-inner">

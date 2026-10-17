@@ -376,6 +376,83 @@ section h2,
   white-space: pre;
 }
 
+.accordion {
+  border-top: 1px solid var(--border);
+}
+
+.accordion details {
+  border-bottom: 1px solid var(--border);
+}
+
+.accordion summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 0;
+  color: var(--muted-foreground);
+  color: color-mix(in oklab, var(--muted-foreground) 55%, var(--foreground));
+  font-weight: 500;
+  line-height: 1.4;
+  list-style: none;
+  cursor: pointer;
+}
+
+.accordion summary:hover,
+.accordion details[open] > summary {
+  color: var(--foreground);
+}
+
+.accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+.accordion summary:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.35em;
+}
+
+.accordion summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
+.accordion .chevron {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: var(--muted-foreground);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 160ms ease;
+}
+
+.accordion details[open] .chevron {
+  transform: rotate(180deg);
+}
+
+.accordion-body {
+  padding: 0 0 1rem;
+  color: var(--foreground);
+  font-size: 0.9375rem;
+}
+
+.accordion-body ul {
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.accordion-body li + li {
+  margin-top: 0.35rem;
+}
+
+.accordion-body code {
+  overflow-wrap: anywhere;
+}
+
 .what {
   margin: 0;
   padding-left: 1.15rem;
