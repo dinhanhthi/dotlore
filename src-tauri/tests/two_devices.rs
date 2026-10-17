@@ -19,7 +19,10 @@ use std::time::Duration;
 
 use dotlore::cloud::Cloud;
 use dotlore::config::Config;
-use dotlore::engine::{configure_provider, Engine, FileSync, ResolveOutcome, RootStatus};
+use dotlore::engine::{
+    configure_provider, Engine, FileSync, ResolveOutcome, RestoreChoice, RestoreResult,
+    RestoredFile, RootStatus,
+};
 use dotlore::git::Git;
 use dotlore::project::{self, PROJECT_FILE};
 use dotlore::repo::{provider_key, remote_ref, FetchMode, Repo, Transaction};
@@ -617,6 +620,73 @@ fn delete_vs_modify_keeps_modification() {
     assert_synced(&mut a);
     assert_synced(&mut b);
     assert_dir_eq(a.root.path(), b.root.path());
+}
+
+/// C is offline while A deletes `agents/x.md` and B restores it from its
+/// Dotlore trash, so C missed both the delete and the restore. B's restore
+/// head descends from C's `main` with the same tree; before the
+/// `needs_merge` ancestor guard C settled that head as identical and then
+/// merged the delete on its own, losing the file on about half the runs
+/// (it depended on hash order).
+#[test]
+fn restore_survives_a_mac_offline_across_delete_and_restore() {
+    let (mut a, mut b) = standard_start();
+    let mut c = Device::new('c');
+    sync_cloud(&[&a, &b, &c]);
+    assert_eq!(
+        c.engine.link_root(SLUG, c.root.path()).unwrap(),
+        RootStatus::Synced
+    );
+    dance(&mut [&mut a, &mut b, &mut c]);
+
+    // C goes offline: it keeps cycling but sees no cloud traffic.
+    fs::remove_file(a.root.path().join("agents/x.md")).unwrap();
+    dance(&mut [&mut a, &mut b]);
+    assert!(!b.root.path().join("agents/x.md").exists());
+    c.engine.sync_all().unwrap();
+
+    let trash = dotlore::trash::list(b.home.path(), &b.engine.cfg.roots, u64::MAX).unwrap();
+    let pass = trash
+        .iter()
+        .filter(|p| p.slug == SLUG)
+        .flat_map(|p| &p.passes)
+        .find(|p| p.files.iter().any(|f| f.rel == "agents/x.md"))
+        .expect("B kept no trash copy of agents/x.md");
+    let got = b
+        .engine
+        .restore_from_trash(
+            SLUG,
+            &pass.day,
+            &pass.pass,
+            Some("agents/x.md"),
+            RestoreChoice::Ask,
+        )
+        .unwrap();
+    let RestoreResult::Done { restored, .. } = got else {
+        panic!("restore did not run: {got:?}");
+    };
+    assert_eq!(
+        restored,
+        vec![RestoredFile {
+            from: "agents/x.md".into(),
+            to: "agents/x.md".into(),
+        }]
+    );
+    dance(&mut [&mut a, &mut b]);
+    c.engine.sync_all().unwrap();
+
+    // C reconnects.
+    dance(&mut [&mut a, &mut b, &mut c]);
+    dance(&mut [&mut a, &mut b, &mut c]);
+
+    for dev in [&a, &b, &c] {
+        assert_eq!(read(dev, "agents/x.md"), b"agent x\n");
+    }
+    assert_synced(&mut a);
+    assert_synced(&mut b);
+    assert_synced(&mut c);
+    assert_dir_eq(a.root.path(), b.root.path());
+    assert_dir_eq(a.root.path(), c.root.path());
 }
 
 #[test]

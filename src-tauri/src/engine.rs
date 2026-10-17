@@ -2372,11 +2372,17 @@ fn settled_ref(provider_key: &str, device_id: &str) -> String {
 /// resolved, which resurrects deleted conflict siblings. So the equivalence is
 /// recorded here, once, by exact commit id.
 ///
-/// Judged against durable `main` only, and before any merge runs: whatever the
-/// transaction goes on to do, every future `main` descends from this one, so a
-/// settled head stays settled. A head whose hash sorts *below* ours is still
-/// merged — that is the adoption case, and it is what keeps both devices on
-/// one commit.
+/// Only a head that has diverged from `main` can be settled. A head that
+/// descends from `main` is a fast-forward: no three-way merge runs, nothing
+/// can resurrect, and its tree matching `main`'s says nothing about the
+/// commits in between (a delete followed by a restore). Settling it would
+/// drop those commits from this head while a peer still delivers them on
+/// their own, so a descendant is always merged, marker or not.
+///
+/// Judged against durable `main` only, and before any merge runs, so the
+/// answer does not depend on the order heads are merged in. A head whose hash
+/// sorts *below* ours is still merged — that is the adoption case, and it is
+/// what keeps both devices on one commit.
 ///
 /// Where the guarantee ends: the marker suppresses that exact commit, here.
 /// A third device that merged the discarded commit into a non-identical head
@@ -2391,12 +2397,17 @@ fn needs_merge(repo: &Repo, key: &str, device: &str) -> Result<bool> {
     if repo.git.is_ancestor(&r, "refs/heads/main") {
         return Ok(false);
     }
-    if repo.git.rev(&settled_ref(key, device)).as_deref() == Some(rev.as_str()) {
-        return Ok(false);
-    }
     let Some(main) = repo.git.rev("refs/heads/main") else {
         return Ok(true);
     };
+    // Before the marker: a fast-forward is always taken, so a marker 0.9.x
+    // wrote for a descendant head is ignored and that device heals.
+    if repo.git.is_ancestor("refs/heads/main", &r) {
+        return Ok(true);
+    }
+    if repo.git.rev(&settled_ref(key, device)).as_deref() == Some(rev.as_str()) {
+        return Ok(false);
+    }
     let identical = repo
         .git
         .run(&["diff", "--quiet", "--end-of-options", &main, &r])?
@@ -4578,6 +4589,79 @@ mod tests {
             .unwrap();
         repo.git.ok(&["update-ref", &their_ref, &next]).unwrap();
         assert!(needs_merge(&repo, &key, &"b".repeat(32)).unwrap());
+    }
+
+    /// Lost-restore regression (bug memo 2026-10-16): this device is offline
+    /// while one peer deletes F (D, a child of `main`) and another restores it
+    /// (R, a child of D whose tree equals `main`'s). R contains D and fast-
+    /// forwards `main`; settling it as an identical-tree head instead left D
+    /// to be merged on its own, and F was gone for good. A settled marker that
+    /// 0.9.x already wrote for R must not keep it out either.
+    #[test]
+    fn a_descendant_head_with_mains_tree_is_fast_forwarded_not_settled() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/a.md", b"a\n");
+        add(&mut a);
+
+        let root = a.engine.root_cfg("proj-claude").unwrap();
+        let repo = a.engine.repo_for(&root).unwrap();
+        let key = provider_key(&cloud_of(&a));
+        let m0 = repo.git.rev("refs/heads/main").unwrap();
+        let tree_m0 = repo.git.ok(&["rev-parse", "HEAD^{tree}"]).unwrap();
+        assert!(repo
+            .git
+            .ok(&["ls-tree", "-r", "--name-only", "HEAD"])
+            .unwrap()
+            .contains("docs/a.md"));
+
+        // D: M0 without docs/a.md, everything else kept.
+        repo.git
+            .ok(&["rm", "--cached", "-q", "--", "docs/a.md"])
+            .unwrap();
+        let tree_d = repo.git.ok(&["write-tree"]).unwrap();
+        repo.git.ok(&["read-tree", "HEAD"]).unwrap();
+        assert_ne!(tree_d, tree_m0);
+        let d = repo
+            .git
+            .ok(&["commit-tree", "-m", "delete", "-p", &m0, &tree_d])
+            .unwrap();
+        // R: restores M0's tree on top of D. Its hash must sort above M0's,
+        // so the old identical-tree shortcut would fire.
+        let mut msg = String::from("restore");
+        let r = loop {
+            let c = repo
+                .git
+                .ok(&["commit-tree", "-m", &msg, "-p", &d, &tree_m0])
+                .unwrap();
+            if c > m0 {
+                break c;
+            }
+            msg.push('x');
+        };
+
+        let (b, c) = ("b".repeat(32), "c".repeat(32));
+        repo.git
+            .ok(&["update-ref", &remote_ref(&key, &b), &r])
+            .unwrap();
+        repo.git
+            .ok(&["update-ref", &remote_ref(&key, &c), &d])
+            .unwrap();
+
+        assert!(needs_merge(&repo, &key, &b).unwrap());
+        // A stale marker from 0.9.x is ignored for a fast-forward.
+        repo.git
+            .ok(&["update-ref", &settled_ref(&key, &b), &r])
+            .unwrap();
+        assert!(needs_merge(&repo, &key, &b).unwrap());
+
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(repo.git.rev("refs/heads/main").as_deref(), Some(&*r));
+        assert_eq!(fs::read(a.root.path().join("docs/a.md")).unwrap(), b"a\n");
     }
 
     /// I3: the destination gets a complete bootstrap bundle, the source is
