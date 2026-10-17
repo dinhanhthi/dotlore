@@ -11,13 +11,14 @@
 //! crash at any point resumes instead of re-mirroring a half-applied root onto
 //! a merged head.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -113,6 +114,34 @@ pub enum ResumeOutcome {
     Pending(Vec<PathBuf>),
 }
 
+/// One capture of a path in the staging history: a commit made by a user's
+/// edit (`local <id8>`) or a conflict resolution (`resolve <path>`).
+///
+/// Every string comes from a commit some device wrote, so it is display data
+/// only and never interpreted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathEvent {
+    pub commit: String,
+    /// Committer time, seconds since the epoch.
+    pub time: i64,
+    /// The full device id from a `<id>@dotlore` author email.
+    pub device_id: Option<String>,
+    pub author: String,
+    pub subject: String,
+    /// `(blob id, executable)` the commit left at the path; `None` when it
+    /// deleted the path.
+    pub blob: Option<(String, bool)>,
+}
+
+/// Subjects of the commits that record a user's action. Synthetic commits
+/// (`reconcile baseline`, `empty baseline`, merges) only record a device
+/// catching up.
+const EVENT_SUBJECTS: [&str; 2] = ["local ", "resolve "];
+
+/// `git log` header per commit, after a record marker no format field
+/// produces on its own: `%x1e` then fields split by `%x1f`.
+const EVENT_FORMAT: &str = "--format=%x1e%H%x1f%ct%x1f%ae%x1f%an%x1f%s";
+
 /// A staging repo for one tracked root.
 ///
 /// `home` and `device_name` are private: they are needed to place temporary
@@ -131,6 +160,9 @@ pub struct Repo {
     /// Sensitive patterns for the [`mirror::ReincludeGuard`]. Engine
     /// overwrites from config.
     pub sensitive: SensitiveMatcher,
+    /// Set when [`Repo::commit_local`] on this handle kept a copy of a
+    /// deleted file in the trash. See [`Repo::wrote_trash`].
+    wrote_trash: AtomicBool,
 }
 
 impl Repo {
@@ -233,7 +265,14 @@ impl Repo {
             device_name: device_name.to_string(),
             limits: Limits::default(),
             sensitive: SensitiveMatcher::default_secret(),
+            wrote_trash: AtomicBool::new(false),
         })
+    }
+
+    /// Whether a [`Repo::commit_local`] on this handle kept a copy of a
+    /// deleted file in the trash, including one whose commit then failed.
+    pub fn wrote_trash(&self) -> bool {
+        self.wrote_trash.load(Ordering::Relaxed)
     }
 
     pub fn has_main(&self) -> bool {
@@ -304,6 +343,17 @@ impl Repo {
             self.reinclude_guard()?.as_ref(),
         )?;
         stage_worktree(&self.git, &self.staging)?;
+        // Before the commit, and an error stops it (see
+        // `trash_local_deletions`). On an unborn HEAD nothing was captured
+        // yet, so nothing can have been deleted.
+        if self.git.rev("HEAD").is_some() {
+            let kept = self.trash_local_deletions(&self.git, "HEAD");
+            // Before `?`: a pass that fails part-way may have kept copies.
+            if !matches!(kept, Ok(false)) {
+                self.wrote_trash.store(true, Ordering::Relaxed);
+            }
+            kept?;
+        }
 
         let msg = format!("local {}", self.id8());
         // `--quiet` exits 1 when the index differs from HEAD; on an unborn
@@ -322,6 +372,67 @@ impl Repo {
         } else {
             Ok((false, report))
         }
+    }
+
+    /// Keep the `against` bytes of every file the user deleted from the live
+    /// root in the trash, before that deletion is committed.
+    ///
+    /// The deletions are the ones staged in `git`'s index against `against`
+    /// (staging for [`Repo::commit_local`], the transaction worktree for a
+    /// reconcile capture). Staging-private names and conflict siblings are
+    /// skipped, and so is every path whose live file is not really gone: a
+    /// staged deletion from an ignore pattern, the reinclude guard, a
+    /// sensitive pattern or a size limit leaves the live file in place, and a
+    /// symlink anywhere on the live path means the root is not ours to judge
+    /// there. That check is metadata only; no live byte is read.
+    ///
+    /// One pass folder per call. Must run before the commit, so a crash
+    /// leaves a duplicate copy, never a loss. Fails closed: a copy that cannot
+    /// be written is an error, the caller does not commit, and the deletion
+    /// is retried on the next cycle.
+    ///
+    /// Returns whether any copy was written.
+    pub fn trash_local_deletions(&self, git: &Git, against: &str) -> Result<bool> {
+        let o = git.run(&[
+            "diff",
+            "--cached",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--diff-filter=D",
+            "--end-of-options",
+            against,
+        ])?;
+        if !o.status.success() {
+            bail!(
+                "git diff --cached {against} failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+        }
+        let mut gone = Vec::new();
+        for path in o.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+            let Some(rel) = usable_entry(path) else {
+                continue;
+            };
+            let Ok(live) = self.live_path(&rel) else {
+                continue;
+            };
+            if live_absent(&self.root, &live) {
+                gone.push(rel);
+            }
+        }
+        if gone.is_empty() {
+            return Ok(false);
+        }
+        let trash = trash_dir(&self.home, &self.slug, SystemTime::now());
+        let mut wrote = false;
+        for (rel, old) in self.expected_bytes(Some(against), &gone)? {
+            if let Some(old) = old {
+                mirror::keep_in_trash(&trash, &rel, &old)?;
+                wrote = true;
+            }
+        }
+        Ok(wrote)
     }
 
     // --- bundle delivery --------------------------------------------------
@@ -717,6 +828,118 @@ impl Repo {
         Ok(out)
     }
 
+    // --- path history -----------------------------------------------------
+
+    /// The user events that touched `rel` in the history of `rev`, newest
+    /// first, at most `limit`.
+    ///
+    /// One `git log` call: `--raw` carries each event's blob and mode, so no
+    /// per-event tree read is needed. `--full-history` keeps a peer's commit
+    /// that reached `rev` through a merge's side parent; `--no-merges` drops
+    /// the merges themselves. A commit that left something other than a
+    /// regular file at `rel` (a symlink, a gitlink) is not an event.
+    pub fn path_log(&self, rev: &str, rel: &Path, limit: usize) -> Result<Vec<PathEvent>> {
+        if !valid_rev(rev) {
+            bail!("invalid revision {rev:?}");
+        }
+        let spec = rel
+            .to_str()
+            .filter(|_| plain_rel(rel))
+            .ok_or_else(|| anyhow!("unsafe path {}", rel.display()))?;
+        let pathspec = literal(spec);
+        let out = self.event_log(&["--end-of-options", rev, "--", &pathspec])?;
+        let mut events = Vec::new();
+        for (event, changes) in parse_event_log(&out) {
+            // A literal pathspec also matches everything under `rel/`.
+            let blob = changes
+                .into_iter()
+                .find(|(path, _)| *path == spec.as_bytes())
+                .and_then(|(_, change)| change);
+            if let Some(blob) = blob {
+                events.push(PathEvent { blob, ..event });
+            }
+        }
+        // git walks by commit date but is not a strict sort across a peer's
+        // side branch; stable, so equal times keep git's order.
+        events.sort_by_key(|e| std::cmp::Reverse(e.time));
+        events.truncate(limit);
+        Ok(events)
+    }
+
+    /// Paths absent from `main` that a user event deleted, each with its
+    /// newest deleting event, newest first, at most `limit`.
+    ///
+    /// Only paths the current include-list tracks: an untracked path's
+    /// deletion is a tombstone, not something to restore. Only paths whose
+    /// live file is really gone: an exclusion keeps its live file.
+    pub fn deleted_paths(&self, limit: usize) -> Result<Vec<(PathBuf, PathEvent)>> {
+        const MAIN: &str = "refs/heads/main";
+        if !self.has_main() {
+            return Ok(Vec::new());
+        }
+        let out = self.event_log(&["--diff-filter=D", "--end-of-options", MAIN])?;
+        let present: HashSet<PathBuf> = self.ls_tree(MAIN)?.into_iter().map(|(_, p)| p).collect();
+        let entries = self.project_file()?.tracked();
+        let mut seen = HashSet::new();
+        let mut found = Vec::new();
+        for (event, changes) in parse_event_log(&out) {
+            for (path, change) in changes {
+                if change != Some(None) {
+                    continue;
+                }
+                let Some(rel) = usable_entry(path) else {
+                    continue;
+                };
+                // An ignore, sensitive or size-limit exclusion deletes the
+                // staging copy but keeps the live file: not a deletion.
+                let gone = self
+                    .live_path(&rel)
+                    .is_ok_and(|live| live_absent(&self.root, &live));
+                // The log is newest first: the first deletion seen wins.
+                if present.contains(&rel)
+                    || !entries.contains_rel(&rel)
+                    || !gone
+                    || !seen.insert(rel.clone())
+                {
+                    continue;
+                }
+                let event = PathEvent {
+                    blob: None,
+                    ..event.clone()
+                };
+                found.push((rel, event));
+            }
+        }
+        found.sort_by_key(|(_, e)| std::cmp::Reverse(e.time));
+        found.truncate(limit);
+        Ok(found)
+    }
+
+    /// Raw `git log` output of the non-merge commits selected by `args`,
+    /// with their `--raw` changes. Read whole: a `--max-count` would count
+    /// the synthetic commits [`parse_event_log`] drops.
+    fn event_log(&self, args: &[&str]) -> Result<Vec<u8>> {
+        let mut argv = vec![
+            "log",
+            "--no-merges",
+            "--full-history",
+            "--raw",
+            "--no-abbrev",
+            "--no-renames",
+            "-z",
+            EVENT_FORMAT,
+        ];
+        argv.extend_from_slice(args);
+        let o = self.git.run(&argv)?;
+        if !o.status.success() {
+            bail!(
+                "git log failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
+        }
+        Ok(o.stdout)
+    }
+
     // --- transactions -----------------------------------------------------
 
     /// Begin a durable apply transaction detached at `start`.
@@ -875,7 +1098,9 @@ pub struct Transaction {
     blocked: Vec<PathBuf>,
     /// Set when an [`Transaction::apply`] pass on this handle displaced a live
     /// file into the trash, including the pass [`Transaction::resume`] runs
-    /// and a pass that fails part-way. Not journalled: a handle from
+    /// and a pass that fails part-way, or when its reconcile capture kept a
+    /// file the user deleted (see [`Repo::trash_local_deletions`]). Not
+    /// journalled: a handle from
     /// [`Repo::pending_tx`] starts clear. The engine uses it to decide whether
     /// to prune the trash.
     wrote_trash: bool,
@@ -908,7 +1133,8 @@ impl Transaction {
     }
 
     /// Whether an [`Transaction::apply`] pass displaced a live file into the
-    /// trash; the engine uses it to decide whether to prune the trash.
+    /// trash, or its reconcile capture kept a file the user deleted; the
+    /// engine uses it to decide whether to prune the trash.
     pub fn wrote_trash(&self) -> bool {
         self.wrote_trash
     }
@@ -1225,6 +1451,12 @@ impl Transaction {
             repo.reinclude_guard()?.as_ref(),
         )?;
         stage_worktree(g, &self.worktree)?;
+        // A file the user deleted during the apply is captured here, not by
+        // `commit_local`: keep it in the trash before `L` is committed.
+        let kept = repo.trash_local_deletions(g, &base);
+        // Before `?`: a pass that fails part-way may have kept copies.
+        self.wrote_trash |= !matches!(kept, Ok(false));
+        kept?;
         g.ok(&[
             "commit",
             "--allow-empty",
@@ -1483,7 +1715,7 @@ fn plain_rel(rel: &Path) -> bool {
 
 /// `[a-z0-9]+(-[a-z0-9]+)*` — also the shape that makes a slug safe as a
 /// single path component.
-fn valid_slug(s: &str) -> bool {
+pub(crate) fn valid_slug(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with('-')
         && !s.ends_with('-')
@@ -1514,6 +1746,108 @@ fn usable_entry(path: &[u8]) -> Option<PathBuf> {
     } else {
         Some(p)
     }
+}
+
+/// A full (SHA-1) commit id.
+pub(crate) fn is_commit_id(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// A full commit id, or a `refs/...` name of plain characters.
+fn valid_rev(r: &str) -> bool {
+    let commit = is_commit_id(r);
+    let named = r.starts_with("refs/")
+        && !r.contains("..")
+        && !r.contains("//")
+        && !r.ends_with('/')
+        && r.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.'));
+    commit || named
+}
+
+/// What a `--raw` change left at its path.
+type RawChange = Option<Option<(String, bool)>>;
+
+/// The user events of an [`Repo::event_log`] stream, each with its
+/// `(path, change)` entries.
+///
+/// The stream is NUL-separated: a header token (starting with the `%x1e`
+/// marker), then `(meta, path)` token pairs, the first meta prefixed with a
+/// newline. It is walked positionally, so a peer's path that starts with the
+/// marker or with `:` is still read as a path. Headers that do not parse and
+/// commits outside [`EVENT_SUBJECTS`] are dropped with their entries.
+fn parse_event_log(out: &[u8]) -> Vec<(PathEvent, Vec<(&[u8], RawChange)>)> {
+    let mut commits = Vec::new();
+    let mut current: Option<(Option<PathEvent>, Vec<(&[u8], RawChange)>)> = None;
+    let mut tokens = out.split(|b| *b == 0);
+    while let Some(token) = tokens.next() {
+        let token = token.strip_prefix(b"\n").unwrap_or(token);
+        if let Some(meta) = token.strip_prefix(b":") {
+            let Some(path) = tokens.next() else {
+                break;
+            };
+            if let Some((_, changes)) = current.as_mut() {
+                changes.push((path, raw_change(meta)));
+            }
+        } else if let Some(header) = token.strip_prefix(b"\x1e") {
+            if let Some((Some(event), changes)) = current.take() {
+                commits.push((event, changes));
+            }
+            current = Some((event_header(header), Vec::new()));
+        }
+    }
+    if let Some((Some(event), changes)) = current {
+        commits.push((event, changes));
+    }
+    commits
+}
+
+/// `%H %ct %ae %an %s` split by `%x1f`, or `None` for a malformed header or
+/// a subject outside [`EVENT_SUBJECTS`]. Hash and time are validated, so a
+/// separator inside a peer's name or email can only garble the strings after
+/// it.
+fn event_header(header: &[u8]) -> Option<PathEvent> {
+    let text = String::from_utf8_lossy(header);
+    let mut f = text.splitn(5, '\x1f');
+    let commit = f.next()?;
+    if !is_commit_id(commit) {
+        return None;
+    }
+    let time = f.next()?.parse().ok()?;
+    let email = f.next()?;
+    let author = f.next()?;
+    let subject = f.next()?;
+    if !EVENT_SUBJECTS.iter().any(|s| subject.starts_with(s)) {
+        return None;
+    }
+    let device_id = email
+        .rsplit_once('@')
+        .filter(|(id, domain)| *domain == "dotlore" && valid_device(id))
+        .map(|(id, _)| id.to_string());
+    Some(PathEvent {
+        commit: commit.to_string(),
+        time,
+        device_id,
+        author: author.to_string(),
+        subject: subject.to_string(),
+        blob: None,
+    })
+}
+
+/// `<old mode> <new mode> <old oid> <new oid> <status>`: `Some(None)` for a
+/// deletion, `Some(Some((oid, executable)))` for a regular file, `None` for
+/// anything else (a symlink, a gitlink, a line that does not parse).
+fn raw_change(meta: &[u8]) -> RawChange {
+    let text = std::str::from_utf8(meta).ok()?;
+    let f: Vec<&str> = text.split(' ').collect();
+    let [_, mode, _, oid, status] = f.as_slice() else {
+        return None;
+    };
+    if status.starts_with('D') {
+        return Some(None);
+    }
+    let regular = mode.starts_with("100") && oid.len() == 40;
+    regular.then(|| Some((oid.to_string(), *mode == "100755")))
 }
 
 /// Stage exactly what the mirror left in the staging worktree.
@@ -1612,6 +1946,31 @@ fn live_state(root: &Path, target: &Path) -> Result<Option<Option<FileState>>> {
         }))),
         Ok(_) => Ok(None),
     }
+}
+
+/// Whether the live file at `target` is really gone: no symlink on the path
+/// from `root` down to it (`symlink_metadata` only refuses to follow the last
+/// component, so every ancestor is checked), and `NotFound` at the leaf or an
+/// ancestor. Anything present, or any other stat error, is not an absence.
+/// Metadata only: unlike [`live_state`] it never reads the file.
+fn live_absent(root: &Path, target: &Path) -> bool {
+    let mut at = Some(target);
+    while let Some(p) = at {
+        if !p.starts_with(root) {
+            break;
+        }
+        if fs::symlink_metadata(p)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        at = p.parent();
+    }
+    matches!(
+        fs::symlink_metadata(target),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    )
 }
 
 /// Remove the temp files a crashed write of `rel` left in the live root.
@@ -1976,6 +2335,9 @@ mod tests {
         assert!(fx.commit());
         assert!(!fx.commit(), "a quiet root must not mint a commit");
 
+        assert!(!fx.repo.wrote_trash(), "no deletion, no trash copy");
+        assert!(!fx.home.path().join("trash").exists());
+
         fs::remove_file(fx.root.path().join("CLAUDE.md")).unwrap();
         assert!(fx.commit());
         let tracked = fx.repo.git.ok(&["ls-files"]).unwrap();
@@ -1984,6 +2346,94 @@ mod tests {
             "deleted live file must leave the index: {tracked}"
         );
         assert_eq!(tracked, ".dotloreproject");
+
+        // The user's deletion keeps the last captured bytes in the trash, at
+        // `<home>/trash/<slug>/<day>/<pass>/<rel>`.
+        assert!(fx.repo.wrote_trash());
+        let kept = trash_files(fx.home.path());
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        let (path, bytes) = &kept[0];
+        assert_eq!(path.components().count(), 3, "{}", path.display());
+        assert!(path.ends_with("CLAUDE.md"), "{}", path.display());
+        assert_eq!(bytes, b"one\n");
+
+        assert!(!fx.commit(), "the deletion is already captured");
+        assert_eq!(trash_files(fx.home.path()), kept, "nothing more is kept");
+    }
+
+    /// Every file under `<home>/trash/proj-claude`, as `(<day>/<pass>/<rel>,
+    /// bytes)`, sorted.
+    fn trash_files(home: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        fn walk(base: &Path, dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(base, &path, out);
+                } else {
+                    let rel = path.strip_prefix(base).unwrap().to_path_buf();
+                    out.push((rel, fs::read(&path).unwrap()));
+                }
+            }
+        }
+        let base = home.join("trash").join("proj-claude");
+        let mut out = Vec::new();
+        if base.exists() {
+            walk(&base, &base, &mut out);
+        }
+        out.sort();
+        out
+    }
+
+    /// An ignore pattern drops the staging copy while the live file stays:
+    /// that staged deletion is not the user's, so nothing reaches the trash.
+    #[test]
+    fn an_ignore_driven_staging_deletion_keeps_nothing_in_the_trash() {
+        let fx = fixture();
+        fx.write("CLAUDE.md", b"one\n");
+        fx.write("notes/a.md", b"note\n");
+        assert!(fx.commit());
+
+        fs::write(
+            fx.repo.staging.join(project::PROJECT_IGNORE_FILE),
+            "notes/a.md\n",
+        )
+        .unwrap();
+        assert!(fx.commit());
+
+        let tracked = fx.repo.git.ok(&["ls-files"]).unwrap();
+        assert!(
+            !tracked.lines().any(|l| l == "notes/a.md"),
+            "the ignored file must leave the index: {tracked}"
+        );
+        assert_eq!(
+            fs::read(fx.root.path().join("notes/a.md")).unwrap(),
+            b"note\n"
+        );
+        assert!(!fx.repo.wrote_trash());
+        assert!(!fx.home.path().join("trash").exists());
+    }
+
+    /// A live path under a symlinked folder is not ours to judge: even when
+    /// the link's target lacks the file, nothing reaches the trash.
+    #[test]
+    fn a_symlinked_parent_on_the_live_path_keeps_nothing_in_the_trash() {
+        let fx = fixture();
+        fx.write("docs/a.md", b"doc\n");
+        assert!(fx.commit());
+
+        // The mirror keeps a symlinked folder opaque, so stage the deletion
+        // by hand to reach the live-path check.
+        fx.repo
+            .git
+            .ok(&["rm", "--cached", "-q", "--", "docs/a.md"])
+            .unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::remove_dir_all(fx.root.path().join("docs")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), fx.root.path().join("docs")).unwrap();
+
+        assert!(!fx.repo.trash_local_deletions(&fx.repo.git, "HEAD").unwrap());
+        assert!(!fx.home.path().join("trash").exists());
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
     #[test]
@@ -2915,6 +3365,58 @@ mod tests {
         assert!(tx.wrote_trash());
     }
 
+    /// A file the user deletes while an apply is running is captured by
+    /// `reconcile`, not `commit_local`, and must reach the trash there too.
+    #[test]
+    fn a_reconcile_capture_keeps_a_user_deletion_in_the_trash() {
+        let fx = fixture();
+        let cloud = fx.cloud();
+        let key = provider_key(&cloud);
+        fx.write("CLAUDE.md", b"plan v1\n");
+        fx.write("agents/x.md", b"agent x\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+
+        let bh = TempDir::new().unwrap();
+        let b_root = TempDir::new().unwrap();
+        let b = Repo::init(bh.path(), "proj-claude", b_root.path(), "Mac B Pro", ID_B).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b
+            .begin_tx(&key, &remote_ref(&key, ID_A), no_resolver)
+            .unwrap();
+        tx.set_target(&b).unwrap();
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+
+        // A changes only CLAUDE.md; B's user deletes agents/x.md mid-apply.
+        fx.write("CLAUDE.md", b"plan v2\n");
+        fx.commit();
+        fx.repo.publish(&cloud).unwrap();
+        b.fetch_bundles(&cloud, FetchMode::Normal).unwrap();
+        let mut tx = b.begin_tx(&key, "HEAD", no_resolver).unwrap();
+        b.merge_remote(&tx, ID_A).unwrap();
+        tx.set_target(&b).unwrap();
+        fs::remove_file(b_root.path().join("agents/x.md")).unwrap();
+
+        // Checked before `apply`: its overwrite of CLAUDE.md trashes too.
+        assert!(tx.reconcile(&b, bh.path()).unwrap());
+        assert!(tx.wrote_trash());
+        let kept = trash_files(bh.path());
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept[0].0.ends_with("agents/x.md"), "{kept:?}");
+        assert_eq!(kept[0].1, b"agent x\n");
+
+        assert!(tx.apply(&b, bh.path()).unwrap().is_empty());
+        tx.finalize(&b).unwrap();
+        assert!(!b_root.path().join("agents/x.md").exists());
+        let tracked = b.git.ok(&["ls-files"]).unwrap();
+        assert!(!tracked.lines().any(|l| l == "agents/x.md"), "{tracked}");
+        assert_eq!(
+            fs::read(b_root.path().join("CLAUDE.md")).unwrap(),
+            b"plan v2\n"
+        );
+    }
+
     /// When the hand edit and the remote edit touch the same line, the
     /// already-published target keeps the live file and the hand edit becomes
     /// a sibling under this device's id8. Before `Winner::Theirs` this rode on
@@ -3355,5 +3857,343 @@ mod tests {
             repo.ignore_text(home_dir.path()),
             project::DEFAULT_NEVER_IGNORE
         );
+    }
+
+    // --- path history -----------------------------------------------------
+
+    /// A staging git call at a pinned time, by device `id`.
+    ///
+    /// `Git`'s child environment is an allowlist without the date variables
+    /// (production commits are dated now); it is replicated here, plus the
+    /// two dates, rather than widened there. Same approach as the conflict
+    /// fixtures.
+    fn pinned_git(repo: &Path, epoch: i64, id: &str, args: &[&str]) {
+        let date = format!("@{epoch} +0000");
+        let name = format!("Mac {}", short8(id));
+        let email = format!("{id}@dotlore");
+        let mut c = std::process::Command::new("git");
+        c.arg("-C")
+            .arg(repo)
+            .args(args)
+            .env_clear()
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", &name)
+            .env("GIT_COMMITTER_NAME", &name)
+            .env("GIT_AUTHOR_EMAIL", &email)
+            .env("GIT_COMMITTER_EMAIL", &email)
+            .env("GIT_EDITOR", "true")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date);
+        if let Some(p) = std::env::var_os("PATH") {
+            c.env("PATH", p);
+        }
+        let out = c.output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Commit everything in staging as device `id` at `epoch`; the new HEAD.
+    fn commit_at(fx: &Fx, id: &str, subject: &str, epoch: i64) -> String {
+        pinned_git(&fx.repo.staging, epoch, id, &["add", "-A"]);
+        pinned_git(
+            &fx.repo.staging,
+            epoch,
+            id,
+            &["commit", "-q", "--allow-empty", "-m", subject],
+        );
+        fx.repo.git.rev("HEAD").unwrap()
+    }
+
+    fn stage_file(fx: &Fx, rel: &str, body: &[u8]) {
+        let p = fx.repo.staging.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, body).unwrap();
+    }
+
+    fn unstage_file(fx: &Fx, rel: &str) {
+        fs::remove_file(fx.repo.staging.join(rel)).unwrap();
+    }
+
+    fn blob_at(fx: &Fx, commit: &str, rel: &str) -> String {
+        fx.repo
+            .git
+            .ok(&["rev-parse", &format!("{commit}:{rel}")])
+            .unwrap()
+    }
+
+    type EventSummary = (String, i64, Option<(String, bool)>);
+
+    fn summary(events: &[PathEvent]) -> Vec<EventSummary> {
+        events
+            .iter()
+            .map(|e| (e.commit.clone(), e.time, e.blob.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn path_log_lists_modify_delete_and_re_add_newest_first() {
+        let fx = fixture();
+        fx.track(&["f.md"]);
+        stage_file(&fx, "f.md", b"one");
+        let c1 = commit_at(&fx, ID_A, "local aaaaaaaa", 1_000);
+        stage_file(&fx, "f.md", b"two");
+        let c2 = commit_at(&fx, ID_A, "local aaaaaaaa", 2_000);
+        unstage_file(&fx, "f.md");
+        let c3 = commit_at(&fx, ID_B, "local bbbbbbbb", 3_000);
+        stage_file(&fx, "f.md", b"three");
+        let c4 = commit_at(&fx, ID_A, "resolve f.md", 4_000);
+        // Touches another path only: not an event of f.md.
+        stage_file(&fx, "g.md", b"g");
+        commit_at(&fx, ID_A, "local aaaaaaaa", 5_000);
+
+        let log = fx
+            .repo
+            .path_log("refs/heads/main", Path::new("f.md"), 200)
+            .unwrap();
+        assert_eq!(
+            summary(&log),
+            vec![
+                (c4.clone(), 4_000, Some((blob_at(&fx, &c4, "f.md"), false))),
+                (c3.clone(), 3_000, None),
+                (c2.clone(), 2_000, Some((blob_at(&fx, &c2, "f.md"), false))),
+                (c1.clone(), 1_000, Some((blob_at(&fx, &c1, "f.md"), false))),
+            ]
+        );
+        assert_eq!(log[1].device_id.as_deref(), Some(ID_B));
+        assert_eq!(log[1].author, "Mac bbbbbbbb");
+        assert_eq!(log[1].subject, "local bbbbbbbb");
+        assert_eq!(log[0].subject, "resolve f.md");
+
+        let capped = fx
+            .repo
+            .path_log("refs/heads/main", Path::new("f.md"), 2)
+            .unwrap();
+        assert_eq!(
+            capped.iter().map(|e| e.commit.clone()).collect::<Vec<_>>(),
+            vec![c4.clone(), c3]
+        );
+        let at_c4 = fx.repo.path_log(&c4, Path::new("f.md"), 200).unwrap();
+        assert_eq!(at_c4.len(), 4);
+    }
+
+    #[test]
+    fn path_log_keeps_a_peer_deletion_merged_in_but_not_the_merge() {
+        let fx = fixture();
+        fx.track(&["f.md", "g.md"]);
+        stage_file(&fx, "f.md", b"one");
+        let c1 = commit_at(&fx, ID_A, "local aaaaaaaa", 1_000);
+        let s = &fx.repo.staging;
+        pinned_git(s, 1_500, ID_B, &["checkout", "-q", "-b", "peer"]);
+        unstage_file(&fx, "f.md");
+        let del = commit_at(&fx, ID_B, "local bbbbbbbb", 2_000);
+        pinned_git(s, 2_500, ID_A, &["checkout", "-q", "main"]);
+        stage_file(&fx, "g.md", b"g");
+        commit_at(&fx, ID_A, "local aaaaaaaa", 3_000);
+        pinned_git(s, 4_000, ID_A, &["merge", "-q", "--no-edit", "peer"]);
+        let merge = fx.repo.git.rev("HEAD").unwrap();
+        assert!(!s.join("f.md").exists(), "the merge deleted f.md");
+
+        let log = fx
+            .repo
+            .path_log("refs/heads/main", Path::new("f.md"), 200)
+            .unwrap();
+        assert_eq!(
+            summary(&log),
+            vec![
+                (del, 2_000, None),
+                (c1.clone(), 1_000, Some((blob_at(&fx, &c1, "f.md"), false))),
+            ]
+        );
+        assert!(log.iter().all(|e| e.commit != merge));
+        assert_eq!(log[0].device_id.as_deref(), Some(ID_B));
+    }
+
+    /// A peer deleted and restored `f.md` to the same bytes, so the merge is
+    /// treesame to our side for it; default history simplification would
+    /// hide both of the peer's events.
+    #[test]
+    fn path_log_keeps_peer_events_a_treesame_merge_would_hide() {
+        let fx = fixture();
+        fx.track(&["f.md", "g.md"]);
+        stage_file(&fx, "f.md", b"one");
+        let c1 = commit_at(&fx, ID_A, "local aaaaaaaa", 1_000);
+        let s = &fx.repo.staging;
+        pinned_git(s, 1_500, ID_B, &["checkout", "-q", "-b", "peer"]);
+        unstage_file(&fx, "f.md");
+        let del = commit_at(&fx, ID_B, "local bbbbbbbb", 2_000);
+        stage_file(&fx, "f.md", b"one");
+        let back = commit_at(&fx, ID_B, "local bbbbbbbb", 2_500);
+        pinned_git(s, 2_600, ID_A, &["checkout", "-q", "main"]);
+        stage_file(&fx, "g.md", b"g");
+        commit_at(&fx, ID_A, "local aaaaaaaa", 3_000);
+        pinned_git(s, 4_000, ID_A, &["merge", "-q", "--no-edit", "peer"]);
+
+        let log = fx
+            .repo
+            .path_log("refs/heads/main", Path::new("f.md"), 200)
+            .unwrap();
+        let blob = blob_at(&fx, &c1, "f.md");
+        assert_eq!(
+            summary(&log),
+            vec![
+                (back, 2_500, Some((blob.clone(), false))),
+                (del, 2_000, None),
+                (c1, 1_000, Some((blob, false))),
+            ]
+        );
+    }
+
+    #[test]
+    fn path_log_drops_synthetic_baselines() {
+        let fx = fixture();
+        fx.track(&["f.md"]);
+        stage_file(&fx, "f.md", b"one");
+        let c1 = commit_at(&fx, ID_A, "local aaaaaaaa", 1_000);
+        unstage_file(&fx, "f.md");
+        commit_at(&fx, ID_A, "reconcile baseline", 2_000);
+        stage_file(&fx, "f.md", b"two");
+        commit_at(&fx, ID_A, "empty baseline", 3_000);
+        stage_file(&fx, "f.md", b"three");
+        commit_at(&fx, ID_A, "merged", 4_000);
+
+        let log = fx
+            .repo
+            .path_log("refs/heads/main", Path::new("f.md"), 200)
+            .unwrap();
+        assert_eq!(
+            summary(&log),
+            vec![(c1.clone(), 1_000, Some((blob_at(&fx, &c1, "f.md"), false)))]
+        );
+    }
+
+    #[test]
+    fn path_log_reads_the_executable_bit() {
+        let fx = fixture();
+        fx.track(&["run.sh"]);
+        stage_file(&fx, "run.sh", b"#!/bin/sh\n");
+        let c1 = commit_at(&fx, ID_A, "local aaaaaaaa", 1_000);
+        let p = fx.repo.staging.join("run.sh");
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        let c2 = commit_at(&fx, ID_A, "local aaaaaaaa", 2_000);
+
+        let log = fx
+            .repo
+            .path_log("refs/heads/main", Path::new("run.sh"), 200)
+            .unwrap();
+        let blob = blob_at(&fx, &c1, "run.sh");
+        assert_eq!(
+            summary(&log),
+            vec![
+                (c2, 2_000, Some((blob.clone(), true))),
+                (c1, 1_000, Some((blob, false))),
+            ]
+        );
+    }
+
+    #[test]
+    fn path_log_refuses_an_unsafe_rev_or_path() {
+        let fx = fixture();
+        stage_file(&fx, "f.md", b"one");
+        commit_at(&fx, ID_A, "local aaaaaaaa", 1_000);
+        for rev in ["--all", "HEAD", "refs/heads/../main", "main"] {
+            assert!(
+                fx.repo.path_log(rev, Path::new("f.md"), 200).is_err(),
+                "{rev}"
+            );
+        }
+        for rel in ["../f.md", "/f.md", ""] {
+            assert!(
+                fx.repo
+                    .path_log("refs/heads/main", Path::new(rel), 200)
+                    .is_err(),
+                "{rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn deleted_paths_lists_tracked_deletions_absent_from_main_newest_first() {
+        let fx = fixture();
+        fx.track(&["a.md", "b.md", "again.md", "twice.md"]);
+        for rel in ["a.md", "b.md", "again.md", "twice.md", "untracked.md"] {
+            stage_file(&fx, rel, rel.as_bytes());
+        }
+        commit_at(&fx, ID_A, "local aaaaaaaa", 1_000);
+        unstage_file(&fx, "twice.md");
+        commit_at(&fx, ID_A, "local aaaaaaaa", 1_500);
+        stage_file(&fx, "twice.md", b"back");
+        commit_at(&fx, ID_A, "local aaaaaaaa", 1_600);
+        unstage_file(&fx, "a.md");
+        let del_a = commit_at(&fx, ID_A, "local aaaaaaaa", 2_000);
+        unstage_file(&fx, "again.md");
+        commit_at(&fx, ID_A, "local aaaaaaaa", 2_200);
+        unstage_file(&fx, "twice.md");
+        let del_twice = commit_at(&fx, ID_B, "local bbbbbbbb", 2_600);
+        unstage_file(&fx, "b.md");
+        let del_b = commit_at(&fx, ID_B, "local bbbbbbbb", 3_000);
+        stage_file(&fx, "again.md", b"again");
+        commit_at(&fx, ID_A, "local aaaaaaaa", 3_500);
+        unstage_file(&fx, "untracked.md");
+        commit_at(&fx, ID_A, "local aaaaaaaa", 4_000);
+
+        let got = fx.repo.deleted_paths(500).unwrap();
+        let summary: Vec<(PathBuf, EventSummary)> = got
+            .iter()
+            .map(|(p, e)| (p.clone(), (e.commit.clone(), e.time, e.blob.clone())))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (PathBuf::from("b.md"), (del_b.clone(), 3_000, None)),
+                (PathBuf::from("twice.md"), (del_twice, 2_600, None)),
+                (PathBuf::from("a.md"), (del_a, 2_000, None)),
+            ]
+        );
+        assert_eq!(got[0].1.device_id.as_deref(), Some(ID_B));
+
+        let capped = fx.repo.deleted_paths(1).unwrap();
+        assert_eq!(capped.len(), 1);
+        assert_eq!(capped[0].0, PathBuf::from("b.md"));
+        assert_eq!(capped[0].1.commit, del_b);
+    }
+
+    /// An ignore pattern drops a tracked file from staging while its live
+    /// copy stays: that file is not deleted, so it is not listed.
+    #[test]
+    fn deleted_paths_skips_an_ignore_driven_deletion_whose_live_file_stays() {
+        let fx = fixture();
+        fx.write("CLAUDE.md", b"one\n");
+        fx.write("notes/a.md", b"note\n");
+        fx.write("gone.md", b"gone\n");
+        assert!(fx.commit());
+
+        fs::write(
+            fx.repo.staging.join(project::PROJECT_IGNORE_FILE),
+            "notes/a.md\n",
+        )
+        .unwrap();
+        fs::remove_file(fx.root.path().join("gone.md")).unwrap();
+        assert!(fx.commit());
+        assert!(fx.root.path().join("notes/a.md").exists());
+
+        let got: Vec<PathBuf> = fx
+            .repo
+            .deleted_paths(500)
+            .unwrap()
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
+        assert_eq!(got, vec![PathBuf::from("gone.md")]);
+    }
+
+    #[test]
+    fn deleted_paths_is_empty_without_main() {
+        let fx = fixture();
+        assert!(fx.repo.deleted_paths(500).unwrap().is_empty());
     }
 }

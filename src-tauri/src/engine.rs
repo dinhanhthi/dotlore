@@ -320,6 +320,38 @@ pub struct RestoredFile {
     pub to: String,
 }
 
+/// One version of a file in the local staging history, newest first in
+/// [`Engine::file_history`].
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct HistoryVersion {
+    pub commit: String,
+    /// Committer time, seconds since the epoch.
+    pub time: i64,
+    pub device_name: String,
+    /// The version deleted the file: nothing to preview or restore.
+    pub deleted: bool,
+    /// Always `None` in a listing: sizing every version would spawn one git
+    /// per version. [`Engine::read_history_file`] reports the size.
+    pub bytes_len: Option<u64>,
+}
+
+/// A tracked file absent from `main`, with the version that deleted it.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct DeletedFile {
+    pub rel: String,
+    pub commit: String,
+    pub deleted_at: i64,
+    pub device_name: String,
+}
+
+/// One version's bytes from [`Engine::read_history_file`]: the size always,
+/// the bytes only when they fit the caller's cap.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HistoryFile {
+    pub bytes_len: u64,
+    pub bytes: Option<Vec<u8>>,
+}
+
 /// One include-list catalog and the lines that apply the next time a folder is added.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PatternCatalog {
@@ -1685,6 +1717,156 @@ impl Engine {
         Ok((tracked, kept_local))
     }
 
+    /// The versions of `rel` in the local staging history of `main`, newest
+    /// first, at most 200. Only history this Mac's staging repo holds.
+    pub fn file_history(&mut self, slug: &str, rel: &str) -> Result<Vec<HistoryVersion>> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let repo = self.repo_for(&self.root_cfg(slug)?)?;
+        let rel = Path::new(rel);
+        check_history_rel(&repo, rel)?;
+        if !repo.has_main() {
+            return Ok(Vec::new());
+        }
+        let names = self.history_names(slug);
+        Ok(repo
+            .path_log(MAIN, rel, 200)?
+            .into_iter()
+            .map(|e| HistoryVersion {
+                device_name: event_device_name(&names, &e),
+                deleted: e.blob.is_none(),
+                bytes_len: None,
+                time: e.time,
+                commit: e.commit,
+            })
+            .collect())
+    }
+
+    /// Tracked files absent from `main`, newest deletion first, at most 500.
+    pub fn deleted_files(&mut self, slug: &str) -> Result<Vec<DeletedFile>> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let repo = self.repo_for(&self.root_cfg(slug)?)?;
+        let names = self.history_names(slug);
+        Ok(repo
+            .deleted_paths(500)?
+            .into_iter()
+            .map(|(rel, e)| DeletedFile {
+                rel: rel.to_string_lossy().into_owned(),
+                device_name: event_device_name(&names, &e),
+                deleted_at: e.time,
+                commit: e.commit,
+            })
+            .collect())
+    }
+
+    /// The bytes of `rel` at `commit`, which must be on `main`. Over
+    /// `max_bytes` only the size is read, so a huge blob is never loaded.
+    pub fn read_history_file(
+        &mut self,
+        slug: &str,
+        rel: &str,
+        commit: &str,
+        max_bytes: u64,
+    ) -> Result<HistoryFile> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let repo = self.repo_for(&self.root_cfg(slug)?)?;
+        let (oid, _) = history_blob(&repo, Path::new(rel), commit)?;
+        let size = repo.git.ok(&["cat-file", "-s", &oid])?;
+        let bytes_len: u64 = size
+            .parse()
+            .with_context(|| format!("unexpected blob size {size:?}"))?;
+        let bytes = if bytes_len > max_bytes {
+            None
+        } else {
+            Some(blob_bytes(&repo.git, &oid)?)
+        };
+        Ok(HistoryFile { bytes_len, bytes })
+    }
+
+    /// Write the version of `rel` at `commit` into the live root, with the
+    /// guards and choices of [`Engine::restore_from_trash`]. `commit` must be
+    /// on `main` and leave a regular file at `rel`; a version that deleted
+    /// the file has nothing to restore. The next cycle commits and publishes
+    /// the write.
+    pub fn restore_from_history(
+        &mut self,
+        slug: &str,
+        rel: &str,
+        commit: &str,
+        choice: RestoreChoice,
+    ) -> Result<RestoreResult> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let Some(root) = self.cfg.roots.iter().find(|r| r.slug == slug).cloned() else {
+            bail!("{slug} was removed from Dotlore; its history can no longer be restored");
+        };
+        if root.initializing {
+            bail!("cannot restore into {slug} yet; wait until this project finishes linking");
+        }
+        if !fs::symlink_metadata(&root.path).is_ok_and(|md| md.is_dir()) {
+            bail!("the project folder {} is missing", root.path.display());
+        }
+        let repo = self.repo_for(&root)?;
+        let rel_path = Path::new(rel);
+        let (oid, executable) = history_blob(&repo, rel_path, commit)?;
+        let state = FileState {
+            bytes: blob_bytes(&repo.git, &oid)?,
+            executable,
+        };
+        let on_existing = match choice {
+            RestoreChoice::Ask => mirror::OnExisting::Ask,
+            RestoreChoice::Replace => mirror::OnExisting::Replace,
+            RestoreChoice::KeepBoth => mirror::OnExisting::KeepBoth,
+        };
+        let displaced = repo::trash_dir(&self.home, slug, SystemTime::now());
+        let out =
+            mirror::restore_state_to_root(&root.path, rel_path, &state, &displaced, on_existing)?;
+        // Only a `Replace` that kept the live file creates the pass folder;
+        // one left by an earlier write this second only costs a prune.
+        if displaced.is_dir() {
+            self.trash_written.store(true, Ordering::Relaxed);
+        }
+        let (mut restored, mut unchanged, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+        match out {
+            mirror::Restored::Exists if choice == RestoreChoice::Ask => {
+                return Ok(RestoreResult::Existing {
+                    rels: vec![rel.to_string()],
+                });
+            }
+            mirror::Restored::Written(to) => restored.push(RestoredFile {
+                to: to.to_string_lossy().into_owned(),
+                from: rel.to_string(),
+            }),
+            mirror::Restored::Same => unchanged.push(rel.to_string()),
+            mirror::Restored::Skipped | mirror::Restored::Exists => skipped.push(rel.to_string()),
+        }
+        // As in `restore_from_trash`: the file is written, so a tracking
+        // failure is reported, never returned.
+        let (tracked, kept_local, track_error) =
+            match self.track_restored_copies(&g, &root, &restored) {
+                Ok((tracked, kept_local)) => (tracked, kept_local, None),
+                Err(e) => (Vec::new(), Vec::new(), Some(format!("{e:#}"))),
+            };
+        Ok(RestoreResult::Done {
+            restored,
+            unchanged,
+            skipped,
+            tracked,
+            kept_local,
+            track_error,
+        })
+    }
+
+    /// Device id to display name for history rows: the cloud's names, with
+    /// this Mac's current name for its own id.
+    fn history_names(&self, slug: &str) -> std::collections::HashMap<String, String> {
+        let mut names = self.cloud().device_names(slug);
+        names.insert(self.cfg.device_id.clone(), self.cfg.device_name.clone());
+        names
+    }
+
     // --- locked helpers ---------------------------------------------------
 
     fn link_root_locked(
@@ -1893,7 +2075,12 @@ impl Engine {
         };
 
         if pending.is_none() && root_present(&root.path) {
-            repo.commit_local(false, &self.home_dir)?;
+            let captured = repo.commit_local(false, &self.home_dir);
+            // Read before `?`: the capture may have trashed deletions first.
+            if repo.wrote_trash() {
+                self.trash_written.store(true, Ordering::Relaxed);
+            }
+            captured?;
         }
         // Decided against durable `main`, before anything is merged, so the
         // answer does not depend on this transaction succeeding or on the
@@ -2567,7 +2754,7 @@ fn root_state(path: &Path) -> Result<Option<FileState>> {
 }
 
 /// `(blob id, executable)` for one tracked path at a commit.
-fn tree_entry(git: &Git, rev: &str, rel: &Path) -> Result<(String, bool)> {
+pub(crate) fn tree_entry(git: &Git, rev: &str, rel: &Path) -> Result<(String, bool)> {
     let spec = rel
         .to_str()
         .filter(|_| plain_rel(rel))
@@ -2597,7 +2784,7 @@ fn tree_entry(git: &Git, rev: &str, rel: &Path) -> Result<(String, bool)> {
 
 /// Raw blob bytes. `Git::ok` trims and lossily decodes, which would corrupt
 /// any file we are about to show or write.
-fn blob_bytes(git: &Git, oid: &str) -> Result<Vec<u8>> {
+pub(crate) fn blob_bytes(git: &Git, oid: &str) -> Result<Vec<u8>> {
     let out = git.run(&["cat-file", "blob", oid])?;
     if !out.status.success() {
         bail!(
@@ -2606,6 +2793,67 @@ fn blob_bytes(git: &Git, oid: &str) -> Result<Vec<u8>> {
         );
     }
     Ok(out.stdout)
+}
+
+const MAIN: &str = "refs/heads/main";
+
+/// A history rel must be plain and covered by the include-list: an
+/// untracked path's history is a tombstone, not something to restore.
+fn check_history_rel(repo: &Repo, rel: &Path) -> Result<()> {
+    if !plain_rel(rel) {
+        bail!("unsafe path {}", rel.display());
+    }
+    if !repo.project_file()?.tracked().contains_rel(rel) {
+        bail!("{} is not tracked in this project", rel.display());
+    }
+    Ok(())
+}
+
+/// `(blob id, executable)` of `rel` at a user-chosen `commit`, which must be
+/// a full id on `main` that leaves a regular file at `rel`.
+fn history_blob(repo: &Repo, rel: &Path, commit: &str) -> Result<(String, bool)> {
+    if !repo::is_commit_id(commit) {
+        bail!("invalid commit id {commit:?}");
+    }
+    check_history_rel(repo, rel)?;
+    if !repo.git.is_ancestor(commit, MAIN) {
+        bail!("{commit} is not in this project's history");
+    }
+    tree_entry(&repo.git, commit, rel).map_err(|e| {
+        let spec = format!("{commit}:{}", rel.to_string_lossy());
+        let present = repo
+            .git
+            .run(&["cat-file", "-e", "--end-of-options", &spec])
+            .is_ok_and(|o| o.status.success());
+        if present {
+            e
+        } else {
+            anyhow!(
+                "{} is deleted in this version; there is nothing to restore",
+                rel.display()
+            )
+        }
+    })
+}
+
+/// The display name of the device behind a history event. Every string
+/// here was written by some device, so it is display data only.
+fn event_device_name(
+    names: &std::collections::HashMap<String, String>,
+    event: &repo::PathEvent,
+) -> String {
+    if let Some(name) = event.device_id.as_ref().and_then(|id| names.get(id)) {
+        return name.clone();
+    }
+    let author = cloud::clean_name(event.author.trim());
+    if !author.is_empty() {
+        return author;
+    }
+    event
+        .device_id
+        .as_deref()
+        .map(|id| id.chars().take(8).collect())
+        .unwrap_or_default()
 }
 
 fn plain_rel(rel: &Path) -> bool {
@@ -3634,6 +3882,10 @@ mod tests {
             a.engine.apply_default_ignore("proj-claude").unwrap(),
             RootStatus::Synced
         );
+        // Untracking keeps the live files, so nothing is captured to trash.
+        for dev in [&a, &b] {
+            assert!(trash_files(dev).is_empty(), "{:?}", trash_files(dev));
+        }
     }
 
     #[test]
@@ -3683,6 +3935,8 @@ mod tests {
                 .unwrap(),
             RootStatus::Synced
         );
+        // Untracking keeps the live files, so nothing is captured to trash.
+        assert!(trash_files(&a).is_empty(), "{:?}", trash_files(&a));
     }
 
     #[test]
@@ -4175,6 +4429,8 @@ mod tests {
                 .count(),
             1
         );
+        // The re-link starts on an unborn HEAD: no deletion to capture.
+        assert!(trash_files(&b).is_empty(), "{:?}", trash_files(&b));
     }
 
     #[test]
@@ -5730,6 +5986,26 @@ mod tests {
     }
 
     #[test]
+    fn a_captured_local_deletion_prunes_to_the_cap() {
+        let provider = TempDir::new().unwrap();
+        let (_a, mut b, [p1, p2]) = linked_pair_with_old_trash(provider.path());
+        fs::remove_file(b.root.path().join("CLAUDE.md")).unwrap();
+
+        // The capture keeps "one" in a new pass, putting B over the cap.
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert!(!b.root.path().join("CLAUDE.md").exists());
+        // 120 MiB plus the new pass: the oldest goes, then it fits.
+        assert!(!p1.exists());
+        assert!(p2.join("big.bin").is_file());
+        let kept = files_in(&b.home.path().join("trash/proj-claude"));
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(kept.iter().any(|f| f.ends_with("/CLAUDE.md")), "{kept:?}");
+    }
+
+    #[test]
     fn a_cycle_without_trash_writes_does_not_prune() {
         let provider = TempDir::new().unwrap();
         let (mut a, mut b, [p1, p2]) = linked_pair_with_old_trash(provider.path());
@@ -5801,6 +6077,16 @@ mod tests {
     fn restore(dev: &mut Dev, rel: Option<&str>, choice: RestoreChoice) -> Result<RestoreResult> {
         dev.engine
             .restore_from_trash("proj-claude", "2026-10-13", "120000", rel, choice)
+    }
+
+    /// Every plain file in `dev`'s trash; empty when there is no trash yet.
+    fn trash_files(dev: &Dev) -> Vec<String> {
+        let trash = dev.home.path().join("trash");
+        if trash.exists() {
+            files_in(&trash)
+        } else {
+            Vec::new()
+        }
     }
 
     /// Every plain file under `dir`, `/`-joined and sorted.
@@ -6375,5 +6661,259 @@ mod tests {
             .unwrap(),
             r#"{"kind":"done","restored":[{"from":"a.md","to":"a.restored.md"}],"unchanged":[],"skipped":[],"tracked":[],"kept_local":[],"track_error":null}"#
         );
+    }
+
+    // --- history ------------------------------------------------------------
+
+    fn history(dev: &mut Dev, rel: &str) -> Vec<HistoryVersion> {
+        dev.engine.file_history("proj-claude", rel).unwrap()
+    }
+
+    fn restore_version(
+        dev: &mut Dev,
+        rel: &str,
+        commit: &str,
+        choice: RestoreChoice,
+    ) -> Result<RestoreResult> {
+        dev.engine
+            .restore_from_history("proj-claude", rel, commit, choice)
+            .map_err(|e| anyhow!("{e:#}"))
+    }
+
+    fn done(rel: &str, to: &str) -> RestoreResult {
+        RestoreResult::Done {
+            restored: vec![RestoredFile {
+                from: rel.into(),
+                to: to.into(),
+            }],
+            unchanged: vec![],
+            skipped: vec![],
+            tracked: vec![],
+            kept_local: Vec::new(),
+            track_error: None,
+        }
+    }
+
+    /// A on `docs/x.md` "v1", then the user deletes it and A syncs.
+    fn deleted_x(provider: &Path) -> Dev {
+        let mut a = device(provider, 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/x.md", b"v1\n");
+        add(&mut a);
+        fs::remove_file(a.root.path().join("docs/x.md")).unwrap();
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        a
+    }
+
+    #[test]
+    fn file_history_lists_versions_newest_first_with_device_names() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/x.md", b"v1\n");
+        add(&mut a);
+        let mut b = device(provider.path(), 'b');
+        let b_root = b.root.path().to_path_buf();
+        b.engine.link_root("proj-claude", &b_root).unwrap();
+        write(&b, "docs/x.md", b"v2\n");
+        assert_eq!(
+            b.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+        assert_eq!(
+            a.engine.sync_root("proj-claude").unwrap(),
+            RootStatus::Synced
+        );
+
+        let got = history(&mut a, "docs/x.md");
+
+        let names: Vec<&str> = got.iter().map(|v| v.device_name.as_str()).collect();
+        assert_eq!(names, ["Mac b Pro", "Mac a Pro"], "{got:?}");
+        assert!(got.iter().all(|v| !v.deleted && v.bytes_len.is_none()));
+        assert!(got.iter().all(|v| repo::is_commit_id(&v.commit)));
+        assert!(got[0].time >= got[1].time && got[1].time > 0);
+        // Untracked or unsafe rels have no history to show.
+        assert!(a.engine.file_history("proj-claude", "../x").is_err());
+        assert!(a.engine.file_history("nope", "docs/x.md").is_err());
+    }
+
+    #[test]
+    fn history_deleted_files_lists_a_file_the_user_deleted() {
+        let provider = TempDir::new().unwrap();
+        let mut a = deleted_x(provider.path());
+
+        let versions = history(&mut a, "docs/x.md");
+        let got = a.engine.deleted_files("proj-claude").unwrap();
+
+        assert_eq!(versions.len(), 2, "{versions:?}");
+        assert!(versions[0].deleted && !versions[1].deleted);
+        assert_eq!(
+            got,
+            [DeletedFile {
+                rel: "docs/x.md".into(),
+                commit: versions[0].commit.clone(),
+                deleted_at: versions[0].time,
+                device_name: "Mac a Pro".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn restore_from_history_writes_a_deleted_file_and_the_next_sync_publishes_it() {
+        let provider = TempDir::new().unwrap();
+        let mut a = deleted_x(provider.path());
+        let versions = history(&mut a, "docs/x.md");
+        let bundles = cloud_of(&a).list_bundles("proj-claude").len();
+
+        let got = restore_version(&mut a, "docs/x.md", &versions[1].commit, RestoreChoice::Ask);
+
+        assert_eq!(got.unwrap(), done("docs/x.md", "docs/x.md"));
+        assert_eq!(fs::read(a.root.path().join("docs/x.md")).unwrap(), b"v1\n");
+        let statuses = a.engine.sync_all().unwrap();
+        assert_eq!(statuses, [("proj-claude".into(), RootStatus::Synced)]);
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        assert_eq!(
+            repo.git.ok(&["show", "refs/heads/main:docs/x.md"]).unwrap(),
+            "v1"
+        );
+        assert_eq!(cloud_of(&a).list_bundles("proj-claude").len(), bundles + 1);
+        assert!(a.engine.deleted_files("proj-claude").unwrap().is_empty());
+    }
+
+    #[test]
+    fn restore_from_history_ask_replace_and_keep_both() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        write(&a, "docs/x.md", b"v1\n");
+        add(&mut a);
+        write(&a, "docs/x.md", b"v2\n");
+        a.engine.sync_root("proj-claude").unwrap();
+        let versions = history(&mut a, "docs/x.md");
+        let v1 = versions[1].commit.clone();
+        let live = a.root.path().join("docs/x.md");
+
+        // Ask: the live file differs, nothing is written.
+        let got = restore_version(&mut a, "docs/x.md", &v1, RestoreChoice::Ask).unwrap();
+        assert_eq!(
+            got,
+            RestoreResult::Existing {
+                rels: vec!["docs/x.md".into()]
+            }
+        );
+        assert_eq!(fs::read(&live).unwrap(), b"v2\n");
+        assert!(trash_files(&a).is_empty());
+
+        // Replace: the live file goes to the trash first.
+        let got = restore_version(&mut a, "docs/x.md", &v1, RestoreChoice::Replace).unwrap();
+        assert_eq!(got, done("docs/x.md", "docs/x.md"));
+        assert_eq!(fs::read(&live).unwrap(), b"v1\n");
+        let kept = trash_files(&a);
+        assert_eq!(kept.len(), 1, "{kept:?}");
+        assert!(kept[0].ends_with("/docs/x.md"), "{kept:?}");
+        assert_eq!(
+            fs::read(a.home.path().join("trash").join(&kept[0])).unwrap(),
+            b"v2\n"
+        );
+        assert!(a.engine.trash_written.load(Ordering::Relaxed));
+
+        // Keep both: the live file stays, a sibling gets the old bytes.
+        write(&a, "docs/x.md", b"v3\n");
+        let got = restore_version(&mut a, "docs/x.md", &v1, RestoreChoice::KeepBoth).unwrap();
+        assert_eq!(got, done("docs/x.md", "docs/x.restored.md"));
+        assert_eq!(fs::read(&live).unwrap(), b"v3\n");
+        assert_eq!(
+            fs::read(a.root.path().join("docs/x.restored.md")).unwrap(),
+            b"v1\n"
+        );
+    }
+
+    #[test]
+    fn restore_from_history_refuses_bad_commits_rels_and_deleted_versions() {
+        let provider = TempDir::new().unwrap();
+        let mut a = deleted_x(provider.path());
+        write(&a, "README.md", b"readme\n");
+        let versions = history(&mut a, "docs/x.md");
+        let v1 = versions[1].commit.clone();
+        let repo = a
+            .engine
+            .repo_for(&a.engine.root_cfg("proj-claude").unwrap())
+            .unwrap();
+        let tree = repo.git.ok(&["rev-parse", "HEAD^{tree}"]).unwrap();
+        let foreign = repo
+            .git
+            .ok(&["commit-tree", "-m", "foreign", &tree])
+            .unwrap();
+
+        let refused = |a: &mut Dev, rel: &str, commit: &str, want: &str| {
+            let err = restore_version(a, rel, commit, RestoreChoice::Replace).unwrap_err();
+            assert!(err.to_string().contains(want), "{rel} {commit}: {err:#}");
+        };
+        refused(&mut a, "docs/x.md", "HEAD", "commit");
+        refused(&mut a, "docs/x.md", &v1[..8], "commit");
+        refused(&mut a, "docs/x.md", &"z".repeat(40), "commit");
+        refused(&mut a, "docs/x.md", &"0".repeat(40), "history");
+        refused(&mut a, "docs/x.md", &foreign, "history");
+        refused(&mut a, "README.md", &v1, "not tracked");
+        refused(&mut a, "../x.md", &v1, "unsafe");
+        refused(&mut a, "/etc/hosts", &v1, "unsafe");
+        refused(&mut a, "docs/x.md", &versions[0].commit, "deleted");
+
+        assert!(!a.root.path().join("docs/x.md").exists());
+        assert!(!a.root.path().join("x.md").exists());
+        assert!(trash_files(&a).iter().all(|f| !f.ends_with("README.md")));
+    }
+
+    #[test]
+    fn restore_from_history_refuses_a_removed_project() {
+        let provider = TempDir::new().unwrap();
+        let mut a = deleted_x(provider.path());
+        let v1 = history(&mut a, "docs/x.md")[1].commit.clone();
+        a.engine.remove_root("proj-claude").unwrap();
+
+        let err = restore_version(&mut a, "docs/x.md", &v1, RestoreChoice::Replace).unwrap_err();
+
+        assert!(err.to_string().contains("removed"), "{err:#}");
+        assert!(!a.root.path().join("docs/x.md").exists());
+    }
+
+    #[test]
+    fn read_history_file_respects_the_cap_and_refuses_a_deleted_version() {
+        let provider = TempDir::new().unwrap();
+        let mut a = deleted_x(provider.path());
+        let versions = history(&mut a, "docs/x.md");
+        let v1 = versions[1].commit.clone();
+
+        let read = |a: &mut Dev, commit: &str, cap: u64| {
+            a.engine
+                .read_history_file("proj-claude", "docs/x.md", commit, cap)
+        };
+        assert_eq!(
+            read(&mut a, &v1, 1024).unwrap(),
+            HistoryFile {
+                bytes_len: 3,
+                bytes: Some(b"v1\n".to_vec()),
+            }
+        );
+        assert_eq!(
+            read(&mut a, &v1, 2).unwrap(),
+            HistoryFile {
+                bytes_len: 3,
+                bytes: None,
+            }
+        );
+        let err = read(&mut a, &versions[0].commit, 1024).unwrap_err();
+        assert!(format!("{err:#}").contains("deleted"), "{err:#}");
+        assert!(read(&mut a, &"0".repeat(40), 1024).is_err());
+        assert!(a
+            .engine
+            .read_history_file("proj-claude", "../x", &v1, 1024)
+            .is_err());
     }
 }

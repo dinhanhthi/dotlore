@@ -44,13 +44,15 @@ Each project can also have its own ignore list (project menu → "Ignore list…
 
 ### 🗑️ Trash
 
-Before a sync deletes or overwrites a file, Dotlore keeps the old version in a local trash that is never synced:
+Before a sync deletes or overwrites a file, Dotlore keeps the old version in a local trash that is never synced. Files you delete yourself on this Mac are kept there too, as they were at the last sync (later edits are not kept):
 
 ```
 ~/Library/Application Support/dotlore/trash/<slug>/<YYYY-MM-DD>/<HHMMSS>/<path>
 ```
 
 Open "Trash" in the sidebar to preview, compare, and restore a file, a folder, or a whole sync. The trash is capped at 500 MB by default (Settings → Sync → "Trash size limit"); past the cap, the oldest syncs are removed first.
+
+**Restore from history** — each project also keeps a history of its synced versions on this Mac, so you can bring back an earlier version of a file or a file that was deleted. The history is local to this Mac and is lost by "Wipe cloud data", by recovering a project, and when a project is removed and then added or linked again (its staging repo is archived to recovery).
 
 ### ☁️ Cloud folders
 

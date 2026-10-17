@@ -28,12 +28,13 @@ use crate::cloud::{Cloud, UploadState};
 use crate::config;
 use crate::daemon::{Cmd, SharedEngine};
 use crate::engine::{
-    self, AddRootStart, ConflictView, Engine, EntryKind, EntryView, ImportAgentsReport,
-    InspectedEntry, ResolutionSnapshot, ResolveOutcome, RestoreChoice, RestoreResult, RootStatus,
-    SiblingView, TrackOutcome, TrackedFile, WipeReport,
+    self, AddRootStart, ConflictView, DeletedFile, Engine, EntryKind, EntryView, HistoryVersion,
+    ImportAgentsReport, InspectedEntry, ResolutionSnapshot, ResolveOutcome, RestoreChoice,
+    RestoreResult, RootStatus, SiblingView, TrackOutcome, TrackedFile, WipeReport,
 };
 use crate::git;
 use crate::project;
+use crate::repo;
 use crate::trash::{self, TrashProject};
 
 use crate::login_item;
@@ -463,6 +464,92 @@ pub async fn restore_trash(
             &day,
             &pass,
             rel.as_deref(),
+            choice,
+        )
+    })
+    .await
+    .map_err(front_msg)??;
+    if matches!(&result, RestoreResult::Done { restored, .. } if !restored.is_empty()) {
+        notify(&app, &state)?;
+    }
+    Ok(result)
+}
+
+/// The versions of `rel` in this Mac's staging history, newest first.
+#[tauri::command]
+pub async fn file_history(
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+) -> Result<Vec<HistoryVersion>, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        file_history_sync(
+            &mut engine.lock().unwrap_or_else(PoisonError::into_inner),
+            &slug,
+            &rel,
+        )
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+/// Tracked files absent from the project, with the version that deleted them.
+#[tauri::command]
+pub async fn deleted_files(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<Vec<DeletedFile>, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        deleted_files_sync(
+            &mut engine.lock().unwrap_or_else(PoisonError::into_inner),
+            &slug,
+        )
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+/// One history version, with the same preview rules as [`read_file`].
+#[tauri::command]
+pub async fn read_history_file(
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+    commit: String,
+) -> Result<FileContent, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        read_history_file_sync(
+            &mut engine.lock().unwrap_or_else(PoisonError::into_inner),
+            &slug,
+            &rel,
+            &commit,
+        )
+    })
+    .await
+    .map_err(front_msg)?
+}
+
+/// Restore the version of `rel` at `commit` into its live root. Status is
+/// refreshed only when a live file was written.
+#[tauri::command]
+pub async fn restore_history(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    slug: String,
+    rel: String,
+    commit: String,
+    choice: RestoreChoice,
+) -> Result<RestoreResult, String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        restore_history_sync(
+            &mut engine.lock().unwrap_or_else(PoisonError::into_inner),
+            &slug,
+            &rel,
+            &commit,
             choice,
         )
     })
@@ -1666,6 +1753,61 @@ fn restore_trash_sync(
         .map_err(front_err)
 }
 
+/// Webview ids for the history commands, checked before the engine sees
+/// them; the engine checks them again.
+fn require_history_ids(slug: &str, rel: &str, commit: Option<&str>) -> Result<(), String> {
+    if !repo::valid_slug(slug) {
+        return Err(front_msg(format!("invalid slug {slug:?}")));
+    }
+    require_plain_rel(rel)?;
+    match commit {
+        Some(c) if !repo::is_commit_id(c) => Err(front_msg(format!("invalid commit id {c:?}"))),
+        _ => Ok(()),
+    }
+}
+
+fn file_history_sync(
+    engine: &mut Engine,
+    slug: &str,
+    rel: &str,
+) -> Result<Vec<HistoryVersion>, String> {
+    require_history_ids(slug, rel, None)?;
+    engine.file_history(slug, rel).map_err(front_err)
+}
+
+fn deleted_files_sync(engine: &mut Engine, slug: &str) -> Result<Vec<DeletedFile>, String> {
+    if !repo::valid_slug(slug) {
+        return Err(front_msg(format!("invalid slug {slug:?}")));
+    }
+    engine.deleted_files(slug).map_err(front_err)
+}
+
+fn read_history_file_sync(
+    engine: &mut Engine,
+    slug: &str,
+    rel: &str,
+    commit: &str,
+) -> Result<FileContent, String> {
+    require_history_ids(slug, rel, Some(commit))?;
+    let file = engine
+        .read_history_file(slug, rel, commit, MAX_PREVIEW_BYTES)
+        .map_err(front_err)?;
+    Ok(preview_bytes(file.bytes_len, file.bytes))
+}
+
+fn restore_history_sync(
+    engine: &mut Engine,
+    slug: &str,
+    rel: &str,
+    commit: &str,
+    choice: RestoreChoice,
+) -> Result<RestoreResult, String> {
+    require_history_ids(slug, rel, Some(commit))?;
+    engine
+        .restore_from_history(slug, rel, commit, choice)
+        .map_err(front_err)
+}
+
 fn delete_trash_sync(
     home: &Path,
     slug: &str,
@@ -1999,31 +2141,38 @@ fn read_tracked_file(home: &Path, slug: &str, rel: &str) -> Result<FileContent, 
 /// when it is valid UTF-8.
 fn preview(path: &Path) -> Result<FileContent, String> {
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
-    let bytes_len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
     if meta.len() > MAX_PREVIEW_BYTES {
-        return Ok(FileContent {
+        return Ok(preview_bytes(meta.len(), None));
+    }
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    Ok(preview_bytes(bytes.len() as u64, Some(bytes)))
+}
+
+/// [`preview`] of bytes already read: `None` when they were over the cap.
+fn preview_bytes(len: u64, bytes: Option<Vec<u8>>) -> FileContent {
+    let bytes_len = usize::try_from(len).unwrap_or(usize::MAX);
+    let Some(bytes) = bytes else {
+        return FileContent {
             text: None,
             binary: false,
             too_large: true,
             bytes_len,
-        });
-    }
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let bytes_len = bytes.len();
+        };
+    };
     // Core has no `mirror::lossy_to_string`; valid UTF-8 is taken as-is.
     match String::from_utf8(bytes) {
-        Ok(text) => Ok(FileContent {
+        Ok(text) => FileContent {
             text: Some(text),
             binary: false,
             too_large: false,
             bytes_len,
-        }),
-        Err(_) => Ok(FileContent {
+        },
+        Err(_) => FileContent {
             text: None,
             binary: true,
             too_large: false,
             bytes_len,
-        }),
+        },
     }
 }
 
@@ -2727,6 +2876,75 @@ mod tests {
             read_trash_file_sync(&fx.engine.home, &fx.slug, "2026-10-13", "120000", "dir").is_err(),
             "a folder is not previewed"
         );
+    }
+
+    /// `CLAUDE.md` synced as text, then binary, then over the preview cap:
+    /// its history commits, newest first.
+    fn history_versions(fx: &mut Fx) -> Vec<String> {
+        let big = MAX_PREVIEW_BYTES as usize + 1;
+        for body in [&b"\x00\xff\x01"[..], &vec![b'x'; big]] {
+            write(fx, "CLAUDE.md", body);
+            fx.engine.sync_root(&fx.slug).unwrap();
+        }
+        let versions = file_history_sync(&mut fx.engine, &fx.slug, "CLAUDE.md").unwrap();
+        assert_eq!(versions.len(), 3, "{versions:?}");
+        versions.into_iter().map(|v| v.commit).collect()
+    }
+
+    #[test]
+    fn read_history_file_previews_text_binary_and_too_large() {
+        let mut fx = fixture();
+        let commits = history_versions(&mut fx);
+        let mut read = |commit: &str| {
+            read_history_file_sync(&mut fx.engine, &fx.slug, "CLAUDE.md", commit).unwrap()
+        };
+
+        let text = read(&commits[2]);
+        assert_eq!(text.text.as_deref(), Some("one\n"));
+        assert!(!text.binary && !text.too_large);
+        assert_eq!(text.bytes_len, 4);
+
+        let bin = read(&commits[1]);
+        assert!(bin.text.is_none() && bin.binary && !bin.too_large);
+        assert_eq!(bin.bytes_len, 3);
+
+        let large = read(&commits[0]);
+        assert!(large.text.is_none() && !large.binary && large.too_large);
+        assert_eq!(large.bytes_len, MAX_PREVIEW_BYTES as usize + 1);
+    }
+
+    #[test]
+    fn history_commands_reject_unsafe_ids() {
+        let mut fx = fixture();
+        let commits = history_versions(&mut fx);
+        let slug = fx.slug.clone();
+        let ok = commits[2].as_str();
+        let live = fx.root.path().join("CLAUDE.md");
+        let before = fs::read(&live).unwrap();
+        let replace = RestoreChoice::Replace;
+
+        for (slug, rel, commit) in [
+            ("..", "CLAUDE.md", ok),
+            ("Bad/Slug", "CLAUDE.md", ok),
+            (slug.as_str(), "../CLAUDE.md", ok),
+            (slug.as_str(), "/etc/passwd", ok),
+            (slug.as_str(), "", ok),
+            (slug.as_str(), "CLAUDE.md", &ok[..7]),
+            (slug.as_str(), "CLAUDE.md", &"z".repeat(40)),
+            (slug.as_str(), "CLAUDE.md", "HEAD"),
+        ] {
+            let commit_ok = commit == ok;
+            if commit_ok {
+                assert!(file_history_sync(&mut fx.engine, slug, rel).is_err());
+            }
+            assert!(read_history_file_sync(&mut fx.engine, slug, rel, commit).is_err());
+            assert!(restore_history_sync(&mut fx.engine, slug, rel, commit, replace).is_err());
+        }
+        assert!(deleted_files_sync(&mut fx.engine, "..").is_err());
+
+        assert_eq!(fs::read(&live).unwrap(), before);
+        assert!(file_history_sync(&mut fx.engine, &slug, "CLAUDE.md").is_ok());
+        assert!(deleted_files_sync(&mut fx.engine, &slug).is_ok());
     }
 
     #[test]
