@@ -1,3 +1,18 @@
+## v0.9.2 (2026-10-17)
+
+### Sync
+
+- **A restored file now survives a Mac that was offline for both the delete and the restore.** Before, that Mac could delete the restored file on reconnect and still report Synced; it now takes the restore. Macs already hit by this recover on their next cycle. [#93606366](https://github.com/dinhanhthi/dotlore/commit/93606366)
+- **When one Mac deletes a file and another restores it, the later action wins.** A tie within 5 seconds keeps the file, and an edit still beats a delete. A delete counts from when Dotlore sees it, so a file deleted while Dotlore is not running counts from the next launch. Update Dotlore on every Mac before relying on it: an older version can still let an older delete win. [#15c44c07](https://github.com/dinhanhthi/dotlore/commit/15c44c07)
+
+### Trash
+
+- **Files you delete yourself on this Mac are kept in the Trash too.** The copy is the file as it was at the last sync, and files left out by an ignore list, a sensitive pattern or the size limit are not copied because they are still on disk. [#0a5aaab9](https://github.com/dinhanhthi/dotlore/commit/0a5aaab9)
+
+### History
+
+- **Restore an earlier version of a file, or a file that was deleted.** Right-click a file and choose "History…" to preview its versions and restore one with Replace or Keep both, or open a project's More menu and choose "Deleted files…". The history is kept on this Mac only. [#0a5aaab9](https://github.com/dinhanhthi/dotlore/commit/0a5aaab9) [#3cb2ab19](https://github.com/dinhanhthi/dotlore/commit/3cb2ab19) [#1007b056](https://github.com/dinhanhthi/dotlore/commit/1007b056)
+
 ## v0.9.1 (2026-10-16)
 
 ### Projects
