@@ -45,7 +45,7 @@ To share one cache across Rust projects, create `~/.cargo/config.toml` with `[bu
 - Keep that profile identical to `src-tauri/Cargo.toml`; it overrides every project.
 - Delete old per-project `target/` directories afterwards — Cargo no longer sees them.
 - Build one project at a time. `cargo clean` wipes the whole shared cache.
-- `scripts/build.sh` pins `CARGO_TARGET_DIR` to `src-tauri/target` so release bundles stay in the repo. Leave it.
+- This repo does not use the shared target: it builds on an external SSD (see [Target on the external SSD](#target-on-the-external-ssd)).
 
 Clean up stale artifacts with `pnpm sweep:cargo` (needs `cargo install cargo-sweep`):
 
@@ -57,6 +57,33 @@ pnpm sweep:cargo -- "$HOME/git"  # every Cargo project under that tree
 ```
 
 Never `find -mtime … -delete` inside `target/`.
+
+### Target on the external SSD
+
+This repo does not build into `~/.cargo/shared-target`: its build output lives on an external SSD to free space on the internal disk. A repo-root `.cargo/config.toml` (gitignored, one per machine) sends every build there. That covers `pnpm tauri dev`, `cargo test`, `cargo clippy`, rust-analyzer and `scripts/build.sh`:
+
+```sh
+cp .cargo/config.toml.example .cargo/config.toml   # set the volume path if it differs
+mkdir -p /Volumes/Thi2TB/cargo-target/dotlore
+```
+
+Cargo reads config files from the current directory upward, and `$HOME` has the lowest priority. This `target-dir` therefore wins over `~/.cargo/config.toml`, whether you run from the repo root or from `src-tauri/`. Check it in `src-tauri/`:
+
+```sh
+cargo metadata --no-deps --format-version 1 | jq -r .target_directory
+```
+
+An environment `CARGO_TARGET_DIR` still overrides both. `scripts/build.sh` unsets it, asks `cargo metadata` for the target dir, then runs the Tauri build. The release bundle lands at `/Volumes/Thi2TB/cargo-target/dotlore/release/bundle/macos/Dotlore.app`, with the `.dmg` and updater artifacts beside it. Without `.cargo/config.toml` (CI, or a Mac without the SSD set up) the same script builds into `src-tauri/target`, which is where `.github/workflows/release.yml` looks.
+
+Unplug and replug: macOS mounts the volume at `/Volumes/Thi2TB` again. The path and Cargo's fingerprints stay valid, so the next build reuses the cache. While the SSD is out, builds fail with `failed to create directory /Volumes/Thi2TB/cargo-target/…`: `/Volumes` is root-owned, so Cargo cannot create the path. Nothing falls back to the internal disk. Plug the SSD in and rerun.
+
+- **The SSD mounts as `Thi2TB 1`:** another volume with the same name is mounted. Eject that one (`diskutil list`, `diskutil unmount`), then remount the SSD (`diskutil mount <identifier>`) so it gets `/Volumes/Thi2TB` back.
+- **The volume was renamed:** update `target-dir` in `.cargo/config.toml`.
+- **Builds still go to the shared target:** `CARGO_TARGET_DIR` is set in the environment (`echo $CARGO_TARGET_DIR`), or the config sits in `src-tauri/.cargo/` instead of the repo root.
+- **Free space:** `pnpm sweep:cargo` follows the same config. You can also delete `/Volumes/Thi2TB/cargo-target/dotlore`. `cargo clean` here only clears the SSD directory, but in another project it wipes the whole shared target.
+- **Spotlight** indexes the SSD. If the SSD holds only caches, `sudo mdutil -i off /Volumes/Thi2TB` stops that (optional).
+
+`node_modules` stays on the internal disk. pnpm hardlinks it from its store, so a copy on another volume would take more space, not less. `~/.tauri` holds updater signing keys, not a cache.
 
 ## Layout
 

@@ -1,0 +1,6 @@
+# Copy to .cargo/config.toml (gitignored) and set the volume path for this
+# machine. Overrides target-dir from ~/.cargo/config.toml for this repo: every
+# build (dev, test, clippy, rust-analyzer, release) goes to the external SSD.
+# Use an absolute path: a relative one resolves from this repo root.
+[build]
+target-dir = "/Volumes/Thi2TB/cargo-target/dotlore"

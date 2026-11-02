@@ -27,10 +27,10 @@ fi
 . "$root/scripts/dev-home.sh"
 echo "dotlore: DOTLORE_HOME=$DOTLORE_HOME" >&2
 
-# Dev follows Cargo's own target dir: src-tauri/target when nothing else is
-# set, or the shared directory from ~/.cargo/config.toml [build] target-dir.
+# Dev follows Cargo's own target dir: the repo-root .cargo/config.toml (the
+# external SSD) when present, else ~/.cargo/config.toml, else src-tauri/target.
 # An already-exported CARGO_TARGET_DIR still wins. Release builds do not —
-# scripts/build.sh pins src-tauri/target so the bundle path stays put.
+# scripts/build.sh unsets it so the bundle follows the config.
 
 # macOS Dock names a bare Mach-O after its filename. `pnpm tauri build`
 # already exec'd scripts/build.sh above, so this runner is dev-only.

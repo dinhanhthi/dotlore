@@ -83,25 +83,29 @@ print(json.dumps({"bundle": {"macOS": {"signingIdentity": os.environ["APPLE_SIGN
 ')")
 fi
 
-# Pin the target dir so an inherited CARGO_TARGET_DIR cannot move the
-# bundle off src-tauri/target/.
-export CARGO_TARGET_DIR="$root/src-tauri/target"
+# The target dir comes from Cargo's config: a repo-root .cargo/config.toml
+# (gitignored, e.g. an external SSD) or else src-tauri/target, as on CI. An
+# inherited CARGO_TARGET_DIR would override that config, so drop it, then ask
+# Cargo where the bundle will land.
+unset CARGO_TARGET_DIR
+target_dir="$(cargo metadata --no-deps --format-version 1 --manifest-path "$root/src-tauri/Cargo.toml" |
+	python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
 
 (
 	cd "$root/src-tauri"
 	"$tauri" "${tauri_args[@]}"
 )
 
-# A universal build lands under src-tauri/target/universal-apple-darwin/...;
-# the documented path is src-tauri/target/release/bundle/. Mirror the WHOLE
+# A universal build lands under <target>/universal-apple-darwin/...;
+# the documented path is <target>/release/bundle/. Mirror the WHOLE
 # bundle directory, not just Dotlore.app: with createUpdaterArtifacts the
 # bundler also emits macos/Dotlore.app.tar.gz and its .sig, and the dmg target
 # emits dmg/*.dmg. Mirroring only the .app stranded all three in the universal
 # directory, where the release pipeline does not look for them.
-bundle_release="$root/src-tauri/target/release/bundle"
+bundle_release="$target_dir/release/bundle"
 app_release="$bundle_release/macos/Dotlore.app"
 if [ "$n" -eq "${#want[@]}" ]; then
-	bundle_universal="$root/src-tauri/target/universal-apple-darwin/release/bundle"
+	bundle_universal="$target_dir/universal-apple-darwin/release/bundle"
 	if [ ! -d "$bundle_universal/macos/Dotlore.app" ]; then
 		echo "error: expected $bundle_universal/macos/Dotlore.app after a universal tauri build" >&2
 		exit 1

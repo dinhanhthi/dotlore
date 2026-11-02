@@ -1,6 +1,7 @@
 /docs/*
 /target
 /src-tauri/target
+/.cargo/config.toml
 /node_modules
 /dist
 /mockapp/dist

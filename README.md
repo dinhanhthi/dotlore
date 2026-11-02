@@ -115,13 +115,24 @@ On each new Mac:
 
 Why, and what each setting does: [CONTRIBUTING.md](CONTRIBUTING.md#cargo-build-cache).
 
+This repo is the exception: its Rust builds go to an external SSD, not `~/.cargo/shared-target`. That covers dev, test, clippy, rust-analyzer and `scripts/build.sh`. Set it up once per machine:
+
+```sh
+cp .cargo/config.toml.example .cargo/config.toml   # gitignored; set the volume path if it differs
+mkdir -p /Volumes/Thi2TB/cargo-target/dotlore
+```
+
+The repo-root `.cargo/config.toml` overrides `target-dir` from `~/.cargo/config.toml`. With the SSD unplugged, builds fail instead of writing to the internal disk. After you replug it, the cache is reused. Without that file (as on CI), builds use `src-tauri/target`. Details and troubleshooting are in [CONTRIBUTING.md](CONTRIBUTING.md#target-on-the-external-ssd).
+
 ### 📦 Build
 
 ```bash
 export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/dotlore.key)"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="…"
-pnpm build              # → src-tauri/target/release/bundle/{macos/Dotlore.app, dmg/*.dmg}
+pnpm build              # → <target>/release/bundle/{macos/Dotlore.app, dmg/*.dmg}
 ```
+
+`<target>` is `/Volumes/Thi2TB/cargo-target/dotlore` with the SSD config above, or `src-tauri/target` without it.
 
 The signing key is required because the build also produces signed updater artifacts. `pnpm tauri dev` does not need it.
 
