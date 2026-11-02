@@ -161,6 +161,10 @@ if [ "$mode" != "publish-only" ]; then
 		security find-generic-password -s "$svc" >/dev/null 2>&1 ||
 			fail "keychain item $svc not found. Run once: security add-generic-password -a \"\$USER\" -s $svc -w"
 	done
+	# notarytool echoes an invalid --issuer back in its error, so check the shape
+	# here, before the build, without ever printing the value.
+	[[ "$(security find-generic-password -s "$notary_service" -w)" =~ ^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$ ]] ||
+		fail "keychain item $notary_service does not hold an App Store Connect Issuer ID (a UUID). Replace it: security add-generic-password -U -a \"\$USER\" -s $notary_service -w"
 fi
 
 if [ "$mode" = "dry-run" ]; then
