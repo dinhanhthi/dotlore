@@ -300,7 +300,9 @@ is on, delete that block rather than printing it forever.
 Releases used to run in GitHub Actions. Its repository secrets
 (`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
 `APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_P8`,
-`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) are no longer
-used. They stay in the repository settings only as a rollback path: revert the
-commit that added `scripts/release-local.sh` (it also restores the `pages.yml`
-trigger) to release from CI again.
+`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) were deleted
+on 2026-11-02, after the first local release (v0.9.4), so no unused signing
+material sits in the repository. To release from CI again, revert the commit
+that added `scripts/release-local.sh` (it also restores the `pages.yml` trigger)
+and re-add those secrets from the local copies: the Developer ID `.p12`, the
+`.p8`, `~/.tauri/dotlore.key` and the passwords in the keychain.
