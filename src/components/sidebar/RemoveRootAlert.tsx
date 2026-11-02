@@ -8,7 +8,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { BLOCKED, forgetRoot, removeRoot } from "@/lib/ipc";
+import { BLOCKED, forgetRoot } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
 
 type RemoveRootAlertProps = {
@@ -16,8 +16,6 @@ type RemoveRootAlertProps = {
   name: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Also hide the project's cloud row on this Mac (`forgetRoot`). */
-  forget?: boolean;
 };
 
 export function RemoveRootAlert({
@@ -25,7 +23,6 @@ export function RemoveRootAlert({
   name,
   open,
   onOpenChange,
-  forget = false,
 }: RemoveRootAlertProps) {
   const { refreshRoots, locked } = useRoots();
 
@@ -34,8 +31,7 @@ export function RemoveRootAlert({
     if (slug === null || locked) return;
     onOpenChange(false);
     try {
-      const remove = forget ? forgetRoot : removeRoot;
-      if ((await remove(slug)) === BLOCKED) return;
+      if ((await forgetRoot(slug)) === BLOCKED) return;
       await refreshRoots();
     } catch {
       // Banner is set by `runTask()`.
@@ -48,9 +44,9 @@ export function RemoveRootAlert({
         <AlertDialogHeader>
           <AlertDialogTitle>Remove from Dotlore?</AlertDialogTitle>
           <AlertDialogDescription>
-            {forget
-              ? `Dotlore will stop tracking ${name} and hide it on this Mac. Its copy in the cloud stays, and other Macs keep syncing it.`
-              : `Dotlore will stop tracking ${name}. Files stay on disk.`}
+            Dotlore will stop syncing {name} and hide it on this Mac. Files stay
+            on disk, and its copy in the cloud stays for your other Macs. To keep
+            it on Dotlore without syncing, unlink it instead.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

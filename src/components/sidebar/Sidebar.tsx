@@ -34,6 +34,7 @@ import {
   importInstalledAgents,
   linkRoot,
   recoverRoot,
+  removeRoot,
   reportError,
 } from "@/lib/ipc";
 import { pickLocalPath } from "@/lib/pick";
@@ -276,6 +277,7 @@ export function Sidebar() {
   } | null>(null);
   const [removeTarget, setRemoveTarget] = useState<RootRow | null>(null);
   const [linkingSlug, setLinkingSlug] = useState<string | null>(null);
+  const [unlinkingSlug, setUnlinkingSlug] = useState<string | null>(null);
   const [menuSession, setMenuSession] = useState<RootMenuSession | null>(null);
   const [keepSelection, setKeepSelection] = useState<{
     slug: string;
@@ -435,6 +437,20 @@ export function Sidebar() {
     }
   }
 
+  /** Held through the refresh: a second remove on the unlinked row would hide it. */
+  async function handleUnlink(slug: string) {
+    if (locked || unlinkingSlug !== null) return;
+    setUnlinkingSlug(slug);
+    try {
+      if ((await removeRoot(slug)) === BLOCKED) return;
+      await refreshRoots();
+    } catch {
+      // Banner is set by `runTask()`.
+    } finally {
+      setUnlinkingSlug(null);
+    }
+  }
+
   function renderRoot(row: RootRow, id?: string) {
     const menuModel = keepAllForRow(menuSession, row.slug, row.linked);
     return (
@@ -457,6 +473,7 @@ export function Sidebar() {
         onToggleStar={() => toggleStar(row.slug)}
         onLink={() => void handleLink(row.slug)}
         onRemove={() => setRemoveTarget(row)}
+        onUnlink={row.linked ? () => void handleUnlink(row.slug) : undefined}
         onReveal={
           row.linked && row.path
             ? () => {
@@ -466,7 +483,11 @@ export function Sidebar() {
               }
             : undefined
         }
-        writeDisabled={locked || seeding.some((item) => item.slug === row.slug)}
+        writeDisabled={
+          locked ||
+          unlinkingSlug === row.slug ||
+          seeding.some((item) => item.slug === row.slug)
+        }
         onRecover={
           row.status.kind === "Error" ? () => void handleRecover(row.slug) : undefined
         }

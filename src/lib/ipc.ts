@@ -405,7 +405,7 @@ export function linkRoot(slug: string, path: string): Promise<void | typeof BLOC
 }
 
 export function removeRoot(slug: string): Promise<void | typeof BLOCKED> {
-  return runTask(`Removing ${slug}…`, () =>
+  return runTask(`Unlinking ${slug}…`, () =>
     invoke<void>("remove_root", { slug }),
   );
 }

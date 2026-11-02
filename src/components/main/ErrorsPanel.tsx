@@ -191,7 +191,6 @@ function ErrorItem({ row }: { row: RootRow }) {
           name={row.name}
           open={removeOpen}
           onOpenChange={setRemoveOpen}
-          forget
         />
       )}
     </li>

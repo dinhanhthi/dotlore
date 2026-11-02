@@ -56,6 +56,8 @@ type SidebarItemProps = {
   onToggleStar?: () => void;
   onLink?: () => void;
   onRemove?: () => void;
+  /** Stop syncing on this Mac; the project stays on Dotlore as an unlinked row. */
+  onUnlink?: () => void;
   onReveal?: () => void;
   onRecover?: () => void;
   /** Conflict model for the keep section. `"loading"` is a disabled placeholder. */
@@ -86,6 +88,7 @@ export function SidebarItem({
   onToggleStar,
   onLink,
   onRemove,
+  onUnlink,
   onReveal,
   onRecover,
   keepAll,
@@ -184,7 +187,14 @@ export function SidebarItem({
     </div>
   );
 
-  if (!onMenuOpenChange && keepAll === undefined && !onReveal && !onRemove && !onRecover) {
+  if (
+    !onMenuOpenChange &&
+    keepAll === undefined &&
+    !onReveal &&
+    !onUnlink &&
+    !onRemove &&
+    !onRecover
+  ) {
     return row;
   }
 
@@ -193,7 +203,7 @@ export function SidebarItem({
       ? quickResolveItems(keepAll.views)
       : null;
   const showKeep = keepAll === "loading" || keepMenu !== null;
-  const showOther = Boolean(onReveal || onRemove || onRecover);
+  const showOther = Boolean(onReveal || onUnlink || onRemove || onRecover);
 
   return (
     <ContextMenu onOpenChange={onMenuOpenChange}>
@@ -211,6 +221,11 @@ export function SidebarItem({
         {showKeep && showOther ? <ContextMenuSeparator /> : null}
         {onReveal ? (
           <ContextMenuItem onClick={onReveal}>Go to location</ContextMenuItem>
+        ) : null}
+        {onUnlink ? (
+          <ContextMenuItem disabled={writeDisabled} onClick={onUnlink}>
+            Unlink
+          </ContextMenuItem>
         ) : null}
         {onRemove ? (
           <ContextMenuItem
