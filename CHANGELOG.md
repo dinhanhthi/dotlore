@@ -1,3 +1,9 @@
+## v0.9.4 (2026-11-02)
+
+### Platform
+
+- **Releases are now built, signed and notarized on the maintainer's Mac.** The app is unchanged; this release is the first one published by `scripts/release-local.sh` instead of GitHub Actions, with the same universal `.dmg`, updater files and `latest.json`. [#7774ea56](https://github.com/dinhanhthi/dotlore/commit/7774ea56) [#5fe16640](https://github.com/dinhanhthi/dotlore/commit/5fe16640)
+
 ## v0.9.3 (2026-11-02)
 
 ### Projects
