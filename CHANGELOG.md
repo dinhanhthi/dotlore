@@ -1,3 +1,11 @@
+## v0.9.3 (2026-11-02)
+
+### Projects
+
+- **Unlink a project from this Mac and keep it on Dotlore.** Right-click a project in the sidebar, or open its More menu, and choose "Unlink": syncing stops, the folder and the cloud copy stay as they are, and the project returns to the list as unlinked so you can link it to a folder again later. [#7ed92c13](https://github.com/dinhanhthi/dotlore/commit/7ed92c13) [#13fcbe02](https://github.com/dinhanhthi/dotlore/commit/13fcbe02)
+- **"Remove" now also hides the project on this Mac.** Before, removing a synced project only unlinked it and it came straight back in the sidebar; now it is hidden on this Mac, while its cloud copy and your other Macs are untouched. Add a folder with the same name to bring it back. [#7ed92c13](https://github.com/dinhanhthi/dotlore/commit/7ed92c13)
+- **A project whose folder was moved or deleted offers "Unlink" and "Remove from Dotlore".** The "Folder missing" card now has both buttons (Remove asks first) and says to unlink and link again from the new location if the folder moved. [#60a20f0b](https://github.com/dinhanhthi/dotlore/commit/60a20f0b)
+
 ## v0.9.2 (2026-10-17)
 
 ### Sync
