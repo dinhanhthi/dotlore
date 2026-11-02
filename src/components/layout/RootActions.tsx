@@ -15,6 +15,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { BLOCKED, removeRoot } from "@/lib/ipc";
 import { useRoots } from "@/lib/roots";
 import { cn } from "@/lib/utils";
 
@@ -127,9 +128,26 @@ export function RemoveRootButton() {
 }
 
 export function RootOverflowMenu() {
-  const { root, active, revealPath, showHistory } = useSelectedRoot();
+  const { root, active, revealPath, removeDisabled, showHistory } = useSelectedRoot();
+  const { refreshRoots } = useRoots();
   const [menuOpen, setMenuOpen] = useState(false);
   const [ignoreOpen, setIgnoreOpen] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
+  const unlinkDisabled = removeDisabled || unlinking || !root?.linked;
+
+  /** Held through the refresh: a second remove on the unlinked row would hide it. */
+  async function unlink() {
+    if (!root || unlinkDisabled) return;
+    setUnlinking(true);
+    try {
+      if ((await removeRoot(root.slug)) === BLOCKED) return;
+      await refreshRoots();
+    } catch {
+      // Banner is set by `runTask()`.
+    } finally {
+      setUnlinking(false);
+    }
+  }
 
   function reveal() {
     if (!revealPath) return;
@@ -165,6 +183,9 @@ export function RootOverflowMenu() {
               <TooltipContent>More</TooltipContent>
             </Tooltip>
             <DropdownMenuContent align="end" sideOffset={6}>
+              <DropdownMenuItem disabled={unlinkDisabled} onClick={() => void unlink()}>
+                Unlink
+              </DropdownMenuItem>
               <DropdownMenuItem
                 variant="destructive"
                 disabled={removeDisabled}

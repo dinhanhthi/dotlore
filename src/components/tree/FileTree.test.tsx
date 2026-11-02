@@ -26,7 +26,15 @@ import {
 
 type MenuItemProps = { children?: ReactNode; disabled?: boolean; onClick?: () => void };
 
-const { menuItems } = vi.hoisted(() => ({ menuItems: [] as MenuItemProps[] }));
+const { menuItems, removeRoot } = vi.hoisted(() => ({
+  menuItems: [] as MenuItemProps[],
+  removeRoot: vi.fn(async () => {}),
+}));
+
+vi.mock("@/lib/ipc", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/ipc")>("@/lib/ipc")),
+  removeRoot,
+}));
 
 // Renders dropdown content inline (a closed base-ui menu renders nothing) and
 // records each item's props so a test can inspect and click it.
@@ -254,6 +262,35 @@ describe("FileTree More menu", () => {
   function deletedFilesItem(): MenuItemProps | undefined {
     return menuItems.find((props) => props.children === "Deleted files…");
   }
+
+  function renderMenu(row: RootRow) {
+    renderToStaticMarkup(
+      <TooltipProvider>
+        <RootsContext.Provider value={rootsValue(row)}>
+          <RootOverflowMenu />
+        </RootsContext.Provider>
+      </TooltipProvider>,
+    );
+  }
+
+  function unlinkItem(): MenuItemProps | undefined {
+    return menuItems.find((props) => props.children === "Unlink");
+  }
+
+  it("unlinks a linked project from Unlink, just above Remove", () => {
+    removeRoot.mockClear();
+    renderMenu(linked);
+    const labels = menuItems.map((props) => props.children);
+    expect(labels.indexOf("Unlink")).toBe(labels.indexOf("Remove") - 1);
+    expect(unlinkItem()?.disabled).toBe(false);
+    unlinkItem()?.onClick?.();
+    expect(removeRoot).toHaveBeenCalledExactlyOnceWith("dotlore");
+  });
+
+  it("disables Unlink on an unlinked row", () => {
+    renderMenu(unlinked);
+    expect(unlinkItem()?.disabled).toBe(true);
+  });
 
   it("disables Deleted files… on an unlinked row", () => {
     // An unlinked row renders the header at once.
