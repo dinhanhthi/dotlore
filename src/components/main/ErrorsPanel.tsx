@@ -1,15 +1,23 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { X } from "lucide-react";
+import { useRef, useState } from "react";
 
 import { shortenPath } from "@/components/main/RootCard";
+import { RemoveRootAlert } from "@/components/sidebar/RemoveRootAlert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   BLOCKED,
   clearErrors,
   dismissError,
   recoverRoot,
+  removeRoot,
   syncNow,
   type ErrorLogEntry,
 } from "@/lib/ipc";
@@ -32,7 +40,7 @@ function errorTitle(row: RootRow): string {
 function errorRemedy(row: RootRow): string {
   switch (row.status.kind) {
     case "RootMissing":
-      return "The project folder was moved or deleted. Put it back at this path, or remove the project and add it again from its new location.";
+      return "The project folder was moved or deleted. Put it back at this path and retry. If it moved, unlink it, then link it again from its new location in the sidebar. Its synced files stay in the cloud either way.";
     case "GitMissing":
       return "Dotlore needs the system git. Install the Xcode Command Line Tools (xcode-select --install), then retry.";
     default:
@@ -44,6 +52,26 @@ function ErrorItem({ row }: { row: RootRow }) {
   const { selectRoot, refreshRoots, locked, seeding } = useRoots();
   const syncing = useSyncing();
   const writeDisabled = locked || seeding.some((item) => item.slug === row.slug);
+  const [removeOpen, setRemoveOpen] = useState(false);
+  // Held through `refreshRoots()`: a second `remove_root` would hide the project.
+  const unlinkingRef = useRef(false);
+  const [unlinking, setUnlinking] = useState(false);
+
+  /** Back to an unlinked row: the project stays on Dotlore, ready to link. */
+  async function handleUnlink() {
+    if (writeDisabled || unlinkingRef.current) return;
+    unlinkingRef.current = true;
+    setUnlinking(true);
+    try {
+      if ((await removeRoot(row.slug)) === BLOCKED) return;
+      await refreshRoots();
+    } catch {
+      // Banner is set by `runTask()`.
+    } finally {
+      unlinkingRef.current = false;
+      setUnlinking(false);
+    }
+  }
 
   async function handleRecover() {
     if (writeDisabled) return;
@@ -117,7 +145,55 @@ function ErrorItem({ row }: { row: RootRow }) {
             Recover
           </Button>
         )}
+        {row.status.kind === "RootMissing" && (
+          <>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={writeDisabled || unlinking}
+                    onClick={() => void handleUnlink()}
+                  />
+                }
+              >
+                Unlink
+              </TooltipTrigger>
+              <TooltipContent>
+                Stop syncing on this Mac. The project stays on Dotlore, ready to link to a folder.
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={writeDisabled}
+                    onClick={() => setRemoveOpen(true)}
+                    className="text-destructive hover:text-destructive"
+                  />
+                }
+              >
+                Remove from Dotlore
+              </TooltipTrigger>
+              <TooltipContent>
+                Stop syncing and hide the project on this Mac. The cloud copy stays.
+              </TooltipContent>
+            </Tooltip>
+          </>
+        )}
       </div>
+      {row.status.kind === "RootMissing" && (
+        <RemoveRootAlert
+          slug={row.slug}
+          name={row.name}
+          open={removeOpen}
+          onOpenChange={setRemoveOpen}
+          forget
+        />
+      )}
     </li>
   );
 }

@@ -8,15 +8,18 @@ import type { RootRow } from "@/lib/types";
 
 import { ErrorsPanel } from "./ErrorsPanel";
 
-const { clicks, dismissError, clearErrors } = vi.hoisted(() => ({
-  clicks: new Map<string, Array<() => void>>(),
+const { clicks, dismissError, clearErrors, removeRoot } = vi.hoisted(() => ({
+  clicks: new Map<string, Array<(event?: { nativeEvent: Event }) => void>>(),
   dismissError: vi.fn(),
   clearErrors: vi.fn(),
+  removeRoot: vi.fn(),
 }));
 
 vi.mock("@/lib/ipc", () => ({
   BLOCKED: Symbol("blocked"),
   recoverRoot: vi.fn(),
+  removeRoot,
+  forgetRoot: vi.fn(),
   syncNow: vi.fn(),
   dismissError,
   clearErrors,
@@ -42,7 +45,7 @@ vi.mock("@/components/ui/button", async () => {
         props["aria-label"] ?? (typeof props.children === "string" ? props.children : null);
       if (typeof key === "string" && props.onClick) {
         const list = clicks.get(key) ?? [];
-        list.push(props.onClick as () => void);
+        list.push(props.onClick as (event?: { nativeEvent: Event }) => void);
         clicks.set(key, list);
       }
       return actual.Button(props);
@@ -115,6 +118,33 @@ describe("errors panel", () => {
     expect(html).toContain("Folder missing");
     expect(html).not.toContain(">Recover<");
     expect(html).not.toContain(">Go to location<");
+  });
+
+  it("offers Unlink and Remove from Dotlore only for a missing folder", () => {
+    const missing = render([row("a", { kind: "RootMissing" })]);
+    expect(missing).toContain(">Unlink<");
+    expect(missing).toContain(">Remove from Dotlore<");
+    const failed = render([row("a", { kind: "Error", detail: "boom" })]);
+    expect(failed).not.toContain(">Unlink<");
+    expect(failed).not.toContain(">Remove from Dotlore<");
+  });
+
+  it("unlinks a missing folder at once, without a dialog", () => {
+    removeRoot.mockReset();
+    render([row("a", { kind: "RootMissing" })]);
+    // A tooltip trigger reads `nativeEvent` from the click.
+    clicks.get("Unlink")?.[0]?.({ nativeEvent: new Event("click") });
+    expect(removeRoot).toHaveBeenCalledExactlyOnceWith("a");
+  });
+
+  it("ignores a second Unlink while the first is in flight", () => {
+    removeRoot.mockReset();
+    removeRoot.mockReturnValue(new Promise(() => {}));
+    render([row("a", { kind: "RootMissing" })]);
+    const unlink = clicks.get("Unlink")?.[0];
+    unlink?.({ nativeEvent: new Event("click") });
+    unlink?.({ nativeEvent: new Event("click") });
+    expect(removeRoot).toHaveBeenCalledExactlyOnceWith("a");
   });
 
   it("skips healthy and cloud-only roots", () => {

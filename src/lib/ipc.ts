@@ -410,6 +410,13 @@ export function removeRoot(slug: string): Promise<void | typeof BLOCKED> {
   );
 }
 
+/** Remove, then hide the project's cloud row on this Mac. */
+export function forgetRoot(slug: string): Promise<void | typeof BLOCKED> {
+  return runTask(`Removing ${slug}…`, () =>
+    invoke<void>("forget_root", { slug }),
+  );
+}
+
 export type WipeReport = {
   readded: string[];
   failed: { slug: string; error: string }[];

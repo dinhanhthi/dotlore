@@ -733,26 +733,37 @@ impl Engine {
     /// it is appended to `dismissed_slugs` so the listing hides it on this
     /// device. The cloud itself is never touched.
     pub fn remove_root(&mut self, slug: &str) -> Result<()> {
+        self.remove_root_inner(slug, false)
+    }
+
+    /// [`Engine::remove_root`], then hide the slug's cloud row on this device
+    /// in the same lock, as a second remove would. The cloud is not touched.
+    pub fn forget_root(&mut self, slug: &str) -> Result<()> {
+        self.remove_root_inner(slug, true)
+    }
+
+    fn remove_root_inner(&mut self, slug: &str, forget: bool) -> Result<()> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
-        let Some(removed) = self.cfg.roots.iter().find(|r| r.slug == slug).cloned() else {
-            if !self.cloud().slug_dir(slug)?.join("manifest.json").is_file() {
-                bail!("no tracked root with slug {slug}");
+        let tracked = self.cfg.roots.iter().find(|r| r.slug == slug).cloned();
+        let listed = (tracked.is_none() || forget)
+            && self.cloud().slug_dir(slug)?.join("manifest.json").is_file();
+        if let Some(removed) = tracked {
+            self.cfg.roots.retain(|r| r.slug != slug);
+            if is_catalog_agent(&self.home_dir, &removed.path)
+                && !self
+                    .cfg
+                    .dismissed_agents
+                    .iter()
+                    .any(|p| same_agent_path(p, &removed.path))
+            {
+                self.cfg.dismissed_agents.push(removed.path);
             }
-            if !self.cfg.dismissed_slugs.iter().any(|s| s == slug) {
-                self.cfg.dismissed_slugs.push(slug.to_string());
-            }
-            return self.save(&g);
-        };
-        self.cfg.roots.retain(|r| r.slug != slug);
-        if is_catalog_agent(&self.home_dir, &removed.path)
-            && !self
-                .cfg
-                .dismissed_agents
-                .iter()
-                .any(|p| same_agent_path(p, &removed.path))
-        {
-            self.cfg.dismissed_agents.push(removed.path);
+        } else if !listed {
+            bail!("no tracked root with slug {slug}");
+        }
+        if listed && !self.cfg.dismissed_slugs.iter().any(|s| s == slug) {
+            self.cfg.dismissed_slugs.push(slug.to_string());
         }
         self.save(&g)
     }
@@ -5352,6 +5363,38 @@ mod tests {
         let cfg = Config::load(b.home.path()).unwrap();
         assert!(cfg.dismissed_slugs.is_empty());
         assert_eq!(cfg.roots.len(), 1);
+    }
+
+    #[test]
+    fn forget_root_stops_tracking_and_hides_the_cloud_slug_in_one_call() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+
+        a.engine.forget_root("proj-claude").unwrap();
+        let cfg = Config::load(a.home.path()).unwrap();
+        assert!(cfg.roots.is_empty());
+        assert_eq!(cfg.dismissed_slugs, vec!["proj-claude".to_string()]);
+        assert!(cloud_of(&a).read_manifest("proj-claude").is_some());
+    }
+
+    #[test]
+    fn forget_root_does_not_dismiss_a_slug_without_a_manifest() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        write(&a, "CLAUDE.md", b"one\n");
+        add(&mut a);
+        let manifest = cloud_of(&a)
+            .slug_dir("proj-claude")
+            .unwrap()
+            .join("manifest.json");
+        fs::remove_file(manifest).unwrap();
+
+        a.engine.forget_root("proj-claude").unwrap();
+        let cfg = Config::load(a.home.path()).unwrap();
+        assert!(cfg.roots.is_empty());
+        assert!(cfg.dismissed_slugs.is_empty());
     }
 
     #[test]

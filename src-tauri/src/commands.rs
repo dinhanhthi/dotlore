@@ -820,6 +820,25 @@ pub async fn remove_root(
 }
 
 #[tauri::command]
+pub async fn forget_root(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<(), String> {
+    let engine = state.shared_engine().map_err(front_msg)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .forget_root(&slug)
+            .map_err(front_err)
+    })
+    .await
+    .map_err(front_msg)??;
+    notify(&app, &state)
+}
+
+#[tauri::command]
 pub async fn wipe_cloud_data(
     app: AppHandle,
     state: State<'_, AppState>,
