@@ -33,6 +33,7 @@ Still shared with the installed app:
 [profile.dev]
 opt-level = 1
 split-debuginfo = "off"               # no per-codegen-unit .o files (the bulk of a 10 GB target)
+incremental = false                   # no incremental cache (GBs per crate)
 
 [profile.dev.package."*"]
 debug = "line-tables-only"            # dependencies keep enough for backtraces

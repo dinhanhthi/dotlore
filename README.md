@@ -103,6 +103,7 @@ On each new Mac:
    [profile.dev]
    opt-level = 1
    split-debuginfo = "off"
+   incremental = false
 
    [profile.dev.package."*"]
    debug = "line-tables-only"

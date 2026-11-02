@@ -63,6 +63,7 @@ opt-level = 1
 # tables. Copy this block into ~/.cargo/config.toml so other projects share
 # one target directory — see CONTRIBUTING.md.
 split-debuginfo = "off"
+incremental = false
 
 [profile.dev.package."*"]
 debug = "line-tables-only"
