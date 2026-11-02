@@ -1,18 +1,15 @@
 name: Deploy website
 
 # The release commit rewrites the version badge in website/index.html, so a push
-# alone would put the new version on the site ~10-35 minutes before release.yml
+# alone would put the new version on the site before scripts/release-local.sh
 # publishes it. Every trigger therefore goes through the "badge is released" gate
-# below, and a successful Release run deploys the site once the version is live.
+# below, and the release script dispatches this workflow once the version is live.
 on:
   push:
     branches: [main]
     paths:
       - "website/**"
       - ".github/workflows/pages.yml"
-  workflow_run:
-    workflows: [Release]
-    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -26,7 +23,6 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -34,8 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Deploy only when the badge names the latest published release. A badge
-      # ahead of it means release.yml has not published yet; that run's
-      # workflow_run trigger deploys the site when it succeeds.
+      # ahead of it means the release has not been published yet;
+      # scripts/release-local.sh dispatches this workflow after it publishes.
       - name: Hold the site until its badge version is released
         id: gate
         env:
@@ -48,7 +44,7 @@ jobs:
           if [ -n "$badge" ] && [ "$badge" = "$latest" ]; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Badge $badge is not the latest published release ($latest) — skipping; the Release run deploys the site when it publishes."
+            echo "::notice::Badge $badge is not the latest published release ($latest) — skipping; scripts/release-local.sh dispatches a deploy when it publishes."
             echo "deploy=false" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.gate.outputs.deploy == 'true'

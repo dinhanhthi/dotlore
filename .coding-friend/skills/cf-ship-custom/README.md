@@ -14,12 +14,15 @@ contract the model follows.
 ## What one release actually does
 
 `/cf-ship` reads the commits since the last published tag, picks a version,
-writes the changelog, bumps two version files plus the website badge, commits,
-tags, pushes, then waits for CI and verifies the published artifacts. CI signs,
-notarizes and publishes five assets: a universal `.dmg`, a version-less
-`Dotlore-universal.dmg` alias, the updater's `Dotlore.app.tar.gz` and its `.sig`,
-and the `latest.json` the in-app updater reads. A run takes **25-35 minutes**,
-almost all of it the universal Rust build and Apple's notarization round-trip.
+writes the changelog, bumps two version files plus the website badge, commits
+and pushes, then runs `pnpm release --expect-version <version>` on this Mac and
+verifies the published artifacts. `scripts/release-local.sh` builds, signs and
+notarizes, checks every artifact, and only then pushes the tag and publishes five
+assets: a universal `.dmg`, a version-less `Dotlore-universal.dmg` alias, the
+updater's `Dotlore.app.tar.gz` and its `.sig`, and the `latest.json` the in-app
+updater reads. A run takes **25-35 minutes**, almost all of it the universal Rust
+build and Apple's notarization round-trip, so the model runs it in the
+background and waits for it to exit.
 
 ## Say it in one line
 
@@ -40,7 +43,8 @@ doing the arithmetic by hand, which is how a release ends up skipping a number.
 Every release is published as a normal release: `isPrerelease: false`. The app's
 updater reads `/releases/latest/download/latest.json`, and GitHub's "latest"
 excludes prereleases — so a prerelease would reach nobody, and a draft would
-strand every client on the previous version. Both flags are checked in Step B8,
+strand every client on the previous version. The release script checks both
+flags before it exits, and Step B8 checks them again on what was published,
 along with a non-empty signature for each platform key in `latest.json`.
 
 ## The version lives in one file
@@ -63,9 +67,10 @@ because nothing downstream normalises them: `01.2.3` compares as `1.2.3`, so it
 would be written as a bump and then be rejected by Cargo's own parser, by the
 tag shape, and by `bump-info.sh` on the next run.
 
-`release.yml` checks the tag against `src-tauri/Cargo.toml` and fails the build
-when they differ. That check is the only reason the badge and the lockfile need
-verifying locally: CI cannot see them.
+`scripts/release-local.sh` checks the release version against
+`src-tauri/Cargo.toml` and refuses to build when they differ. That check is the
+only reason the badge and the lockfile need verifying in `bump.sh`: the release
+script does not read them.
 
 ## What the report looks like
 
@@ -109,50 +114,49 @@ counts and `HAS APP CHANGES: no`, which is why it refuses to print one.
 If the only commits since the last tag touched `website/`, `docs/`, `.github/`
 or `.coding-friend/`, or are scoped `(website)`, the report says
 `HAS APP CHANGES: no`. That means stop — not "ship a patch anyway". Website
-changes deploy through `.github/workflows/pages.yml`, which fires on any push to
+changes deploy through `.github/workflows/pages.yml`, which runs on any push to
 `main` that touches `website/**`, and they need no version at all; this guide and
 its scripts are release tooling, so they need none either.
 
 **2. There is one changelog, not two.**
-`CHANGELOG.md` at the root, developer-facing; `release.yml` extracts the section
-matching the tag and that becomes the GitHub Release body. Its `###` headings are
-feature-grouped — `### Sync`, `### Projects`, `### Desktop app` — not
-`Added`/`Fixed`/`Improved`. There is **no** website changelog file: the only
-per-release website edit is the badge `bump.sh` already handles. Entries are net
-changes against the previous release, never a commit dump, and each one carries
-its commit link, which `bump-info.sh` prints ready-made as a `link=` field
-before the quoted subject — the link comes from the printed hash, never from
-trailing text on a data line, since a subject can contain anything.
+`CHANGELOG.md` at the root, developer-facing; `scripts/release-local.sh`
+extracts the section matching the tag and that becomes the GitHub Release body.
+A missing or empty `## v<version>` section fails the release before the build.
+Its `###` headings are feature-grouped — `### Sync`, `### Projects`,
+`### Desktop app` — not `Added`/`Fixed`/`Improved`. There is **no** website
+changelog file: the only per-release website edit is the badge `bump.sh` already
+handles. Entries are net changes against the previous release, never a commit
+dump, and each one carries its commit link, which `bump-info.sh` prints
+ready-made as a `link=` field before the quoted subject — the link comes from
+the printed hash, never from trailing text on a data line, since a subject can
+contain anything.
 
-**3. A pushed tag is not a release.**
-CI runs for ~30 minutes and can fail at the notarization step long after the tag
-looks fine. Step B8 is what turns "green" into "verified": `isDraft` and
-`isPrerelease` both `false`, five assets, a non-empty signature under both
-`darwin-aarch64` and `darwin-x86_64`, and — on the mounted `.dmg` — `spctl`,
-`xcrun stapler validate` and `lipo -archs` all clean.
+**3. A clean exit is not a verified release.**
+The script runs for ~30 minutes and checks the build before it tags, but Step B8
+is what turns "exited 0" into "verified": the tag points at the release commit,
+`isDraft` and `isPrerelease` both `false`, five assets, a non-empty signature
+under both `darwin-aarch64` and `darwin-x86_64`, and — on the mounted `.dmg` —
+`spctl`, `xcrun stapler validate` and `lipo -archs` all clean.
 
 ## When it goes wrong
 
-**The run fails.** No release is published, so nothing has to be deleted — but
-the tag is not the retry button. Which lever applies depends on whether the
-tagged commit is still correct:
+**The release fails.** Which lever applies depends on where the script stopped:
 
-- **Transient failure** (Apple notarization outage, expired credential, runner
-  hiccup) with the commit still correct → `gh run rerun <run-id>`. Nothing moves.
-- **The fix changes a file the release depends on** — above all
-  `.github/workflows/release.yml` — → the tag no longer points at a correct
-  commit, and a rerun would replay the broken workflow, because a run reads the
-  workflow definition from its own ref. The tag has to move, which the guide
-  forbids doing unilaterally: **ask the user.**
+- **Before the tag push** (preflight, build, notarization, artifact checks) →
+  nothing is public. Fix the cause, commit and push if source changed, and rerun
+  `pnpm release --expect-version <version>`.
+- **The tag push itself failed** → if `git ls-remote --tags origin
+  refs/tags/v<version>` is empty, the tag never left this Mac: `git tag -d
+  v<version>` and rerun (the preflight refuses an existing local tag).
+- **After the tag push** → the script prints the resume command:
+  `pnpm release --expect-version <version> --publish-only`. It reuses the built
+  artifacts and publishes. Never delete or move the tag; a published release is
+  fixed forward with a new version.
 
-A plain `git push origin v<version>` of an unchanged, already-pushed tag is a
-no-op — `Everything up-to-date`, no new run. It looks like a retry and is not
-one.
-
-**The run is green but the app will not update.** Check `latest.json`: every
-platform key needs a non-empty `signature`. An empty one is the silent failure
-mode — the release looks perfect and every client refuses the update. Step B8
-checks this, but check it yourself if you are suspicious:
+**The release is published but the app will not update.** Check `latest.json`:
+every platform key needs a non-empty `signature`. An empty one is the silent
+failure mode — the release looks perfect and every client refuses the update.
+Step B8 checks this, but check it yourself if you are suspicious:
 
 ```bash
 gh release download v<version> -p latest.json -O - | python3 -m json.tool
@@ -164,8 +168,8 @@ gh release download v<version> -p latest.json -O - | python3 -m json.tool
 spctl -a -vv -t install "/Volumes/Dotlore/Dotlore.app"   # want: accepted / Notarized Developer ID
 ```
 
-The signing identity and every secret the workflow needs are documented in
-`.github/release-setup.md`.
+The signing identity, the Keychain items and the one-time setup the release
+script needs on this Mac are documented in `.github/release-setup.md`.
 
 ## What it does not do
 
@@ -173,10 +177,12 @@ The signing identity and every secret the workflow needs are documented in
   is compiled into every shipped build, so regenerating it strands every existing
   install. Never re-run `tauri signer generate`. See `.github/release-setup.md`.
 - **Release the website.** That is `.github/workflows/pages.yml`, triggered by
-  any push to `main` touching `website/**`, a manual dispatch, or a successful
-  `Release` run. It deploys only when the version badge names the latest
-  published release, so the release commit's badge bump waits for `release.yml`
-  to publish and goes live from that run's trigger — never before the app.
+  any push to `main` touching `website/**` or a manual dispatch. It deploys only
+  when the version badge names the latest published release, so the bump
+  commit's push is held at that gate, and the site goes live when
+  `scripts/release-local.sh` dispatches `pages.yml` after publishing — never
+  before the app. If the dispatch fails the script warns and prints
+  `gh workflow run pages.yml --ref main`; run it by hand.
 - **Release for Windows or Linux.** macOS only today.
 - **Handle entitlements or a provisioning profile.** Dotlore declares none, so
   there is no embedded profile to check and nothing that expires.
@@ -248,11 +254,11 @@ what the hook is for.
 
 ## Files
 
-| Path                            | Role                                                                                               |
-| ------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `SKILL.md`                      | The contract the model follows. Loaded by `load-custom-guide.sh`.                                  |
-| `scripts/bump-info.sh`          | Reads commits and tags, names the state, computes the next version. Writes nothing.                |
-| `scripts/bump.sh`               | Writes the version into `Cargo.toml`, `Cargo.lock` and the website badge, and verifies they agree. |
-| `.github/workflows/release.yml` | Signs, notarizes, builds universal, publishes the five assets.                                     |
-| `.github/release-setup.md`      | Every secret the workflow needs, and where it comes from.                                          |
-| `website/index.html`            | The version badge `bump.sh` rewrites between the `<!-- dotlore:version -->` markers.               |
+| Path                       | Role                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `SKILL.md`                 | The contract the model follows. Loaded by `load-custom-guide.sh`.                                    |
+| `scripts/bump-info.sh`     | Reads commits and tags, names the state, computes the next version. Writes nothing.                  |
+| `scripts/bump.sh`          | Writes the version into `Cargo.toml`, `Cargo.lock` and the website badge, and verifies they agree.   |
+| `scripts/release-local.sh` | `pnpm release`: builds, signs, notarizes, checks, tags, publishes the five assets, dispatches Pages. |
+| `.github/release-setup.md` | The local release runbook: one-time Keychain setup on this Mac, and recovery.                        |
+| `website/index.html`       | The version badge `bump.sh` rewrites between the `<!-- dotlore:version -->` markers.                 |

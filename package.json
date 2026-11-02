@@ -12,6 +12,7 @@
     "website:dev": "vite --config scripts/website.vite.config.ts",
     "tauri": "bash scripts/tauri.sh",
     "build": "bash scripts/build.sh",
+    "release": "bash scripts/release-local.sh",
     "test": "bash scripts/test.sh",
     "smoke:two-devices": "cargo test --manifest-path src-tauri/Cargo.toml --test two_devices two_devices_smoke_syncs_one_file -- --exact",
     "format": "cargo fmt --manifest-path src-tauri/Cargo.toml",

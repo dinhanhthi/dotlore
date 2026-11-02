@@ -5,7 +5,7 @@
 #   e.g. bash bump.sh 0.2.0
 #
 # THREE files, not two. Forgetting Cargo.lock leaves `cargo build --locked`
-# and CI drifting against Cargo.toml.
+# and the release build drifting against Cargo.toml.
 #
 # Plain X.Y.Z only. Prerelease suffixes (`-beta.N`, `-rc.N`) are rejected
 # outright: Dotlore ships stable only, and the channel mechanism that would
@@ -48,7 +48,7 @@ if [[ -z "$NEW_VERSION" ]]; then
 fi
 
 # Core semver only, three numeric fields, no leading zeros. Deliberately narrower
-# than full semver: everything downstream — the git tag, release.yml, the updater
+# than full semver: everything downstream — the git tag, release-local.sh, the updater
 # — treats a suffix as a different channel, and there is only one channel here.
 # Leading zeros are the same class of mistake: `01.2.3` parses as (1, 2, 3) three
 # lines below, so it would be accepted as strictly greater than `0.1.0`, written
@@ -284,10 +284,11 @@ cargo update -p dotlore --manifest-path src-tauri/Cargo.toml 2>&1 | sed 's/^/   
 
 # ─── Verify all three agree ───────────────────────────────────────────────────
 #
-# A silent partial bump is the failure mode worth guarding: CI checks the tag
-# against src-tauri/Cargo.toml only, so a stale Cargo.lock or a stale website
-# badge would sail past it — one breaking `cargo build --locked`, the other
-# shipping a page pointing at the previous release.
+# A silent partial bump is the failure mode worth guarding:
+# scripts/release-local.sh checks the tag against src-tauri/Cargo.toml only, so
+# a stale Cargo.lock or a stale website badge would sail past it — one breaking
+# `cargo build --locked`, the other shipping a page pointing at the previous
+# release.
 
 echo ""
 echo "Verifying:"

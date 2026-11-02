@@ -73,7 +73,7 @@ Cargo reads config files from the current directory upward, and `$HOME` has the 
 cargo metadata --no-deps --format-version 1 | jq -r .target_directory
 ```
 
-An environment `CARGO_TARGET_DIR` still overrides both. `scripts/build.sh` unsets it, asks `cargo metadata` for the target dir, then runs the Tauri build. The release bundle lands at `/Volumes/Thi2TB/cargo-target/dotlore/release/bundle/macos/Dotlore.app`, with the `.dmg` and updater artifacts beside it. Without `.cargo/config.toml` (CI, or a Mac without the SSD set up) the same script builds into `src-tauri/target`, which is where `.github/workflows/release.yml` looks.
+An environment `CARGO_TARGET_DIR` still overrides both. `scripts/build.sh` unsets it, asks `cargo metadata` for the target dir, then runs the Tauri build. The release bundle lands at `/Volumes/Thi2TB/cargo-target/dotlore/release/bundle/macos/Dotlore.app`, with the `.dmg` and updater artifacts beside it. Without `.cargo/config.toml` (a Mac without the SSD set up) the same script builds into `src-tauri/target`. `scripts/release-local.sh` finds the bundle the same way, so it works with either.
 
 Unplug and replug: macOS mounts the volume at `/Volumes/Thi2TB` again. The path and Cargo's fingerprints stay valid, so the next build reuses the cache. While the SSD is out, builds fail with `failed to create directory /Volumes/Thi2TB/cargo-target/…`: `/Volumes` is root-owned, so Cargo cannot create the path. Nothing falls back to the internal disk. Plug the SSD in and rerun.
 

@@ -84,7 +84,7 @@ print(json.dumps({"bundle": {"macOS": {"signingIdentity": os.environ["APPLE_SIGN
 fi
 
 # The target dir comes from Cargo's config: a repo-root .cargo/config.toml
-# (gitignored, e.g. an external SSD) or else src-tauri/target, as on CI. An
+# (gitignored, e.g. an external SSD) or else src-tauri/target. An
 # inherited CARGO_TARGET_DIR would override that config, so drop it, then ask
 # Cargo where the bundle will land.
 unset CARGO_TARGET_DIR

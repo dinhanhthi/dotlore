@@ -122,7 +122,7 @@ cp .cargo/config.toml.example .cargo/config.toml   # gitignored; set the volume 
 mkdir -p /Volumes/Thi2TB/cargo-target/dotlore
 ```
 
-The repo-root `.cargo/config.toml` overrides `target-dir` from `~/.cargo/config.toml`. With the SSD unplugged, builds fail instead of writing to the internal disk. After you replug it, the cache is reused. Without that file (as on CI), builds use `src-tauri/target`. Details and troubleshooting are in [CONTRIBUTING.md](CONTRIBUTING.md#target-on-the-external-ssd).
+The repo-root `.cargo/config.toml` overrides `target-dir` from `~/.cargo/config.toml`. With the SSD unplugged, builds fail instead of writing to the internal disk. After you replug it, the cache is reused. Without that file, builds use `src-tauri/target`. Details and troubleshooting are in [CONTRIBUTING.md](CONTRIBUTING.md#target-on-the-external-ssd).
 
 ### 📦 Build
 
@@ -135,6 +135,8 @@ pnpm build              # → <target>/release/bundle/{macos/Dotlore.app, dmg/*.
 `<target>` is `/Volumes/Thi2TB/cargo-target/dotlore` with the SSD config above, or `src-tauri/target` without it.
 
 The signing key is required because the build also produces signed updater artifacts. `pnpm tauri dev` does not need it.
+
+To build the signed and notarized release bundle without typing any secret (they come from the Keychain), run `pnpm release --expect-version <version> --build-only`. `pnpm release --expect-version <version>` also tags and publishes the release from this Mac. Setup and runbook: [`.github/release-setup.md`](.github/release-setup.md).
 
 ## 🌐 Website
 

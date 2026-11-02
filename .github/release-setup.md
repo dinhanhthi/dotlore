@@ -1,24 +1,50 @@
 # Release setup
 
-Everything `.github/workflows/release.yml` needs in order to publish a signed,
-notarized macOS build. Maintainer reference — you only do this once.
+How to publish a signed, notarized macOS build of Dotlore from your Mac with
+`scripts/release-local.sh` (`pnpm release`). Maintainer reference.
 
 > This lives in `.github/` rather than `docs/` on purpose: `docs/` is gitignored
 > in this repository, so anything written there never reaches a clone. This file
-> is self-sufficient: you can produce all eight secrets from it alone.
+> is self-sufficient: you can set up a Mac for releasing from it alone.
 
 ## How a release happens
 
 1. `/cf-ship` decides the version bump from the commits, writes the
-   `CHANGELOG.md` section, and bumps the version in `src-tauri/Cargo.toml`,
-   `src-tauri/Cargo.lock` and the website badge.
-2. Pushing a `v*` tag triggers `release.yml`.
-3. The workflow runs `scripts/build.sh` — the same script that builds Dotlore on
-   your Mac — with Developer ID signing, App Store Connect notarization and
-   minisign updater signing enabled, then uploads five assets to a GitHub
-   Release: the versioned `.dmg`, a version-less `Dotlore-universal.dmg` alias,
-   `Dotlore.app.tar.gz`, its `.sig`, and `latest.json`.
-4. Installed apps read `latest.json` and offer the update.
+   `CHANGELOG.md` section, bumps the version in `src-tauri/Cargo.toml`,
+   `src-tauri/Cargo.lock` and the website badge, commits and pushes to `main`.
+2. `pnpm release --expect-version X.Y.Z` then, in order:
+   - runs the preflight: `gh` is authenticated, `origin` is
+     `dinhanhthi/dotlore`, `src-tauri/Cargo.toml` is at `X.Y.Z`, `CHANGELOG.md`
+     has a non-empty `## vX.Y.Z` section, you are on a clean `main` equal to
+     `origin/main`, the tag `vX.Y.Z` exists neither locally nor on `origin`, and
+     every one-time setup item below is in place;
+   - runs `scripts/build.sh` — the same script that builds Dotlore day to day —
+     with Developer ID signing, App Store Connect notarization and minisign
+     updater signing enabled;
+   - checks every artifact (see [Verifying a release](#verifying-a-release))
+     and generates `latest.json`;
+   - pushes the lightweight tag `vX.Y.Z`, creates a **draft** release with the
+     changelog section as notes, uploads five assets, then publishes it;
+   - dispatches `pages.yml` so the website shows the new version.
+3. Installed apps read `latest.json` and offer the update.
+
+The five assets: the versioned `.dmg`, a version-less `Dotlore-universal.dmg`
+alias (the website's Download button), `Dotlore.app.tar.gz`, its `.sig`, and
+`latest.json`. Nothing is tagged or published unless the build and every check
+pass.
+
+A full run takes about 25-35 minutes, most of it the universal build and
+Apple's notarization. Run it in its own terminal, or in the background from an
+agent (it outlives a 10-minute command timeout).
+
+Other modes, each with `--expect-version`:
+
+- `--dry-run` — the preflight only.
+- `--build-only` — build and every artifact check, no tag and no publish. Skips
+  the clean-`main` and tag-absent checks, so it works on an already-released
+  version. Leaves `latest.json` next to the bundle and prints the artifact
+  paths.
+- `--publish-only` — resume after the tag push, reusing the built artifacts.
 
 **Dotlore ships stable only.** There is no `-rc` / `-beta` channel, no
 prerelease flag and no channel selector. Every release is served to every
@@ -29,118 +55,161 @@ prereleases, and either would strand every install on the previous version.
 The version lives in **one** place, `src-tauri/Cargo.toml` `[package] version`.
 `src-tauri/tauri.conf.json` deliberately has no `version` key — the bundler
 resolves it from the manifest — and the root `package.json` has no `version`
-field. Do not add one; the workflow's tag check is the single place the tag and
-the manifest are allowed to disagree, and it fails the build when they do.
+field. Do not add one; the script's `--expect-version` check is the single place
+the tag and the manifest are compared, and it refuses to build when they differ.
 
-## Required secrets
+## One-time setup on a Mac
 
-Eight, all of them. Set at
-<https://github.com/dinhanhthi/dotlore/settings/secrets/actions>.
-
-The workflow asserts every one is present before it builds anything, printing
-names and pass/fail only, never values.
+The script reads every secret from the login keychain and `~/.tauri`, passes it
+to `scripts/build.sh` as an environment prefix only, and never prints it. Each
+missing item fails the preflight and names it, most with the command that fixes
+it.
 
 ### Code signing
 
-| Secret                       | What it is                                                     | How to produce it                                                                                                                |
-| ---------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `APPLE_CERTIFICATE`          | Base64 of the Developer ID Application certificate as a `.p12` | Keychain Access → My Certificates → right-click _Developer ID Application_ → Export as `.p12`, then `base64 -i cert.p12 \| pbcopy` |
-| `APPLE_CERTIFICATE_PASSWORD` | The password set while exporting that `.p12`                   | Chosen at export time                                                                                                            |
-| `KEYCHAIN_PASSWORD`          | Any random string                                              | Only ever used for a throwaway keychain inside the CI runner                                                                     |
+The **Developer ID Application** identity
+`Developer ID Application: Anh-Thi Dinh (86H6CNLN4C)` (certificate and private
+key) must be in the login keychain. Check with:
 
-`APPLE_SIGNING_IDENTITY` is deliberately **not** a secret. The workflow reads it
-back out of the certificate it just imported (`security find-identity`, grepping
-`Developer ID Application`), so it cannot drift from the certificate actually in
-use. `scripts/build.sh` then passes it to the bundler as an explicit
-`--config` override rather than relying on whether the environment variable
-outranks `bundle.macOS.signingIdentity` in `tauri.conf.json` — that precedence
-is undocumented, and getting it wrong ships an ad-hoc-signed bundle that looks
-fine in CI and is blocked by Gatekeeper on every user's Mac.
+```bash
+security find-identity -v -p codesigning
+```
 
 > An **Apple Development** certificate is not a substitute. It cannot be
-> distributed, and the workflow refuses it by name rather than shipping it.
+> distributed, and the script checks the bundle's signing authority by name
+> rather than shipping it.
+
+`scripts/build.sh` passes the identity to the bundler as an explicit `--config`
+override rather than relying on whether the environment variable outranks
+`bundle.macOS.signingIdentity` in `tauri.conf.json` — that precedence is
+undocumented, and getting it wrong ships an ad-hoc-signed bundle that Gatekeeper
+blocks on every user's Mac.
+
+There is no provisioning profile. Dotlore declares no restricted entitlements,
+so it needs none — and no entitlements plist either. Hardened runtime is already
+on; only the signing identity changes for a release.
 
 ### Notarization (App Store Connect API key)
 
-| Secret             | What it is                                | How to produce it                                                                                       |
-| ------------------ | ----------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `APPLE_API_ISSUER` | Issuer ID (UUID)                          | App Store Connect → Users and Access → Integrations → App Store Connect API; shown above the keys table |
-| `APPLE_API_KEY`    | Key ID (~10 chars)                        | Same table, _KEY ID_ column                                                                             |
-| `APPLE_API_KEY_P8` | Base64 of the `AuthKey_*.p8` **contents** | `base64 -i AuthKey_XXXXXXXXXX.p8 \| pbcopy`                                                             |
+Key ID `Q76HXMGCWL`. Install its `.p8`:
+
+```bash
+install -d -m 700 ~/.appstoreconnect/private_keys
+install -m 600 <path to AuthKey_Q76HXMGCWL.p8> ~/.appstoreconnect/private_keys/
+```
 
 The `.p8` downloads **once** and Apple will not re-issue it — keep a copy in a
-password manager. `APPLE_API_KEY_PATH`, which Tauri actually reads, is a file
-path the workflow creates from `APPLE_API_KEY_P8`; it is not a secret.
+password manager.
 
-Without these, notarization is silently skipped and Gatekeeper blocks the
-result on every Mac that did not build it.
+Store the Issuer ID (App Store Connect → Users and Access → Integrations → App
+Store Connect API, shown above the keys table) in the keychain. `-w` last makes
+`security` prompt for it, so it never lands on the command line or in shell
+history:
+
+```bash
+security add-generic-password -a "$USER" -s dotlore-notary-issuer -w
+```
+
+Without a working key, notarization does not happen and Gatekeeper blocks the
+result on every Mac that did not build it. The script's stapler and `spctl`
+checks catch that before anything is tagged.
 
 ### Updater signing (minisign)
 
-| Secret                               | What it is                                   | How to produce it                                    |
-| ------------------------------------ | -------------------------------------------- | ---------------------------------------------------- |
-| `TAURI_SIGNING_PRIVATE_KEY`          | The minisign private key, password-encrypted | `pnpm exec tauri signer generate -w ~/.tauri/dotlore.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Its password                                 | Chosen at generation time                            |
+The minisign private key lives at `~/.tauri/dotlore.key`. Store its password in
+the keychain the same way:
+
+```bash
+security add-generic-password -a "$USER" -s dotlore-updater-signing -w
+```
+
+Both items keep the default access list: the `security` tool that created them
+reads them without a prompt, so a release never asks for anything. The cost is
+that any process running as you can do the same, and `~/.tauri/dotlore.key` is
+on the same disk. For a prompt on every read (your login password, twice per
+release, and a background `/cf-ship` run waits for it), create them with
+`-T ""` instead of the default.
 
 > 🚨 **This key can never be rotated.** Its public half is compiled into every
 > shipped build (`src-tauri/tauri.conf.json` → `plugins.updater.pubkey`) and
 > Tauri's updater has no in-band key rotation. Replacing it means every existing
 > install silently stops being able to verify updates and has to be re-downloaded
-> by hand. Keep the private key and its password in a password manager, and
-> **never re-run `signer generate`** for this project.
+> by hand. Keep the private key and its password backed up in a password
+> manager, and **never re-run `tauri signer generate`** for this project. On a
+> new Mac, restore `~/.tauri/dotlore.key` from the backup.
 
 Because it cannot be rotated, a leak is not recoverable by re-signing. Two
 things follow, both already in place:
 
-- The key is exported only for the build step, never for the whole job.
+- The script passes the key only as an environment prefix on the
+  `scripts/build.sh` call, never exported and never on a command line.
 - `scripts/ui-build.sh` scrubs it from the environment before the frontend
   build, so no vite plugin, JS dependency or lifecycle script in a release
   build can read it out of `process.env`. That is the only reason that wrapper
   script exists — do not replace it with a bare `vite build`.
 
-### There is no provisioning profile
+`bundle.createUpdaterArtifacts` is `true`, so a plain `pnpm build` fails without
+`TAURI_SIGNING_PRIVATE_KEY` in the environment. `pnpm release` supplies it;
+`pnpm tauri dev` is unaffected.
 
-Dotlore declares no restricted entitlements, so it needs none — and no
-entitlements plist either. Hardened runtime is already on
-(`codesign -dvv` reports `flags=0x10002(adhoc,runtime)` on a local build); only
-the signing identity changes in CI.
+### Toolchain and GitHub
 
-## Before the first release
+```bash
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+gh auth login
+```
 
-- `pnpm exec tauri signer generate -w ~/.tauri/dotlore.key`, **once, ever**, and
-  put `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` from
-  `~/.tauri/dotlore.key.pub` verbatim.
-- Run the signed build locally before tagging anything. It takes about ten
-  minutes and it is the only thing that de-risks a first tag on a pipeline
-  nothing has ever exercised:
+Both Rust targets are required: without one, `scripts/build.sh` would quietly
+build a single-arch bundle, so the script fails instead.
 
-  ```bash
-  export APPLE_SIGNING_IDENTITY="Developer ID Application: <you> (<TEAMID>)"
-  export APPLE_API_ISSUER=… APPLE_API_KEY=… APPLE_API_KEY_PATH=~/private_keys/AuthKey_….p8
-  export TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/dotlore.key)"
-  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD='…'
-  pnpm build
-  ```
+### First run
 
-  Note that `bundle.createUpdaterArtifacts` is `true`, so **`pnpm build` fails
-  without `TAURI_SIGNING_PRIVATE_KEY` exported** — for you on a machine where
-  you forgot, and for any contributor. `pnpm tauri dev` is unaffected.
+The first run may show keychain prompts (`codesign` using the Developer ID key,
+`security` reading an item). Answer **Always Allow** so later runs are
+unattended.
+
+Rehearse on the version already released, which tags and publishes nothing:
+
+```bash
+pnpm release --expect-version <current version> --build-only
+```
+
+It runs the setup checks first, so a missing item fails in seconds, then proves
+the signing, notarization and updater signing end to end. `--dry-run` checks
+the setup without building, but only for a version not yet tagged: on a released
+version it stops at "tag already exists" before the setup checks. Run it after
+`/cf-ship` has bumped the version, right before the real release:
+
+```bash
+pnpm release --expect-version X.Y.Z --dry-run
+```
 
 ## Verifying a release
 
-`conclusion=success` is not proof the artifacts are usable. A pushed tag is not
-a release, and a green run is not a verified artifact.
+The script asserts all of this before the tag push, and the release state after
+publishing:
+
+- `Info.plist` `CFBundleShortVersionString` is `X.Y.Z`.
+- `lipo -archs` on `Contents/MacOS/dotlore` has both `x86_64` and `arm64`.
+- `codesign` reports `Authority=Developer ID Application: Anh-Thi Dinh (86H6CNLN4C)`.
+- `xcrun stapler validate` passes and `spctl` reports `Notarized Developer ID`.
+- `Dotlore.app.tar.gz` and its `.sig` exist and are non-empty.
+- Exactly one `.dmg`, and its name carries the version.
+- `latest.json` has the version, both `darwin-aarch64` and `darwin-x86_64`
+  (plus `darwin-universal`), signatures that base64-decode to a minisign
+  signature file, and `https` URLs.
+- After publishing: `isDraft` and `isPrerelease` are both false, and GitHub's
+  latest release is the new tag.
+
+A second look, not the gate:
 
 ```bash
-gh run list --workflow=release.yml --limit 3
-
 gh release view <tag> --json isDraft,isPrerelease,assets
 # expect: isDraft false, isPrerelease false, and FIVE assets.
 
 # latest.json must carry a non-empty signature under BOTH darwin keys. An empty
 # one is the silent failure mode of updater signing: the release looks complete
-# and every client refuses the update, possibly for months. The workflow asserts
-# this before the release leaves draft, so this is a second look, not the gate.
+# and every client refuses the update, possibly for months.
 gh release download <tag> -p latest.json -O - | python3 -m json.tool
 
 # On a Mac that has never built this app — mount the dmg, then:
@@ -156,33 +225,25 @@ no sidecar and no CLI.
 Then check in the installed app: the window opens, the menu-bar item appears,
 and **Dotlore → Check for Updates…** reports the right state.
 
-A tag push that prints success is not proof a release started — confirm with
-`git ls-remote --tags origin` and `gh run list`.
-
 ## When a run fails
 
-Nothing is published, so the tag is harmless. **A published tag is never deleted
-and never force-moved** — clients may already have fetched its `latest.json`.
-Which lever applies depends on whether the tagged commit is still correct:
+**A pushed tag is never deleted and never moved**, and **a published release is
+never touched** — clients may already have fetched its `latest.json`. Which
+lever applies depends on how far the run got:
 
-- **Transient failure** — an Apple notarization outage, an expired credential, a
-  runner hiccup — and every file the release depends on is still correct at that
-  commit: `gh run rerun <run-id>`. Nothing moves.
-
-  If the run reached the *Publish the release* step, it created a **draft**
-  release before uploading, and `gh release create` refuses to run twice for one
-  tag. The workflow deletes its own leftover draft on the next run, so the rerun
-  still works — but check with `gh release view <tag> --json isDraft` if it does
-  not, and `gh release delete <tag> --yes` by hand. That deletes the draft only;
-  the tag stays, because `--cleanup-tag` is deliberately not passed.
-- **The fix changes a file the release depends on**, `release.yml` itself most of
-  all: a rerun replays the *broken* workflow, because a run reads its definition
-  from its own ref. The tag would have to move, which is never done unilaterally
-  — stop and ask.
-
-`git push origin v<version>` on an already-pushed, unchanged tag prints
-`Everything up-to-date` and starts **no** run. That is the trap: it reads like a
-retry and is not one.
+- **Before the tag push** (preflight, build or an artifact check failed, or
+  `main` moved during the build): nothing is tagged or published. Fix the
+  cause, commit and push if it needs a code change, and rerun
+  `pnpm release --expect-version X.Y.Z`.
+- **After the tag push** (the script prints
+  `tag vX.Y.Z is pushed; never delete it`): from the tagged commit, resume with
+  `pnpm release --expect-version X.Y.Z --publish-only`. It reruns the artifact
+  checks on the existing build, deletes a leftover **draft** of that tag (never
+  the tag itself), and publishes. If the fix would need a change to the tagged
+  commit, the tag would have to move, which is never done — stop and ask, or
+  ship the fix as the next patch.
+- **The release is published but the website still shows the old version**:
+  `gh workflow run pages.yml --ref main`.
 
 A release that publishes but is broken is fixed **forward** as the next patch,
 never by deleting the previous one. The updater resolves the newest release, so
@@ -193,7 +254,7 @@ users move forward on their own.
 `plugins.updater.requireSignedVersion` is unset, so it defaults to `false`.
 
 **Measured 2026-09-22 against a real signed local build** (Tauri CLI 2.11.4, the
-version `pnpm-lock.yaml` pins and therefore the version CI signs with):
+version `pnpm-lock.yaml` pins and therefore the version releases sign with):
 
 ```
 $ base64 -d < …/Dotlore.app.tar.gz.sig | grep 'trusted comment'
@@ -229,7 +290,17 @@ trusted comment gains `version:`, add `"requireSignedVersion": true` to
 `plugins.updater` and ship it. If it has not, record that here again rather than
 letting the question lapse into an unowned "later".
 
-The release workflow's assert step prints the same trusted comment and states
-whether the flag is safe to enable, so every run re-checks this for free. Once it
-starts saying yes and the flag is on, delete that block rather than printing it
-forever.
+The release script's `latest.json` check prints the same trusted comment and
+states whether the flag is safe to enable, so every run (including
+`--build-only`) re-checks this for free. Once it starts saying yes and the flag
+is on, delete that block rather than printing it forever.
+
+## The old GitHub Actions secrets
+
+Releases used to run in GitHub Actions. Its repository secrets
+(`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
+`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_P8`,
+`TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`) are no longer
+used. They stay in the repository settings only as a rollback path: revert the
+commit that added `scripts/release-local.sh` (it also restores the `pages.yml`
+trigger) to release from CI again.
