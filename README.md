@@ -92,14 +92,11 @@ pnpm format:check
 
 ### Cargo build cache
 
-On each new Mac:
+Rust builds go to an external SSD, not the internal disk: dev, test, clippy, rust-analyzer and `scripts/build.sh`. On each new Mac:
 
-1. Create `~/.cargo/config.toml`:
+1. Create `~/.cargo/config.toml` with the dev profile only (no `target-dir`):
 
    ```toml
-   [build]
-   target-dir = ".cargo/shared-target"
-
    [profile.dev]
    opt-level = 1
    split-debuginfo = "off"
@@ -110,19 +107,17 @@ On each new Mac:
    incremental = false
    ```
 
-2. Delete any old `src-tauri/target` directories.
-3. Run `cargo install cargo-sweep`, then `pnpm sweep:cargo` from time to time.
+2. Point this repo at the SSD:
 
-Why, and what each setting does: [CONTRIBUTING.md](CONTRIBUTING.md#cargo-build-cache).
+   ```sh
+   cp .cargo/config.toml.example .cargo/config.toml   # gitignored; set the volume path if it differs
+   mkdir -p /Volumes/Thi2TB/cargo-target/dotlore
+   ```
 
-This repo is the exception: its Rust builds go to an external SSD, not `~/.cargo/shared-target`. That covers dev, test, clippy, rust-analyzer and `scripts/build.sh`. Set it up once per machine:
+3. Delete any old `src-tauri/target` directory.
+4. Run `cargo install cargo-sweep`, then `pnpm sweep:cargo` from time to time.
 
-```sh
-cp .cargo/config.toml.example .cargo/config.toml   # gitignored; set the volume path if it differs
-mkdir -p /Volumes/Thi2TB/cargo-target/dotlore
-```
-
-The repo-root `.cargo/config.toml` overrides `target-dir` from `~/.cargo/config.toml`. With the SSD unplugged, builds fail instead of writing to the internal disk. After you replug it, the cache is reused. Without that file, builds use `src-tauri/target`. Details and troubleshooting are in [CONTRIBUTING.md](CONTRIBUTING.md#target-on-the-external-ssd).
+With the SSD unplugged, builds fail instead of writing to the internal disk. After you replug it, the cache is reused. Without the repo-root `.cargo/config.toml`, builds use `src-tauri/target`. Why, and troubleshooting: [CONTRIBUTING.md](CONTRIBUTING.md#cargo-build-cache).
 
 ### 📦 Build
 

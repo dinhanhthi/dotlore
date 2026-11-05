@@ -2,9 +2,8 @@
 #
 # Drop Cargo build artifacts that have not been used for N days (default 14).
 # cargo-sweep follows the target directory Cargo is actually using, including
-# a shared target-dir from ~/.cargo/config.toml. One run from this repo is
-# enough once that shared directory is in place; pass a tree to sweep every
-# project under it while targets are still per-project.
+# the external SSD target-dir from the repo-root .cargo/config.toml. Pass a
+# tree to sweep every project under it.
 #
 #   pnpm sweep:cargo
 #   pnpm sweep:cargo -- --dry-run
