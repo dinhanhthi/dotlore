@@ -1,3 +1,9 @@
+## v0.9.5 (2026-11-06)
+
+### Sync
+
+- **Claude and Codex memory now syncs between your Macs.** Each Claude project's `memory/` folder under `~/.claude/projects/`, plus `agent-memory/` and Codex's `memories/`, is tracked; session transcripts stay out. Projects already added pick this up on their next cycle after the update, with no action needed. A folder holding a sensitive file is skipped, and dropping a line from a catalog in Settings opts out of it. Update Dotlore on every Mac: an older version does not read the new lines. [#73eb9687](https://github.com/dinhanhthi/dotlore/commit/73eb9687)
+
 ## v0.9.4 (2026-11-02)
 
 ### Platform
