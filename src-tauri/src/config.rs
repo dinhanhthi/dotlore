@@ -89,6 +89,15 @@ pub struct Config {
     /// gen 1 when that field holds an override, else 0 (see `settings.rs`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings_gens: BTreeMap<String, u64>,
+    /// Last `project::BUILTIN_REV` whose additions this device merged into
+    /// the global overrides. Local, never synced.
+    #[serde(default)]
+    pub builtin_rev: u64,
+    /// Root slug → last `project::BUILTIN_REV` its staging was migrated to.
+    /// A root registered now starts current; a missing slug is a root from
+    /// before builtin revs (rev 0). Local, never synced.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub root_revs: BTreeMap<String, u64>,
 }
 
 impl Config {
@@ -105,6 +114,9 @@ impl Config {
                 let cfg = Config {
                     device_id: random_id()?,
                     device_name: hostname(),
+                    // A new device has no pre-rev overrides to migrate; the
+                    // ones it imports from peers are already current.
+                    builtin_rev: crate::project::BUILTIN_REV,
                     ..Default::default()
                 };
                 cfg.save(home)?;
@@ -344,6 +356,26 @@ mod tests {
         assert!(cfg.max_file_mb.is_none());
         assert!(cfg.max_seed_folder_mb.is_none());
         assert!(cfg.sensitive_patterns.is_none());
+    }
+
+    #[test]
+    fn a_new_config_starts_at_the_current_builtin_rev() {
+        let td = TempDir::new().unwrap();
+        let home = td.path();
+        let cfg = Config::load(home).unwrap();
+        assert_eq!(cfg.builtin_rev, crate::project::BUILTIN_REV);
+        assert_eq!(
+            Config::load(home).unwrap().builtin_rev,
+            crate::project::BUILTIN_REV
+        );
+
+        // A config from before builtin revs still migrates.
+        fs::write(
+            home.join("config.json"),
+            br#"{"device_id":"ab","device_name":"m","provider_dir":null,"roots":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(Config::load(home).unwrap().builtin_rev, 0);
     }
 
     #[test]

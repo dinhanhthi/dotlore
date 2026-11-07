@@ -659,8 +659,10 @@ impl Engine {
 
     /// Import the global settings every other device published, then make
     /// sure this device's own snapshot in the cloud matches its local ones.
-    /// Returns whether local config changed. Existing roots are never touched:
-    /// imported patterns and never-list only apply to roots added later.
+    /// Returns whether local config changed. Imported patterns and never-list
+    /// only apply to roots added later, with one exception: an existing root
+    /// tracks the [`project::BUILTIN_ADDITIONS`] lines its effective catalog
+    /// holds (see [`Engine::migrate_root`]).
     pub fn sync_settings(&mut self) -> Result<bool> {
         let g = config::lock(&self.home)?;
         self.reload(&g)?;
@@ -750,6 +752,7 @@ impl Engine {
             && self.cloud().slug_dir(slug)?.join("manifest.json").is_file();
         if let Some(removed) = tracked {
             self.cfg.roots.retain(|r| r.slug != slug);
+            self.cfg.root_revs.remove(slug);
             if is_catalog_agent(&self.home_dir, &removed.path)
                 && !self
                     .cfg
@@ -1147,29 +1150,213 @@ impl Engine {
         let mut file = repo.project_file()?;
         if root_present(&root.path) {
             let patterns = project::patterns_for(&root, &self.home_dir, &self.cfg);
-            let ignore = repo.ignore_text(&self.home_dir);
-            let limits = Limits::from_config(&self.cfg);
-            let (seeded, _) = project::seed(&root.path, &patterns, &ignore, limits)?;
-            let tracked = file.tracked();
-            let mut gen = file.entries.values().map(|e| e.gen).max().unwrap_or(0);
-            for key in seeded.entries.into_keys() {
-                if file.entries.contains_key(&key) || tracked.contains_rel(Path::new(&key)) {
-                    continue;
-                }
-                gen = gen.saturating_add(1);
-                file.entries.insert(
-                    key,
-                    project::EntryRecord {
-                        gen,
-                        state: State::Tracked,
-                    },
-                );
-            }
+            self.track_new_matches(&root, &repo, &mut file, &patterns)?;
             project::write(&repo.staging, &file)?;
         }
         let status = self.run_cycle(&cloud, &root, FetchMode::Normal);
         self.settle(&g, slug, &status)?;
         Ok(status)
+    }
+
+    /// Add to `file` every path `patterns` seed in `root` that the list does
+    /// not already hold. A key the user untracked keeps its tombstone.
+    /// Returns whether anything was added.
+    fn track_new_matches(
+        &self,
+        root: &Root,
+        repo: &Repo,
+        file: &mut project::ProjectFile,
+        patterns: &[String],
+    ) -> Result<bool> {
+        let ignore = repo.ignore_text(&self.home_dir);
+        let limits = Limits::from_config(&self.cfg);
+        let (seeded, _) = project::seed(&root.path, patterns, &ignore, limits)?;
+        let tracked = file.tracked();
+        let mut gen = file.entries.values().map(|e| e.gen).max().unwrap_or(0);
+        let mut added = false;
+        for key in seeded.entries.into_keys() {
+            if file.entries.contains_key(&key) || tracked.contains_rel(Path::new(&key)) {
+                continue;
+            }
+            gen = gen.saturating_add(1);
+            file.entries.insert(
+                key,
+                project::EntryRecord {
+                    gen,
+                    state: State::Tracked,
+                },
+            );
+            added = true;
+        }
+        Ok(added)
+    }
+
+    /// Once per device, at startup: give the global overrides what each newer
+    /// [`project::BUILTIN_REV`] added, so roots added later get it too. An
+    /// overridden catalog gets the new builtin lines appended; a
+    /// `default_ignore` override gets the never-list line rewritten. A line the
+    /// user removes afterwards stays removed, and no root auto-tracks it.
+    /// Existing roots are brought up to date by [`Engine::migrate_root`].
+    pub fn migrate_builtins(&mut self) -> Result<()> {
+        let g = config::lock(&self.home)?;
+        self.reload(&g)?;
+        let from = self.cfg.builtin_rev;
+        if from >= project::BUILTIN_REV {
+            return Ok(());
+        }
+        for (rev, catalog, lines) in project::BUILTIN_ADDITIONS {
+            if *rev <= from {
+                continue;
+            }
+            let over = if *catalog == "projects" {
+                self.cfg.default_patterns.clone()
+            } else {
+                self.cfg.agent_patterns.get(*catalog).cloned()
+            };
+            let Some(mut over) = over else { continue };
+            let before_len = over.len();
+            for line in lines.iter() {
+                if !over.iter().any(|o| o == line) {
+                    over.push((*line).to_string());
+                }
+            }
+            if over.len() == before_len {
+                continue;
+            }
+            // An override equal to the old builtin now equals the new one.
+            match (*catalog, settings::catalog_override(catalog, over)) {
+                ("projects", stored) => self.cfg.default_patterns = stored,
+                (id, Some(stored)) => {
+                    self.cfg.agent_patterns.insert(id.to_string(), stored);
+                }
+                (id, None) => {
+                    self.cfg.agent_patterns.remove(id);
+                }
+            }
+            let key = format!("patterns.{catalog}");
+            let before = settings::gen_of(&self.cfg, &key);
+            self.save_setting(&g, &key, before)?;
+        }
+        let migrated = self
+            .cfg
+            .default_ignore
+            .as_deref()
+            .and_then(project::migrate_never_ignore);
+        if let Some(text) = migrated {
+            self.cfg.default_ignore = settings::ignore_override(text);
+            let before = settings::gen_of(&self.cfg, "default_ignore");
+            self.save_setting(&g, "default_ignore", before)?;
+        }
+        self.cfg.builtin_rev = project::BUILTIN_REV;
+        self.save(&g)
+    }
+
+    /// Bring `root` up to the builtins before a cycle, which then commits and
+    /// publishes the change.
+    ///
+    /// Once per root, while `Config::root_revs` holds a rev below
+    /// [`project::BUILTIN_REV`] (a root from before revs): rewrite the
+    /// pre-rev-1 never-list line of a `claude` root, then record the rev. A
+    /// root added or linked later is current from the start, so a never-list
+    /// the user set is never rewritten.
+    ///
+    /// Every cycle: track each [`project::BUILTIN_ADDITIONS`] line of its
+    /// catalog that the effective catalog still holds (removing the line is
+    /// the opt-out), that exists and has no key yet; a folder that appears
+    /// later (`~/.codex/memories/`) is picked up on the next cycle, and a
+    /// tombstone is never re-tracked. Unlike a manual track there is no
+    /// warning to confirm, so a folder holding a Secret file is skipped and
+    /// left for the user to track by hand. A current root with nothing to
+    /// add runs no `git`.
+    ///
+    /// Waits while the root is missing or its first history has not arrived:
+    /// writing then would fork the history its peers publish.
+    fn migrate_root(&mut self, g: &HomeLock, root: &Root) -> Result<()> {
+        if root.initializing || !root_present(&root.path) {
+            return Ok(());
+        }
+        let current =
+            self.cfg.root_revs.get(&root.slug).copied().unwrap_or(0) >= project::BUILTIN_REV;
+        let staging = self.home.join("repos").join(&root.slug);
+        let ignore_path = staging.join(project::IGNORE_FILE);
+        let catalog = project::catalog_for(root, &self.home_dir);
+        // Only Claude has `projects/`; other roots would only mint a commit.
+        let new_ignore = if !current && catalog == "claude" {
+            fs::read_to_string(&ignore_path)
+                .ok()
+                .and_then(|t| project::migrate_never_ignore(&t))
+        } else {
+            None
+        };
+        let mut file = project::read(&staging)?;
+        let effective = project::patterns_for(root, &self.home_dir, &self.cfg);
+        let mut patterns: Vec<String> = project::BUILTIN_ADDITIONS
+            .iter()
+            .filter(|(_, id, _)| *id == catalog)
+            .flat_map(|(_, _, lines)| lines.iter())
+            .filter(|l| effective.iter().any(|e| e == **l))
+            .filter(|l| !file.entries.contains_key(**l))
+            .filter(|l| fs::symlink_metadata(root.path.join(l.trim_end_matches('/'))).is_ok())
+            .map(|l| (*l).to_string())
+            .collect();
+        if current && patterns.is_empty() {
+            return Ok(());
+        }
+        // Plain file reads up to `has_main`: a current root whose additions
+        // are all refused must not pay for a `git` call every cycle.
+        let repo = self.repo_for(root)?;
+        if !patterns.is_empty() {
+            let never = new_ignore
+                .clone()
+                .unwrap_or_else(|| repo.never_ignore_text());
+            let ignore = repo::join_ignore(&never, &repo.project_ignore_text());
+            let limits = Limits::from_config(&self.cfg);
+            let (seeded, _) = project::seed(&root.path, &patterns, &ignore, limits)?;
+            let matcher = self.sensitive_matcher();
+            patterns.retain(|key| {
+                if !seeded.entries.contains_key(key) {
+                    return false;
+                }
+                if !key.ends_with('/') {
+                    return true;
+                }
+                let rel = Path::new(key.trim_end_matches('/'));
+                match secret_descendants(&root.path, rel, &ignore, limits, &matcher) {
+                    Ok((secrets, _)) if secrets.is_empty() => true,
+                    Ok((secrets, _)) => {
+                        eprintln!(
+                            "dotlore: {}: not tracking {key}, it holds secrets: {}",
+                            root.slug,
+                            secrets.join(", ")
+                        );
+                        false
+                    }
+                    Err(e) => {
+                        eprintln!("dotlore: {}: checking {key}: {e:#}", root.slug);
+                        false
+                    }
+                }
+            });
+        }
+        if current && patterns.is_empty() {
+            return Ok(());
+        }
+        if !repo.has_main() {
+            return Ok(());
+        }
+        if let Some(text) = new_ignore {
+            fs::write(&ignore_path, text)?;
+        }
+        if !patterns.is_empty() && self.track_new_matches(root, &repo, &mut file, &patterns)? {
+            project::write(&repo.staging, &file)?;
+        }
+        if !current {
+            self.cfg
+                .root_revs
+                .insert(root.slug.clone(), project::BUILTIN_REV);
+            self.save(g)?;
+        }
+        Ok(())
     }
 
     /// Effective sensitive patterns (`None` in config → `SECRET_PATTERNS`).
@@ -1928,6 +2115,10 @@ impl Engine {
 
     fn sync_root_locked(&mut self, g: &HomeLock, cloud: &Cloud, slug: &str) -> Result<RootStatus> {
         let root = self.root_cfg(slug)?;
+        // Best-effort: a failure here must not stop the root's sync.
+        if let Err(e) = self.migrate_root(g, &root) {
+            eprintln!("dotlore: migrate {slug}: {e:#}");
+        }
         let status = self.run_cycle(cloud, &root, FetchMode::Normal);
         self.settle(g, slug, &status)?;
         Ok(status)
@@ -2222,6 +2413,10 @@ impl Engine {
             .dismissed_agents
             .retain(|p| !same_agent_path(p, &root.path));
         self.cfg.dismissed_slugs.retain(|s| *s != root.slug);
+        // Added or linked now: it starts from the current builtins.
+        self.cfg
+            .root_revs
+            .insert(root.slug.clone(), project::BUILTIN_REV);
         self.cfg.roots.push(root);
         self.save(g)
     }
@@ -3343,6 +3538,284 @@ mod tests {
         assert!(tracked.is_explicit(Path::new("custom.md")));
         assert!(!tracked.is_explicit(Path::new("settings.json")));
         assert!(cloud_of(&a).read_manifest("claude-agent").unwrap().is_agent);
+    }
+
+    /// Device `a` with `~/.claude` tracked as `slug` as a pre-rev-1 app left
+    /// it: old `/projects/` never-list line, no `projects/` entry,
+    /// `agent-memory/` untracked, `builtin_rev` 0, no `root_revs` entry.
+    /// Committed without a cycle, which would migrate it.
+    fn pre_rev1_claude(provider: &Path, slug: &str) -> (Dev, TempDir) {
+        let mut a = device(provider, 'a');
+        let user_home = TempDir::new().unwrap();
+        a.engine.home_dir = user_home.path().canonicalize().unwrap();
+        let claude = a.engine.home_dir.join(".claude");
+        for (rel, body) in [
+            ("CLAUDE.md", "c\n"),
+            ("projects/-Users-a-p/memory/MEMORY.md", "m\n"),
+            ("projects/-Users-a-p/s1.jsonl", "{}\n"),
+            ("agent-memory/r/MEMORY.md", "r\n"),
+        ] {
+            let p = claude.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, body).unwrap();
+        }
+        a.engine.add_root(&claude, Some(slug)).unwrap();
+        let mut cfg = Config::load(a.home.path()).unwrap();
+        cfg.root_revs.remove(slug);
+        cfg.save(a.home.path()).unwrap();
+        a.engine.cfg.root_revs.remove(slug);
+        let staging = a.home.path().join("repos").join(slug);
+        let ignore = staging.join(crate::project::IGNORE_FILE);
+        let text = fs::read_to_string(&ignore).unwrap().replace(
+            "/projects/*\n!/projects/-*/\n/projects/*/*\n!/projects/*/memory/\n",
+            "/projects/\n",
+        );
+        fs::write(&ignore, text).unwrap();
+        let mut file = crate::project::read(&staging).unwrap();
+        file.entries.remove("projects/");
+        file.entries.get_mut("agent-memory/").unwrap().state = crate::project::State::Removed;
+        crate::project::write(&staging, &file).unwrap();
+        let root = a.engine.root_cfg(slug).unwrap();
+        let home_dir = a.engine.home_dir.clone();
+        a.engine
+            .repo_for(&root)
+            .unwrap()
+            .commit_local(false, &home_dir)
+            .unwrap();
+        assert_eq!(Config::load(a.home.path()).unwrap().builtin_rev, 0);
+        (a, user_home)
+    }
+
+    #[test]
+    fn an_existing_claude_root_tracks_its_memory_on_its_next_cycle() {
+        let provider = TempDir::new().unwrap();
+        let (mut a, _user) = pre_rev1_claude(provider.path(), "home-claude");
+        let staging = a.home.path().join("repos/home-claude");
+        let git = crate::git::Git::new(staging.clone(), "n", &"a".repeat(32));
+        assert!(!git
+            .ok(&["show", "HEAD:.dotloreproject"])
+            .unwrap()
+            .contains("projects/"));
+
+        a.engine.sync_root("home-claude").unwrap();
+        let ignore = git.ok(&["show", "HEAD:.dotloreignore"]).unwrap();
+        assert!(ignore.contains("\n!/projects/*/memory/\n"), "{ignore}");
+        assert!(!ignore.lines().any(|l| l == "/projects/"));
+        let file = crate::project::read(&staging).unwrap();
+        assert_eq!(
+            file.entries["projects/"].state,
+            crate::project::State::Tracked
+        );
+        assert_eq!(
+            file.entries["agent-memory/"].state,
+            crate::project::State::Removed,
+            "a tombstone is never re-tracked"
+        );
+        assert_eq!(
+            rels(&a.engine.tracked_files("home-claude").unwrap()),
+            ["CLAUDE.md", "projects/-Users-a-p/memory/MEMORY.md"]
+        );
+        assert!(git
+            .ok(&["ls-files"])
+            .unwrap()
+            .lines()
+            .any(|l| l == "projects/-Users-a-p/memory/MEMORY.md"));
+        assert_eq!(
+            Config::load(a.home.path()).unwrap().root_revs["home-claude"],
+            crate::project::BUILTIN_REV
+        );
+
+        // Current now: another cycle mints nothing.
+        let before = git.ok(&["rev-parse", "HEAD"]).unwrap();
+        a.engine.sync_root("home-claude").unwrap();
+        assert_eq!(git.ok(&["rev-parse", "HEAD"]).unwrap(), before);
+    }
+
+    #[test]
+    fn an_overridden_catalog_still_gets_the_new_builtin_lines() {
+        let provider = TempDir::new().unwrap();
+        let (mut a, _user) = pre_rev1_claude(provider.path(), "home-claude");
+        a.engine
+            .set_pattern_catalog("claude", vec!["CLAUDE.md".into()])
+            .unwrap();
+        a.engine
+            .set_default_ignore("/auth.json\n/projects/\n".into())
+            .unwrap();
+        let gen = settings::gen_of(&Config::load(a.home.path()).unwrap(), "patterns.claude");
+
+        a.engine.migrate_builtins().unwrap();
+        let cfg = Config::load(a.home.path()).unwrap();
+        assert_eq!(cfg.builtin_rev, crate::project::BUILTIN_REV);
+        assert_eq!(
+            cfg.agent_patterns["claude"],
+            ["CLAUDE.md", "agent-memory/", "projects/"]
+        );
+        assert!(
+            settings::gen_of(&cfg, "patterns.claude") > gen,
+            "the change syncs"
+        );
+        assert_eq!(
+            cfg.default_ignore.as_deref(),
+            Some("/auth.json\n/projects/*\n!/projects/-*/\n/projects/*/*\n!/projects/*/memory/\n")
+        );
+
+        // Once per device: a line removed afterwards stays removed.
+        a.engine
+            .set_pattern_catalog("claude", vec!["CLAUDE.md".into()])
+            .unwrap();
+        a.engine.migrate_builtins().unwrap();
+        let cfg = Config::load(a.home.path()).unwrap();
+        assert_eq!(cfg.agent_patterns["claude"], ["CLAUDE.md"]);
+
+        // Removing the line is the opt-out: the existing root migrates its
+        // never-list but does not track `projects/`.
+        a.engine.sync_root("home-claude").unwrap();
+        assert_eq!(
+            rels(&a.engine.tracked_files("home-claude").unwrap()),
+            ["CLAUDE.md"]
+        );
+        let ignore =
+            fs::read_to_string(a.home.path().join("repos/home-claude/.dotloreignore")).unwrap();
+        assert!(!ignore.lines().any(|l| l == "/projects/"), "{ignore}");
+    }
+
+    /// A new Mac joining an existing setup imports the peers' settings
+    /// before its first `migrate_builtins`: a fresh config starts current, so
+    /// a line the user removed everywhere is not appended back and synced.
+    #[test]
+    fn a_new_device_keeps_an_imported_opt_out_of_a_builtin_line() {
+        let provider = TempDir::new().unwrap();
+        let mut peer = device(provider.path(), 'b');
+        let opted_out: Vec<String> = lines_owned(crate::project::builtin_lines("claude").unwrap())
+            .into_iter()
+            .filter(|l| l != "projects/")
+            .collect();
+        peer.engine
+            .set_pattern_catalog("claude", opted_out.clone())
+            .unwrap();
+        peer.engine.sync_settings().unwrap();
+
+        let fresh = TempDir::new().unwrap();
+        configure_provider(fresh.path(), fresh.path(), provider.path()).unwrap();
+        let imported = Config::load(fresh.path()).unwrap();
+        assert_eq!(imported.agent_patterns["claude"], opted_out);
+        let gen = settings::gen_of(&imported, "patterns.claude");
+
+        let mut engine = Engine::new(fresh.path(), fresh.path(), imported).unwrap();
+        engine.migrate_builtins().unwrap();
+        let cfg = Config::load(fresh.path()).unwrap();
+        assert_eq!(cfg.builtin_rev, crate::project::BUILTIN_REV);
+        assert_eq!(cfg.agent_patterns.get("claude"), Some(&opted_out));
+        assert_eq!(settings::gen_of(&cfg, "patterns.claude"), gen);
+    }
+
+    #[test]
+    fn a_root_added_after_the_upgrade_keeps_its_user_set_never_list() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let user_home = TempDir::new().unwrap();
+        a.engine.home_dir = user_home.path().canonicalize().unwrap();
+        let claude = a.engine.home_dir.join(".claude");
+        for rel in ["CLAUDE.md", "projects/-Users-a-p/memory/MEMORY.md"] {
+            let p = claude.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "x\n").unwrap();
+        }
+        a.engine
+            .set_default_ignore("/auth.json\n/projects/\n".into())
+            .unwrap();
+        a.engine.add_root(&claude, Some("home-claude")).unwrap();
+        a.engine.sync_root("home-claude").unwrap();
+
+        let ignore =
+            fs::read_to_string(a.home.path().join("repos/home-claude/.dotloreignore")).unwrap();
+        assert!(ignore.lines().any(|l| l == "/projects/"), "{ignore}");
+        assert_eq!(
+            rels(&a.engine.tracked_files("home-claude").unwrap()),
+            ["CLAUDE.md"]
+        );
+    }
+
+    /// Writing before a root's first history arrives would fork it: an
+    /// initializing root, or one whose staging has no `main`, is left as is.
+    #[test]
+    fn a_root_without_its_history_is_not_migrated() {
+        let provider = TempDir::new().unwrap();
+        let (mut a, _user) = pre_rev1_claude(provider.path(), "home-claude");
+        let staging = a.home.path().join("repos/home-claude");
+        let read = |name: &str| fs::read_to_string(staging.join(name)).unwrap();
+        let (ignore, project) = (read(".dotloreignore"), read(".dotloreproject"));
+        let mut root = a.engine.root_cfg("home-claude").unwrap();
+
+        let g = config::lock(a.home.path()).unwrap();
+        root.initializing = true;
+        a.engine.migrate_root(&g, &root).unwrap();
+        root.initializing = false;
+        crate::git::Git::new(staging.clone(), "n", &"a".repeat(32))
+            .ok(&["update-ref", "-d", "refs/heads/main"])
+            .unwrap();
+        a.engine.migrate_root(&g, &root).unwrap();
+
+        assert_eq!(read(".dotloreignore"), ignore);
+        assert_eq!(read(".dotloreproject"), project);
+        assert!(!a.engine.cfg.root_revs.contains_key("home-claude"));
+        assert!(!Config::load(a.home.path())
+            .unwrap()
+            .root_revs
+            .contains_key("home-claude"));
+    }
+
+    #[test]
+    fn an_override_equal_to_the_old_builtin_clears_after_migrating() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let old_codex: Vec<String> = lines_owned(crate::project::builtin_lines("codex").unwrap())
+            .into_iter()
+            .filter(|l| l != "memories/")
+            .collect();
+        a.engine.set_pattern_catalog("codex", old_codex).unwrap();
+        assert!(Config::load(a.home.path())
+            .unwrap()
+            .agent_patterns
+            .contains_key("codex"));
+
+        a.engine.migrate_builtins().unwrap();
+        let cfg = Config::load(a.home.path()).unwrap();
+        assert!(!cfg.agent_patterns.contains_key("codex"), "{cfg:?}");
+    }
+
+    #[test]
+    fn a_builtin_folder_that_appears_later_is_tracked_on_the_next_cycle() {
+        let provider = TempDir::new().unwrap();
+        let mut a = device(provider.path(), 'a');
+        let user_home = TempDir::new().unwrap();
+        a.engine.home_dir = user_home.path().canonicalize().unwrap();
+        let codex = a.engine.home_dir.join(".codex");
+        fs::create_dir_all(&codex).unwrap();
+        fs::write(codex.join("AGENTS.md"), "a\n").unwrap();
+        a.engine.add_root(&codex, Some("home-codex")).unwrap();
+        a.engine.sync_root("home-codex").unwrap();
+        assert_eq!(
+            rels(&a.engine.tracked_files("home-codex").unwrap()),
+            ["AGENTS.md"]
+        );
+
+        fs::create_dir_all(codex.join("memories")).unwrap();
+        fs::write(codex.join("memories/MEMORY.md"), "m\n").unwrap();
+        // A secret inside skips the folder: no warning was shown for it.
+        fs::write(codex.join("memories/auth.json"), "{}\n").unwrap();
+        a.engine.sync_root("home-codex").unwrap();
+        assert_eq!(
+            rels(&a.engine.tracked_files("home-codex").unwrap()),
+            ["AGENTS.md"]
+        );
+
+        fs::remove_file(codex.join("memories/auth.json")).unwrap();
+        a.engine.sync_root("home-codex").unwrap();
+        assert_eq!(
+            rels(&a.engine.tracked_files("home-codex").unwrap()),
+            ["AGENTS.md", "memories/MEMORY.md"]
+        );
     }
 
     #[test]

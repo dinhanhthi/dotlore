@@ -183,9 +183,20 @@ pub const AGENT_PATTERNS: &[(&str, &[&str])] = &[
             "output-styles/",
             "workflows/",
             "themes/",
+            "agent-memory/",
+            "projects/",
         ],
     ),
-    ("codex", &["config.toml", "AGENTS.md", "rules/", "prompts/"]),
+    (
+        "codex",
+        &[
+            "config.toml",
+            "AGENTS.md",
+            "rules/",
+            "prompts/",
+            "memories/",
+        ],
+    ),
     (
         "cursor",
         &[
@@ -299,7 +310,10 @@ pub const DEFAULT_NEVER_IGNORE: &str = "\
 /.credentials.json
 /auth.json
 /.claude.json
-/projects/
+/projects/*
+!/projects/-*/
+/projects/*/*
+!/projects/*/memory/
 /sessions/
 /history.jsonl
 /file-history/
@@ -344,6 +358,49 @@ node_modules/
 __pycache__/
 .venv/
 ";
+
+/// Version of the builtin catalogs and never-list. A device whose
+/// `Config::builtin_rev` is lower runs `Engine::migrate_builtins` at startup
+/// (global overrides); a root whose `Config::root_revs` entry is lower gets
+/// its never-list migrated once, by `Engine::migrate_root` before a cycle.
+/// Rev 1: Claude `projects/` (only `*/memory/` survives the never-list) and
+/// `agent-memory/`, Codex `memories/`.
+pub const BUILTIN_REV: u64 = 1;
+
+/// Catalog lines added by each builtin rev, so existing roots track them.
+/// Each line is a seed key (`projects/`), not a glob.
+pub const BUILTIN_ADDITIONS: &[(u64, &str, &[&str])] = &[
+    (1, "claude", &["agent-memory/", "projects/"]),
+    (1, "codex", &["memories/"]),
+];
+
+/// The never-list line rev 1 replaced, and what replaces it: Claude's
+/// per-project folders (named after an absolute path, so they start with
+/// `-` on macOS and Linux; Windows' `C--…` names would need their own line)
+/// stay ignored except their `memory/`.
+const OLD_PROJECTS_IGNORE: &str = "/projects/";
+const PROJECTS_IGNORE: &str = "/projects/*\n!/projects/-*/\n/projects/*/*\n!/projects/*/memory/";
+
+/// `text` with the exact pre-rev-1 `/projects/` line replaced by the
+/// memory carve-out, or `None` when it has no such line.
+pub fn migrate_never_ignore(text: &str) -> Option<String> {
+    if !text.lines().any(|l| l == OLD_PROJECTS_IGNORE) {
+        return None;
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        if line == OLD_PROJECTS_IGNORE {
+            out.extend(PROJECTS_IGNORE.lines());
+        } else {
+            out.push(line);
+        }
+    }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some(joined)
+}
 
 /// Size ceilings. Defaults live here so `seed` compiles; T3.7 enforces them.
 #[derive(Clone, Copy, Debug)]
@@ -439,17 +496,7 @@ pub fn catalog_label(catalog: &str) -> Option<&'static str> {
 /// an empty list. A missing key uses [`builtin_lines`].
 pub fn patterns_for(root: &config::Root, home_dir: &Path, cfg: &Config) -> Vec<String> {
     if root.is_agent(home_dir) {
-        let key = root
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.trim_start_matches('.'))
-            .unwrap_or("");
-        let catalog = if AGENT_PATTERNS.iter().any(|(id, _)| *id == key) {
-            key
-        } else {
-            "other"
-        };
+        let catalog = catalog_for(root, home_dir);
         if let Some(patterns) = cfg.agent_patterns.get(catalog) {
             return patterns.clone();
         }
@@ -458,6 +505,25 @@ pub fn patterns_for(root: &config::Root, home_dir: &Path, cfg: &Config) -> Vec<S
     match &cfg.default_patterns {
         Some(p) => p.clone(),
         None => owned(DEFAULT_PATTERNS),
+    }
+}
+
+/// Catalog id for `root`: `projects` for a project folder, the agent key
+/// when [`AGENT_PATTERNS`] has it, else `other`.
+pub fn catalog_for<'a>(root: &'a config::Root, home_dir: &Path) -> &'a str {
+    if !root.is_agent(home_dir) {
+        return "projects";
+    }
+    let key = root
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.trim_start_matches('.'))
+        .unwrap_or("");
+    if AGENT_PATTERNS.iter().any(|(id, _)| *id == key) {
+        key
+    } else {
+        "other"
     }
 }
 
@@ -471,7 +537,8 @@ fn owned(patterns: &[&str]) -> Vec<String> {
 /// matches the trailing slash, no component is a symlink, and the ignore
 /// matcher (including ancestor rules) does not exclude it. A directory
 /// whose ignore-aware size exceeds `limits.max_seed_folder_bytes` is
-/// returned in `Skipped` and not seeded.
+/// returned in `Skipped` and not seeded. `projects/` is seeded only when the
+/// ignore keeps its session transcripts out (see [`transcripts_ignored`]).
 pub fn seed(
     root: &Path,
     patterns: &[String],
@@ -485,6 +552,9 @@ pub fn seed(
         let Some(key) = accept_pattern(root, pattern, &ignore)? else {
             continue;
         };
+        if key == "projects/" && !transcripts_ignored(&ignore) {
+            continue;
+        }
         if key.ends_with('/') {
             let rel = Path::new(key.trim_end_matches('/'));
             let measured = crate::mirror::measure_tree(root, rel, ignore_text, limits)?;
@@ -505,6 +575,18 @@ pub fn seed(
         );
     }
     Ok((file, skipped))
+}
+
+/// True when `ignore` keeps Claude's session transcripts out: `projects/` is
+/// only safe to track when the never-list carries the `*/memory/` carve-out
+/// (or anything stricter), checked by what it matches, not by its text.
+fn transcripts_ignored(ignore: &Gitignore) -> bool {
+    ignore
+        .matched_path_or_any_parents("projects/-probe/probe.jsonl", false)
+        .is_ignore()
+        && ignore
+            .matched_path_or_any_parents("projects/-probe/probe", true)
+            .is_ignore()
 }
 
 fn build_ignore(root: &Path, ignore_text: &str) -> Result<Gitignore> {
@@ -1541,7 +1623,12 @@ mod tests {
             !keys.iter().any(|k| k.starts_with("plugins")),
             "claude patterns no longer track plugins/: {keys:?}"
         );
-        assert!(!keys.iter().any(|k| k.starts_with("projects")));
+        assert!(
+            !keys
+                .iter()
+                .any(|k| k.starts_with("projects") && k != "projects/"),
+            "{keys:?}"
+        );
 
         let staged = staged_files(&claude, DEFAULT_NEVER_IGNORE);
         assert!(staged.contains(&"plugins/installed_plugins.json".into()));
@@ -1553,6 +1640,91 @@ mod tests {
         );
         assert!(!staged.iter().any(|p| p.starts_with("projects/")));
         assert!(!staged.iter().any(|p| p.starts_with("chats/")));
+    }
+
+    #[test]
+    fn claude_projects_sync_only_their_memory_folders() {
+        let td = tempfile::TempDir::new().unwrap();
+        let home = td.path();
+        let claude = home.join(".claude");
+        put(&claude.join("projects/-Users-a-p/memory/MEMORY.md"), "m");
+        put(&claude.join("projects/-Users-a-p/memory/note.md"), "n");
+        put(&claude.join("projects/-Users-a-p/memory/sub/deep.md"), "d");
+        put(
+            &claude.join("projects/-Users-a-p/s1.jsonl"),
+            &"x".repeat(64),
+        );
+        put(
+            &claude.join("projects/-Users-a-p/s1/subagents/a.jsonl"),
+            "{}",
+        );
+        put(&claude.join("projects/-Users-a-p/s1/memory/x.md"), "nested");
+        put(&claude.join("projects/-Users-a-q/s2.jsonl"), "{}");
+        put(&claude.join("projects/top.json"), "{}");
+        put(&claude.join("agent-memory/reviewer/MEMORY.md"), "r");
+
+        let root = agent_root(home, ".claude");
+        let pats = patterns_for(&root, home, &crate::config::Config::default());
+        // The transcripts alone exceed the seed limit; the ignore-aware size
+        // must count only the memory files.
+        let limits = Limits {
+            max_seed_folder_bytes: 16,
+            ..Limits::default()
+        };
+        let (file, skipped) = seed(&claude, &pats, DEFAULT_NEVER_IGNORE, limits).unwrap();
+        let keys = tracked_keys(&file);
+        assert!(keys.contains(&"projects/".into()), "{keys:?} {skipped:?}");
+        assert!(keys.contains(&"agent-memory/".into()), "{keys:?}");
+        // Without the carve-out every transcript would sync: never seeded.
+        for ignore in ["", "/projects/x/\n"] {
+            let (file, _) = seed(&claude, &pats, ignore, Limits::default()).unwrap();
+            assert!(
+                !tracked_keys(&file).contains(&"projects/".into()),
+                "{ignore:?}"
+            );
+        }
+
+        let mut staged = staged_files(&claude, DEFAULT_NEVER_IGNORE);
+        staged.retain(|p| p.starts_with("projects/"));
+        staged.sort();
+        assert_eq!(
+            staged,
+            vec![
+                "projects/-Users-a-p/memory/MEMORY.md".to_string(),
+                "projects/-Users-a-p/memory/note.md".into(),
+                "projects/-Users-a-p/memory/sub/deep.md".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_tracks_its_memories_folder() {
+        let td = tempfile::TempDir::new().unwrap();
+        let home = td.path();
+        let codex = home.join(".codex");
+        put(&codex.join("memories/MEMORY.md"), "m");
+        let root = agent_root(home, ".codex");
+        let pats = patterns_for(&root, home, &crate::config::Config::default());
+        let (file, _) = seed(&codex, &pats, DEFAULT_NEVER_IGNORE, Limits::default()).unwrap();
+        assert!(tracked_keys(&file).contains(&"memories/".into()));
+    }
+
+    #[test]
+    fn migrate_never_ignore_replaces_only_the_exact_projects_line() {
+        let old = "/auth.json\n/projects/\n/sessions/\n";
+        let new = migrate_never_ignore(old).unwrap();
+        assert_eq!(
+            new,
+            "/auth.json\n/projects/*\n!/projects/-*/\n/projects/*/*\n!/projects/*/memory/\n/sessions/\n"
+        );
+        assert_eq!(migrate_never_ignore(&new), None, "idempotent");
+        assert_eq!(migrate_never_ignore("projects/\n/projects/x/\n"), None);
+        assert_eq!(migrate_never_ignore(DEFAULT_NEVER_IGNORE), None);
+        assert_eq!(
+            migrate_never_ignore("/projects/"),
+            Some(PROJECTS_IGNORE.to_string()),
+            "no trailing newline is added"
+        );
     }
 
     #[test]

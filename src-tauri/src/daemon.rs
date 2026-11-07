@@ -954,6 +954,24 @@ mod tests {
         assert!(!ignored(&m, Path::new("/r/sub/notes.md")));
     }
 
+    /// `projects/` is tracked for its `*/memory/` folders only: transcripts
+    /// beside them, written all session long, must still not wake the daemon.
+    #[test]
+    fn claude_project_memory_wakes_the_daemon_but_transcripts_do_not() {
+        let m = matcher("/r", crate::project::DEFAULT_NEVER_IGNORE);
+        for p in [
+            "/r/projects/-Users-a-p/s1.jsonl",
+            "/r/projects/-Users-a-p/s1/subagents/a.jsonl",
+            "/r/projects/top.json",
+        ] {
+            assert!(ignored(&m, Path::new(p)), "{p} woke the daemon");
+        }
+        assert!(!ignored(
+            &m,
+            Path::new("/r/projects/-Users-a-p/memory/MEMORY.md")
+        ));
+    }
+
     /// `~/.claude` is the headline tracked root and the mirror excludes
     /// `projects/*.jsonl`, `history.jsonl` and `todos/`, which Claude writes
     /// continuously. Waking for them would hold the daemon at one full
@@ -962,8 +980,8 @@ mod tests {
     fn an_ignored_path_does_not_wake_the_daemon_but_a_tracked_one_does() {
         let home = TempDir::new().unwrap();
         // A separate `$HOME`: a tracked root may not sit inside the state
-        // directory. `add_root` writes `DEFAULT_NEVER_IGNORE`, which
-        // root-anchors `/projects/` and `/history.jsonl`.
+        // directory. `add_root` writes `DEFAULT_NEVER_IGNORE`, which ignores
+        // everything under `/projects/` but `*/memory/`, and `/history.jsonl`.
         let home_dir = TempDir::new().unwrap();
         let provider = TempDir::new().unwrap();
         let root = home_dir.path().join(".claude");

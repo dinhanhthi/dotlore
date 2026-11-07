@@ -129,7 +129,13 @@ impl AppState {
         }
 
         let engine = match Engine::new(&self.home, &self.home_dir, cfg) {
-            Ok(engine) => Arc::new(Mutex::new(engine)),
+            Ok(mut engine) => {
+                // Global overrides only; each root migrates in its own cycle.
+                if let Err(e) = engine.migrate_builtins() {
+                    eprintln!("dotlore: migrate builtins: {e:#}");
+                }
+                Arc::new(Mutex::new(engine))
+            }
             Err(e) => {
                 emit_error(app, format!("{e:#}"));
                 return;
