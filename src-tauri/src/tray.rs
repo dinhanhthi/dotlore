@@ -1,5 +1,7 @@
 //! The macOS status item: logo only, its menu, and the actions the menu
-//! dispatches.
+//! dispatches. While the updater holds a found update, the logo has a
+//! download badge and "Check for Updates…" reads "Update to Dotlore
+//! <version>…".
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -24,6 +26,11 @@ use crate::{show_window, WINDOW};
 const LABEL_MAX: usize = 80;
 
 const ICON: Image<'_> = include_image!("../assets/logo_256.png");
+
+/// `ICON` with the update badge, rendered once with AppKit: a white disc 9pt
+/// across at the bottom-right of the 18pt menu-bar icon, holding SF Symbol
+/// `arrow.down` (black weight) in system green blended 45 % toward black.
+const ICON_UPDATE: Image<'_> = include_image!("../assets/logo_256_update.png");
 
 /// The status dot, top-right of the 256px logo (the bottom-left already has
 /// the green ball). Scaled to the menu bar it is about 7pt across.
@@ -144,17 +151,19 @@ impl Dot {
     }
 }
 
-/// The logo, with the status dot painted on when there is one.
-fn icon_with(dot: Option<Dot>) -> Image<'static> {
+/// The logo, badged while an update is found, with the status dot painted on
+/// when there is one. The dot is top-right and the badge bottom-right.
+fn icon_with(dot: Option<Dot>, update: bool) -> Image<'static> {
+    let base = if update { ICON_UPDATE } else { ICON };
     let Some(dot) = dot else {
-        return ICON;
+        return base;
     };
-    let (w, h) = (ICON.width() as usize, ICON.height() as usize);
+    let (w, h) = (base.width() as usize, base.height() as usize);
     let scale = w as f32 / 256.0;
     let (cx, cy) = (DOT_CX as f32 * scale, DOT_CY as f32 * scale);
     let (r, gap) = (DOT_R * scale, DOT_GAP * scale);
     let color = dot.rgba();
-    let mut buf = ICON.rgba().to_vec();
+    let mut buf = base.rgba().to_vec();
     for y in 0..h {
         for x in 0..w {
             let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
@@ -188,16 +197,18 @@ pub fn build(app: &App) -> tauri::Result<TrayIcon> {
 
     let view = TrayView::from_app(app.handle());
     let menu = build_menu(app.handle(), &view)?;
-    let icon = icon_with(view.dot());
+    let icon = icon_with(view.dot(), view.update.is_some());
+    let tip = tooltip(&view);
     // Shared by both listeners: a status event must not drop the update row,
     // and an update event must not drop the last error. With no provider the
     // daemon never runs, so the update event cannot wait for a status tick.
     let shared = Arc::new(Mutex::new(view));
-    // Not a template: AppKit would tint it one colour and drop the dot's.
+    // Not a template: AppKit would tint it one colour and drop the dot's and
+    // the badge's.
     let tray = TrayIconBuilder::with_id("main")
         .icon(icon)
         .icon_as_template(false)
-        .tooltip("Dotlore")
+        .tooltip(tip)
         .menu(&menu)
         .on_menu_event(on_menu)
         .build(app)?;
@@ -217,9 +228,7 @@ pub fn build(app: &App) -> tauri::Result<TrayIcon> {
         view.apply_status(next);
         refresh(&app_handle, &tray_handle, &view);
         if view.dot() != before {
-            if let Err(e) = tray_handle.set_icon(Some(icon_with(view.dot()))) {
-                eprintln!("dotlore: tray icon: {e}");
-            }
+            set_icon(&tray_handle, &view);
         }
     });
 
@@ -229,11 +238,40 @@ pub fn build(app: &App) -> tauri::Result<TrayIcon> {
     // webview may emit events too, and must not be able to relabel this row.
     app.listen(updater::UPDATE_EVENT, move |_| {
         let mut view = shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let had = view.update.is_some();
         view.update = updater::available_version(&app_handle);
         refresh(&app_handle, &tray_handle, &view);
+        if view.update.is_some() != had {
+            set_icon(&tray_handle, &view);
+        }
     });
 
     Ok(tray)
+}
+
+/// Whether the status item is up, so a found update has its badge and row
+/// to show in. No side effects.
+pub fn is_shown(app: &AppHandle) -> bool {
+    app.tray_by_id("main").is_some()
+}
+
+fn set_icon(tray: &TrayIcon, view: &TrayView) {
+    if let Err(e) = tray.set_icon(Some(icon_with(view.dot(), view.update.is_some()))) {
+        eprintln!("dotlore: tray icon: {e}");
+    }
+    if let Err(e) = tray.set_tooltip(Some(tooltip(view))) {
+        eprintln!("dotlore: tray tooltip: {e}");
+    }
+}
+
+/// Stands in for the badged image's accessibility description, which Tauri
+/// does not expose.
+fn tooltip(view: &TrayView) -> &'static str {
+    if view.update.is_some() {
+        "Dotlore, update available"
+    } else {
+        "Dotlore"
+    }
 }
 
 fn refresh(app: &AppHandle, tray: &TrayIcon, view: &TrayView) {
@@ -305,15 +343,12 @@ fn disabled(
     MenuItem::with_id(app, id, text, false, None::<&str>)
 }
 
-/// Menu rows: `Some(label)` or `None` for a separator. An available update
-/// first, then warnings, then the actions, Settings, the about/update-check
-/// pair, and finally Quit — and never a root name.
+/// Menu rows: `Some(label)` or `None` for a separator. Warnings first, then
+/// the actions, Settings, the about/update-check pair, and finally Quit — and
+/// never a root name. While an update is found, the update-check row reads
+/// "Update to Dotlore <version>…".
 pub fn menu_labels(view: &TrayView) -> Vec<Option<String>> {
     let mut items = Vec::new();
-    if let Some(version) = &view.update {
-        items.push(Some(format!("{UPDATE_PREFIX}{}…", one_line(version))));
-        items.push(None);
-    }
     if view.git_missing {
         items.push(Some(
             "git not found — run: xcode-select --install".to_string(),
@@ -331,7 +366,10 @@ pub fn menu_labels(view: &TrayView) -> Vec<Option<String>> {
     items.push(None);
     items.push(Some("Settings…".to_string()));
     items.push(None);
-    items.push(Some("Check for Updates…".to_string()));
+    items.push(Some(match &view.update {
+        Some(version) => format!("{UPDATE_PREFIX}{}…", one_line(version)),
+        None => "Check for Updates…".to_string(),
+    }));
     items.push(Some("About Dotlore".to_string()));
     items.push(None);
     items.push(Some("Quit Dotlore".to_string()));
@@ -451,17 +489,24 @@ mod tests {
         }
     }
 
-    /// Guard: an available update leads the menu, and the row is the one
-    /// `build_menu` wires to the updater.
+    /// Guard: an available update takes the update-check row's place, and the
+    /// row is the one `build_menu` wires to the updater.
     #[test]
-    fn an_available_update_leads_the_menu() {
+    fn an_available_update_renames_the_check_row() {
+        let plain = menu_labels(&view());
         let s = TrayView {
             update: Some("0.3.0".into()),
             ..view()
         };
         let labels = menu_labels(&s);
-        assert_eq!(labels[0], Some("Update to Dotlore 0.3.0…".into()));
-        assert_eq!(labels[1], None);
+        let at = plain
+            .iter()
+            .position(|l| l.as_deref() == Some("Check for Updates…"))
+            .unwrap();
+        assert_eq!(labels.len(), plain.len());
+        assert_eq!(labels[at], Some("Update to Dotlore 0.3.0…".into()));
+        assert!(labels[at].as_deref().unwrap().starts_with(UPDATE_PREFIX));
+        assert!(!labels.contains(&Some("Check for Updates…".into())));
     }
 
     /// Guard: the 30 s status tick must not drop the update row.
@@ -540,8 +585,8 @@ mod tests {
 
     #[test]
     fn the_dot_is_painted_top_right_and_leaves_the_logo_ball_alone() {
-        let plain = icon_with(None);
-        let dotted = icon_with(Some(Dot::Error));
+        let plain = icon_with(None, false);
+        let dotted = icon_with(Some(Dot::Error), false);
         let (w, h) = (dotted.width() as usize, dotted.height() as usize);
         let px = |img: &Image<'_>, x: usize, y: usize| {
             let i = (y * w + x) * 4;

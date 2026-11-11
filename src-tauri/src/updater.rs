@@ -8,10 +8,12 @@
 //! the user every few hours.
 //!
 //! A found update is kept in [`UpdateState`] and announced as
-//! `dotlore://update` (the version, or `null`), which drives the menu-bar row
-//! and the title-bar badge. A background check prompts only for a version it
-//! has not already recorded, so "Later" is not asked again every few hours;
-//! the row and the badge stay until the update is installed. Installing emits
+//! `dotlore://update` (the version, or `null`), which drives the menu-bar
+//! icon's badge and row and the title-bar badge. While the menu-bar item
+//! shows, a background check never prompts: the badge is the reminder.
+//! Without it, a background check prompts only for a version it has not
+//! already recorded, so "Later" is not asked again every few hours. The row
+//! and the badges stay until the update is installed. Installing emits
 //! `dotlore://update-progress`.
 //!
 //! This is the only file that reaches `tauri-plugin-updater`. The tray and
@@ -29,6 +31,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::alert::{self, Style};
 use crate::show_window;
+use crate::tray;
 
 const CHECK_ID: &str = "check-for-updates";
 const TITLE: &str = "Software Update";
@@ -163,7 +166,7 @@ async fn check(app: &AppHandle, interactive: bool) {
     match updater.check().await {
         Ok(Some(update)) => {
             let fresh = record(app, Some(update.clone()));
-            if interactive || fresh {
+            if interactive || (fresh && !tray::is_shown(app)) {
                 prompt(app, update);
             }
         }
