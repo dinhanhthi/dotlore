@@ -1,3 +1,9 @@
+## v0.9.6 (2026-11-11)
+
+### Desktop app
+
+- **The menu bar icon shows a badge when an update is available.** You can see a new version is waiting without opening the app or the menu. [#3e2211d3](https://github.com/dinhanhthi/dotlore/commit/3e2211d3)
+
 ## v0.9.5 (2026-11-06)
 
 ### Sync
